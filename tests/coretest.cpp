@@ -31,6 +31,7 @@
 #include "BlockcheckEngine.h"
 #include "HistoryStore.h"
 #include "WarpManager.h"
+#include "WarpInstaller.h"
 #include "blockcheck_testcert.h"
 
 #include <QCoreApplication>
@@ -4813,6 +4814,384 @@ int main(int argc, char **argv)
               "an empty resolved path means not available");
         check(WarpManager::isAvailableFromPath(QStringLiteral("/usr/bin/warp-cli")),
               "a real resolved path means available");
+    }
+
+    // [WarpInstaller] — putting the Cloudflare WARP client on a machine that has none.
+    //
+    // The privileged half of this class cannot run in a suite: it execs pkexec, and a test that ran it
+    // would either hang waiting for a password or change the machine running the tests. So the async
+    // path is asserted only where it refuses to start, and everything else here is the data the two
+    // spawn sites are built from — the script a root shell will read, the argv msiexec will get, the
+    // values Cloudflare publishes, and the host questions that decide whether an install can be
+    // attempted at all.
+    out << "\n[WarpInstaller]\n";
+    {
+        // ---- the repository, exactly as Cloudflare publishes it ----
+        //
+        // These five strings are the whole of what apt is pointed at. Each one drifting turns the
+        // install into "unable to locate package cloudflare-warp" — a failure that carries no clue about
+        // which value went stale — so they are pinned by content, not merely by being non-empty.
+        check(WarpInstaller::publicKeyUrl() == QStringLiteral("https://pkg.cloudflareclient.com/pubkey.gpg"),
+              "the public key is fetched from the published URL");
+        check(WarpInstaller::repositoryUrl() == QStringLiteral("https://pkg.cloudflareclient.com/"),
+              "the repository URL ends in a slash, as the deb line writes it");
+        check(WarpInstaller::keyringPath() == QStringLiteral("/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg"),
+              "the dearmoured key lands in the keyring directory apt expects");
+        check(WarpInstaller::sourcesListPath() == QStringLiteral("/etc/apt/sources.list.d/cloudflare-client.list"),
+              "the sources file is the one the repository documents");
+        check(WarpInstaller::packageName() == QStringLiteral("cloudflare-warp"),
+              "the package name is the one the repository ships");
+
+        check(WarpInstaller::repositoryLine(QStringLiteral("noble"))
+                  == QStringLiteral("deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] "
+                                    "https://pkg.cloudflareclient.com/ noble main"),
+              "the deb line is signed-by, URL, suite, component, in that order");
+        // Composed from the accessors, so the two halves of the class cannot disagree about a value.
+        const QString line = WarpInstaller::repositoryLine(QStringLiteral("bookworm"));
+        check(line.contains(WarpInstaller::keyringPath()) && line.contains(WarpInstaller::repositoryUrl()),
+              "repositoryLine is built from the same constants it is tested against");
+        check(line.endsWith(QStringLiteral(" bookworm main")), "and the suite is the caller's value");
+
+        // ---- the suite name, the one value the generated script carries ----
+        check(WarpInstaller::isUsableCodename(QStringLiteral("noble")), "a plain Ubuntu suite is usable");
+        check(WarpInstaller::isUsableCodename(QStringLiteral("bookworm")), "a plain Debian suite is usable");
+        check(WarpInstaller::isUsableCodename(QStringLiteral("22.04")), "digits and a dot are usable");
+        check(WarpInstaller::isUsableCodename(QStringLiteral("srm-preview_1")),
+              "dash and underscore are usable");
+        check(!WarpInstaller::isUsableCodename(QString()), "an empty suite name is not usable");
+        check(!WarpInstaller::isUsableCodename(QStringLiteral("Noble")),
+              "uppercase is refused: a repository names its suites in lowercase");
+        // The injection set. Every one of these reaches a script a root shell reads, and each is a
+        // different shell mechanic: a command separator, a substitution, a quote that closes the
+        // assignment, a redirect, whitespace that would split one word into two arguments.
+        for (const QString &hostile : {QStringLiteral("noble; rm -rf /"),
+                                       QStringLiteral("noble && curl evil"),
+                                       QStringLiteral("noble$(whoami)"),
+                                       QStringLiteral("noble`id`"),
+                                       QStringLiteral("noble'"),
+                                       QStringLiteral("noble\""),
+                                       QStringLiteral("noble|tee"),
+                                       QStringLiteral("noble>x"),
+                                       QStringLiteral("noble\\x"),
+                                       QStringLiteral("noble/.."),
+                                       QStringLiteral("noble\nbookworm"),
+                                       QStringLiteral(" noble"),
+                                       QStringLiteral("noble ")})
+        {
+            check(!WarpInstaller::isUsableCodename(hostile),
+                  QStringLiteral("a suite name that could carry a command is refused: %1")
+                      .arg(QString(hostile).replace(QLatin1Char('\n'), QStringLiteral("\\n"))));
+        }
+
+        // ---- the suite the repository is actually asked for ----
+        //
+        // A rolling derivative that builds from Debian names itself in /etc/os-release, and its own name
+        // is not a directory on Cloudflare's server. Asking for what the host said is the 404 that comes
+        // back as "apt-get failed (exit code 100)", so the name is translated before it is written.
+        check(WarpInstaller::repositorySuite(QStringLiteral("kali-rolling"))
+                  == QStringLiteral("bookworm"),
+              "Kali rolling is answered with the published Debian suite it builds from");
+        check(WarpInstaller::repositorySuite(QStringLiteral("kali"))
+                  == QStringLiteral("bookworm"),
+              "and the bare family name too, which is what a minimal image can say");
+        check(WarpInstaller::repositorySuite(QStringLiteral("kali-2025.1"))
+                  == QStringLiteral("bookworm"),
+              "a snapshot label in the same family maps to the same suite");
+        check(WarpInstaller::repositorySuite(QStringLiteral("noble")) == QStringLiteral("noble")
+                  && WarpInstaller::repositorySuite(QStringLiteral("jammy")) == QStringLiteral("jammy")
+                  && WarpInstaller::repositorySuite(QStringLiteral("bookworm")) == QStringLiteral("bookworm")
+                  && WarpInstaller::repositorySuite(QStringLiteral("trixie")) == QStringLiteral("trixie"),
+              "an upstream suite comes back untouched: rewriting one would repeat the mistake");
+        check(WarpInstaller::repositorySuite(QString()).isEmpty(),
+              "a host that names no release is not handed one by imagination");
+        check(WarpInstaller::isUsableCodename(WarpInstaller::repositorySuite(QStringLiteral("kali-rolling"))),
+              "the fallback is itself a name the generator will accept");
+        // The name is well formed and merely unpublished, which is the whole reason the mapping is a
+        // translation and not a validity check.
+        check(WarpInstaller::isUsableCodename(QStringLiteral("kali-rolling")),
+              "kali-rolling is grammatically a suite name — the server, not the parser, says no");
+
+        // ---- the generated script ----
+        {
+            const QString script = WarpInstaller::linuxScriptBody(QStringLiteral("noble"));
+            check(script.startsWith(QStringLiteral("#!/bin/sh")), "it is a POSIX shell script");
+            check(script.contains(QStringLiteral("set -eu")),
+                  "set -eu: a failed step stops the install instead of reporting the wrong reason");
+            check(!script.contains(QStringLiteral("sudo")),
+                  "no sudo: pkexec or an already-root session is what put this shell here");
+            check(script.contains(QStringLiteral("CODENAME='noble'")),
+                  "the suite arrives quoted, not bare");
+            check(script.contains(QStringLiteral("PACKAGE='cloudflare-warp'"))
+                      && script.contains(QStringLiteral("KEYRING='/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg'")),
+                  "the fixed paths are assigned from the same constants");
+            check(script.contains(QStringLiteral("for tool in curl gpg apt-get")),
+                  "the three tools it cannot do without are named before any of them is used");
+            check(script.contains(QStringLiteral("exit 20")),
+                  "a missing tool exits with a number of its own, not with a shell's 127");
+            check(script.contains(QStringLiteral("gpg --yes --dearmor --output \"$KEYRING\"")),
+                  "the key is dearmoured into the keyring path");
+            check(script.contains(QStringLiteral("apt-get update"))
+                      && script.contains(QStringLiteral("apt-get install -y \"$PACKAGE\"")),
+                  "update then install, in that order");
+            check(script.contains(QStringLiteral("DEBIAN_FRONTEND=noninteractive")),
+                  "the frontend stays non-interactive: nobody is watching a terminal");
+            // The whole printf line, spelled: the format is quoted so the two variables arrive as
+            // arguments rather than as text the shell re-reads, and the target is quoted too.
+            check(script.contains(QStringLiteral(
+                      "printf 'deb [signed-by=%s] %s %s main\\n' \"$KEYRING\" "
+                      "'https://pkg.cloudflareclient.com/' \"$CODENAME\" > \"$SOURCES\"")),
+                  "the sources line pins the key it just installed and names the published repository");
+            // The entry already in place is unlinked before the replacement is written, and in that order.
+            // An earlier attempt — this one's, the vendor's published one-liner, or a hand-written line
+            // naming a suite the server has never had — leaves a 404 in the directory apt reads whole,
+            // and the repair has to clear it rather than merely add to it.
+            check(script.contains(QStringLiteral("rm -f \"$SOURCES\"")),
+                  "a stale sources entry is removed before the new one is written");
+            check(script.indexOf(QStringLiteral("rm -f \"$SOURCES\""))
+                      < script.indexOf(QStringLiteral("> \"$SOURCES\"")),
+                  "removed first: nothing reaches apt-get update through the leftover");
+            check(script.indexOf(QStringLiteral("> \"$SOURCES\""))
+                      < script.indexOf(QStringLiteral("apt-get update")),
+                  "and the fresh line is in place before the index that reads it is refreshed");
+            // Replacing the suite behind a URI apt has already catalogued is, from apt 2.7 on, an error
+            // rather than a warning. Rewriting kali-rolling as bookworm is exactly that replacement, so
+            // the update has to be told the change is ours.
+            check(script.contains(QStringLiteral("apt-get update --allow-releaseinfo-change")),
+                  "the update accepts the release information this script itself just replaced");
+            check(script.contains(QStringLiteral("mkdir -p \"$(dirname \"$KEYRING\")\"")),
+                  "the keyring directory is made from a quoted expansion, not an unquoted one");
+            check(!script.contains(QStringLiteral("tee ")),
+                  "no tee: this shell is already the privileged one, so writes go straight");
+            check(script.endsWith(QLatin1Char('\n')), "the last line is terminated, as sh requires");
+
+            // One substitution only: the generated text is the same script for every host apart from the
+            // suite name, which is the property that makes reading it once enough.
+            const QString other = WarpInstaller::linuxScriptBody(QStringLiteral("bookworm"));
+            check(other.count(QLatin1Char('\n')) == script.count(QLatin1Char('\n')),
+                  "the same number of lines for a different suite");
+            check(other != script && other.contains(QStringLiteral("CODENAME='bookworm'")),
+                  "and the only difference is the suite");
+        }
+
+        // ---- reading this machine's release ----
+        check(WarpInstaller::parseCodename(QStringLiteral("ID=ubuntu\nVERSION_CODENAME=noble\n"))
+                  == QStringLiteral("noble"),
+              "VERSION_CODENAME is read from a plain ubuntu os-release");
+        check(WarpInstaller::parseCodename(QStringLiteral("VERSION_CODENAME=\"noble\"\n"))
+                  == QStringLiteral("noble"),
+              "a quoted value is unquoted");
+        check(WarpInstaller::parseCodename(QStringLiteral("VERSION_CODENAME='jammy'\n"))
+                  == QStringLiteral("jammy"),
+              "single quotes too");
+        check(WarpInstaller::parseCodename(
+                  QStringLiteral("# comment\nID=linuxmint\nUBUNTU_CODENAME=noble\nVERSION_CODENAME=ulyana\n"))
+                  == QStringLiteral("ulyana"),
+              "a comment line is not a key, and the derivative's own suite wins");
+        check(WarpInstaller::parseCodename(QStringLiteral("ID=linuxmint\nUBUNTU_CODENAME=noble\n"))
+                  == QStringLiteral("noble"),
+              "when VERSION_CODENAME is absent, the parent release's suite is used");
+        // The order below matters: the fallback is remembered and only returned if no usable
+        // VERSION_CODENAME turned up, so the preferred key wins wherever it appears in the file.
+        check(WarpInstaller::parseCodename(QStringLiteral("UBUNTU_CODENAME=noble\nVERSION_CODENAME=jammy\n"))
+                  == QStringLiteral("jammy"),
+              "VERSION_CODENAME beats UBUNTU_CODENAME even when it comes second");
+        check(WarpInstaller::parseCodename(QStringLiteral("VERSION_CODENAME=Noble\n")).isEmpty(),
+              "an unusable value is not returned: what was read is checked, not trusted");
+        check(WarpInstaller::parseCodename(QStringLiteral("VERSION_CODENAME=\"noble; rm -rf /\"\n")).isEmpty(),
+              "and a value that could carry a command is refused here too");
+        check(WarpInstaller::parseCodename(QStringLiteral("PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\n")).isEmpty(),
+              "a release that names no codename at all answers empty");
+        check(WarpInstaller::parseCodename(QString()).isEmpty(), "empty text answers empty");
+        check(WarpInstaller::parseCodename(QStringLiteral("CODENAME=noble\n")).isEmpty(),
+              "the key is matched whole, not as a substring");
+        // The host's own answer, whatever the runner is: either a name the generator accepts, or none.
+        // A half answer is the thing that would write a broken sources file.
+        const QString host = WarpInstaller::hostCodename();
+        check(host.isEmpty() || WarpInstaller::isUsableCodename(host),
+              "this machine names a suite the installer can use, or it names none");
+
+        // A Kali host's /etc/os-release, handed in rather than read: this is the file whose answer broke
+        // the install, and the chain below is the one beginLinux() runs on it.
+        {
+            const QString kaliRelease = QStringLiteral(
+                "PRETTY_NAME=\"Kali GNU/Linux Rolling\"\n"
+                "NAME=\"Kali GNU/Linux\"\n"
+                "VERSION_ID=\"2025.4\"\n"
+                "ID=kali\n"
+                "ID_LIKE=debian\n"
+                "VERSION_CODENAME=kali-rolling\n");
+            const QString named = WarpInstaller::parseCodename(kaliRelease);
+            check(named == QStringLiteral("kali-rolling"),
+                  "Kali does name a release, so the empty-codename refusal never fired to warn anybody");
+            const QString composed = WarpInstaller::linuxScriptBody(WarpInstaller::repositorySuite(named));
+            check(composed.contains(QStringLiteral("CODENAME='bookworm'")),
+                  "reading, translating and composing ends at the published Debian suite");
+            check(!composed.contains(QStringLiteral("kali")),
+                  "and the unpublished name leaves no trace in what a root shell will execute");
+        }
+        // This machine's answer through the mapping — the value the script is really composed with.
+        const QString suite = WarpInstaller::hostRepositorySuite();
+        check(suite == WarpInstaller::repositorySuite(host),
+              "hostRepositorySuite is hostCodename through repositorySuite, and nothing else");
+        check(suite.isEmpty() || WarpInstaller::isUsableCodename(suite),
+              "so the suite this host reaches for is one the generator accepts, or there is none");
+
+        // ---- the command that asks for root ----
+        {
+            QString program;
+            QStringList args;
+            QString error;
+            check(WarpInstaller::composeLinuxInstall(QStringLiteral("/usr/bin/pkexec"),
+                                                     QStringLiteral("/bin/bash"), false,
+                                                     &program, &args, &error)
+                      && program == QStringLiteral("/usr/bin/pkexec")
+                      && args == (QStringList{QStringLiteral("/bin/bash"), QStringLiteral("-s")}),
+                  "unprivileged: pkexec, then the shell, then -s");
+            check(WarpInstaller::composeLinuxInstall(QString(), QStringLiteral("/bin/bash"), true,
+                                                     &program, &args, &error)
+                      && program == QStringLiteral("/bin/bash")
+                      && args == QStringList{QStringLiteral("-s")},
+                  "already root: the shell alone, because pkexec from root is a prompt nobody answers");
+            check(WarpInstaller::composeLinuxInstall(QStringLiteral("/usr/bin/pkexec"),
+                                                     QStringLiteral("/bin/sh"), true,
+                                                     &program, &args, &error)
+                      && program == QStringLiteral("/bin/sh"),
+                  "and the shell handed in is the shell used, bash or not");
+
+            error.clear();
+            check(!WarpInstaller::composeLinuxInstall(QStringLiteral("/usr/bin/pkexec"), QString(), false,
+                                                      &program, &args, &error)
+                      && !error.isEmpty(),
+                  "no shell at all is refused with an explanation");
+            check(program.isEmpty() && args.isEmpty(),
+                  "and a refused composition leaves nothing half-written for a caller to exec");
+            error.clear();
+            check(!WarpInstaller::composeLinuxInstall(QString(), QStringLiteral("/bin/bash"), false,
+                                                      &program, &args, &error)
+                      && error.contains(QStringLiteral("cloudflare-warp")),
+                  "no pkexec and no root is refused, and the message names the package to install by hand");
+            check(!WarpInstaller::composeLinuxInstall(QStringLiteral("/usr/bin/pkexec"),
+                                                     QStringLiteral("/bin/bash"), false,
+                                                     nullptr, &args, &error),
+                  "and it refuses to write where nobody asked it to");
+        }
+
+        // The root gate's truth table: root alone is enough, and otherwise both halves are needed.
+        check(WarpInstaller::canAskForRoot(true, false, false), "already root needs nobody");
+        check(WarpInstaller::canAskForRoot(false, true, true), "pkexec with an agent can be asked");
+        check(!WarpInstaller::canAskForRoot(false, true, false),
+              "pkexec with no agent cannot: the prompt would hang or fail");
+        check(!WarpInstaller::canAskForRoot(false, false, true), "an agent with no pkexec has nothing to run");
+        check(!WarpInstaller::canAskForRoot(false, false, false), "neither half is not an install");
+
+        // ---- Windows: the installer, and the window it leaves behind ----
+        check(WarpInstaller::installerUrl()
+                  == QStringLiteral("https://downloads.cloudflareclient.com/v1/download/windows/ga"),
+              "the installer URL is Cloudflare's own floating download for the GA Windows build");
+        check(WarpInstaller::installerFileName() == QStringLiteral("Cloudflare-WARP.msi"),
+              "the staged file keeps a fixed name, not the one the server offered");
+        {
+            const QStringList args = WarpInstaller::msiexecArgs(QStringLiteral("C:/Temp/Cloudflare-WARP.msi"));
+            check(args == (QStringList{QStringLiteral("/i"),
+                                       QStringLiteral("C:/Temp/Cloudflare-WARP.msi"),
+                                       QStringLiteral("/qn"),
+                                       QStringLiteral("/norestart")}),
+                  "msiexec is asked to install it silently, and to leave the reboot alone");
+            check(!args.contains(QStringLiteral("/qb")),
+                  "and not the basic-UI form, which still puts a dialog on the user's screen");
+        }
+        check(WarpInstaller::installSucceeded(0), "msiexec 0 is success");
+        check(WarpInstaller::installSucceeded(3010),
+              "msiexec 3010 is success with a reboot pending — an installed client either way");
+        check(!WarpInstaller::installSucceeded(1603), "1603, the generic installer failure, is not");
+        check(!WarpInstaller::installSucceeded(1618), "nor is 1618, another install in progress");
+        check(!WarpInstaller::installSucceeded(3011), "nor 3011, the reboot the user refused");
+        check(!WarpInstaller::installSucceeded(-1), "and a command that never ran is not success");
+
+        // A named root composes the vendor's folder beneath it. The root is spelled the way the host
+        // spells absolute paths — "C:/Program Files" has no leading separator on a POSIX runner, and
+        // QDir::isAbsolutePath rightly says false there, exactly as ZapretPaths::systemInstallDirUnder()
+        // is tested.
+        const QString pf = QStringLiteral("/tmp/muffin-program-files");
+        check(WarpInstaller::windowsInstallDir(pf)
+                  == pf + QStringLiteral("/Cloudflare/Cloudflare WARP"),
+              "the install directory is the vendor's folder under Program Files");
+        check(WarpInstaller::windowsInstallDir(QDir::toNativeSeparators(pf))
+                  == pf + QStringLiteral("/Cloudflare/Cloudflare WARP"),
+              "the host's own separator spelling is normalised, not embedded in the result");
+#if defined(Q_OS_WIN)
+        check(WarpInstaller::windowsInstallDir(QStringLiteral("C:\\Program Files"))
+                  == QStringLiteral("C:/Program Files/Cloudflare/Cloudflare WARP"),
+              "and on the host that keeps Windows on C:, that root composes too");
+#endif
+        // The two halves have to agree: WarpManager drives the client from what this composes.
+        check(WarpInstaller::windowsInstallDir(pf) + QStringLiteral("/warp-cli.exe")
+                  == WarpManager::installCandidatePaths(pf).value(0),
+              "the directory this composes is the directory WarpManager stats");
+        check(WarpInstaller::windowsInstallDir(QString()).isEmpty(),
+              "no Program Files means no answer, which is what every non-Windows host passes");
+        check(WarpInstaller::windowsInstallDir(QStringLiteral("Program Files")).isEmpty(),
+              "a RELATIVE root is refused: it would resolve against whatever the cwd happens to be");
+        check(WarpInstaller::windowsInstallDir(QStringLiteral("/tmp/Program Files/../Windows")).isEmpty(),
+              "and so is a root holding a traversal component");
+
+        check(WarpInstaller::guiImages() == (QStringList{QStringLiteral("Warp.exe"),
+                                                         QStringLiteral("Cloudflare WARP.exe")}),
+              "both spellings of the tray application are named");
+        for (const QString &image : WarpInstaller::guiImages())
+            check(!image.contains(QStringLiteral("svc"), Qt::CaseInsensitive),
+                  QStringLiteral("and the service that holds the tunnel is on no list here: %1").arg(image));
+        check(WarpInstaller::taskkillArgs(QStringLiteral("Warp.exe"))
+                  == (QStringList{QStringLiteral("/F"), QStringLiteral("/IM"), QStringLiteral("Warp.exe")}),
+                  "taskkill is asked by image name, forcibly");
+        check(WarpInstaller::platformHasWarpGui(Strategy::Platform::Windows), "Windows has a WARP window");
+        check(!WarpInstaller::platformHasWarpGui(Strategy::Platform::Linux),
+              "Linux has a daemon and a CLI and nothing to close");
+        check(!WarpInstaller::platformHasWarpGui(Strategy::Platform::Unknown),
+              "an unknown platform has nothing either");
+
+        // The single-window policy's own decision, as a truth table. Each of the three conditions
+        // rules out a host where closing a window would do nothing: not asked, no window to close,
+        // and no client at all.
+        check(WarpInstaller::closesWarpGui(true, Strategy::Platform::Windows, true),
+              "asked, on Windows, with a client installed: close it");
+        check(!WarpInstaller::closesWarpGui(false, Strategy::Platform::Windows, true),
+              "not asked, not closed");
+        check(!WarpInstaller::closesWarpGui(true, Strategy::Platform::Linux, true),
+              "the setting means nothing where there is no window to keep hidden");
+        check(!WarpInstaller::closesWarpGui(true, Strategy::Platform::Windows, false),
+              "and nothing is closed on a machine with no client at all");
+        // The spawn is guarded by Q_OS_WIN, so on this runner the honest answer is that it named
+        // nothing — which is the same report a Windows host with no tray application running gives.
+        check(WarpInstaller::closeWindowsGui().isEmpty(),
+              "closing the GUI where nothing is running names no process");
+
+        // ---- the check every install ends with ----
+        check(!WarpInstaller::installFoundFrom(QString()),
+              "nothing resolved means the install produced no client this app can drive");
+        check(WarpInstaller::installFoundFrom(QStringLiteral("/usr/bin/warp-cli")), "a PATH hit counts");
+        check(WarpInstaller::installFoundFrom(QStringLiteral("C:/Program Files/Cloudflare/Cloudflare WARP/warp-cli.exe")),
+              "so does the off-PATH copy in the vendor's own directory");
+
+        // ---- the refusal a caller has to hear synchronously ----
+        //
+        // A platform with no client to install cannot even begin, and that is the one start() path a
+        // suite can exercise without execing pkexec or msiexec on the machine running the tests.
+        // Everything past it belongs to installationFinished(), and to a human typing a password.
+        {
+            WarpInstaller installer;
+            check(!installer.isBusy() && installer.stage() == WarpInstaller::Stage::Idle,
+                  "a fresh installer is idle");
+            installer.setPlatform(Strategy::Platform::Windows);
+            check(installer.platform() == Strategy::Platform::Windows,
+                  "and the platform is settable, so the Windows half can be composed on a Linux runner");
+            installer.setPlatform(Strategy::Platform::Unknown);
+            QString error;
+            check(!installer.start(&error) && !error.isEmpty(),
+                  "an unknown platform is refused before anything is spawned");
+            check(installer.stage() == WarpInstaller::Stage::Idle && !installer.isBusy(),
+                  "and a refused start leaves it idle, ready for a real attempt");
+        }
     }
 
     out << "\n=== " << (g_failures ? "FAILED" : "ALL PASS") << " (" << g_failures << " failures) ===\n";

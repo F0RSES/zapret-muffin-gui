@@ -63,6 +63,35 @@ public:
     bool isAvailable() const { return m_available; }
     static bool isAvailableFromPath(const QString &resolvedPath);
 
+    // Whether the WARP client is on this machine — the question a caller asks before offering to
+    // install it, and the same fact availability answers. Two names for one flag on purpose, not two
+    // probes: "can I drive the tunnel?" and "is there a tunnel to drive?" have exactly one source of
+    // truth (a warp-cli we can find), and a second lookup that could disagree with the first would
+    // be a toggle that offers to install software the machine already has.
+    bool isInstalled() const { return m_available; }
+
+    // The Program Files root this process was started with, or empty on every other platform. Read
+    // from the environment rather than hardcoded, exactly as ZapretPaths::systemInstallDir() does:
+    // the value is the one the OS wrote for this process, and a machine can keep Windows somewhere
+    // other than C:\. Public because WarpInstaller asks the same question to check whether the
+    // install it just ran put a client on this disk.
+    static QString programFilesRoot();
+
+    // The one directory Cloudflare's own Windows package writes to, given the Program Files root:
+    // "<root>/Cloudflare/Cloudflare WARP/warp-cli.exe". Empty root means no candidates, which is
+    // what every non-Windows host passes — there the package manager installs into /usr/bin, and a
+    // PATH lookup already names it. Pure composition so a Linux runner can assert the Windows
+    // spelling, the way WindowsArgs and ZapretPaths::systemInstallDirUnder() do.
+    //
+    // This exists because the MSI never touches PATH: a Windows machine with WARP installed answers
+    // QStandardPaths::findExecutable("warp-cli") with nothing, and a PATH-only probe would call that
+    // machine empty and offer to install the client it already has.
+    static QStringList installCandidatePaths(const QString &programFilesRoot);
+
+    // PATH's answer first (already resolved by the caller), then the candidates that are real files.
+    // The first hit is the program every verb runs, so an off-PATH install is still drivable.
+    static QString resolveExecutable(const QString &pathHit, const QStringList &candidates);
+
     // ---- the argv each verb runs ---------------------------------------------
     //
     // Every one carries `--accept-tos` because warp-cli refuses to do anything at all without it
@@ -135,6 +164,11 @@ private:
 
     State m_state = State::Unavailable;
     bool m_available = false;
+    // The program every verb runs: warp-cli as PATH names it, or the absolute path of the copy in the
+    // vendor's own install directory. Empty when there is no client here at all — which is the same
+    // fact m_available caches, kept as the path rather than the bool because a verb has to exec
+    // something, and a bool cannot be handed to QProcess.
+    QString m_program;
     bool m_pollEnabled = false;
     QProcess *m_process = nullptr;   // the in-flight verb, non-null only while it runs
     QTimer *m_pollTimer = nullptr;

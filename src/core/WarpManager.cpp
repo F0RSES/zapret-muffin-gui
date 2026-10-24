@@ -1,6 +1,8 @@
 #include "WarpManager.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
@@ -85,6 +87,42 @@ WarpManager::State WarpManager::parseStatus(const QString &raw, bool wasConnectA
     return State::Disconnected;
 }
 
+QStringList WarpManager::installCandidatePaths(const QString &programFilesRoot)
+{
+    // An empty root is not a directory to look in. Every non-Windows caller passes exactly that,
+    // because there the package manager owns /usr/bin and PATH already names the client; the value
+    // only arrives from a host that read ProgramFiles out of its own environment.
+    const QString root = QDir::fromNativeSeparators(programFilesRoot).trimmed();
+    if (root.isEmpty())
+        return {};
+    return { root + QStringLiteral("/Cloudflare/Cloudflare WARP/warp-cli.exe") };
+}
+
+QString WarpManager::resolveExecutable(const QString &pathHit, const QStringList &candidates)
+{
+    // PATH wins when it answered: whatever the user's shell would find is the program the user
+    // means, and a copy in Program Files is only a fallback for the host where PATH was never told.
+    if (!pathHit.isEmpty())
+        return pathHit;
+    for (const QString &candidate : candidates) {
+        if (QFileInfo::exists(candidate))
+            return candidate;
+    }
+    return QString();
+}
+
+QString WarpManager::programFilesRoot()
+{
+#if defined(Q_OS_WIN)
+    // Read from this process's own environment block, which is the elevated one: a value a
+    // non-admin could edit would point a driver install somewhere else. ZapretPaths reads the same
+    // variable for the same reason (see systemInstallDir()).
+    return QProcessEnvironment::systemEnvironment().value(QStringLiteral("ProgramFiles"));
+#else
+    return QString();
+#endif
+}
+
 WarpManager::WarpManager(QObject *parent)
     : QObject(parent)
 {
@@ -116,8 +154,14 @@ WarpManager::~WarpManager()
 
 void WarpManager::rescanAvailability()
 {
-    const QString resolved = QStandardPaths::findExecutable(warpCliProgram());
+    // PATH first, then the directory Cloudflare's own package writes to. The second half is not
+    // decoration: the Windows MSI never edits PATH, so a machine that has the client installed
+    // answers a PATH-only probe with nothing — and the interface would offer to install software
+    // that is already there.
+    const QString resolved = resolveExecutable(QStandardPaths::findExecutable(warpCliProgram()),
+                                               installCandidatePaths(programFilesRoot()));
     const bool now = isAvailableFromPath(resolved);
+    m_program = resolved;
     if (now == m_available)
         return;
     m_available = now;
@@ -177,7 +221,10 @@ bool WarpManager::startVerb(const QStringList &args, State onAccepted, bool wasC
 
     auto *proc = new QProcess(this);
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    proc->setProgram(warpCliProgram());
+    // The resolved path, not the bare name: on a Windows host that got WARP from the MSI, warp-cli
+    // exists only in Program Files and PATH has never heard of it. rescanAvailability() put either
+    // a PATH hit or that absolute path in m_program before anything could reach this line.
+    proc->setProgram(m_program.isEmpty() ? warpCliProgram() : m_program);
     proc->setArguments(args);
 
     connect(proc, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {

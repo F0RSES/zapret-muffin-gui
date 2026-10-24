@@ -37,6 +37,7 @@ add_library(zapretcore STATIC
     src/core/BlockcheckEngine.cpp
     src/core/HistoryStore.cpp
     src/core/WarpManager.cpp
+    src/core/WarpInstaller.cpp
     src/platform/WindowsBackend.cpp
     src/platform/LinuxBackend.cpp
 )
@@ -54,6 +55,7 @@ target_sources(zapretcore PRIVATE
     src/core/BlockcheckEngine.h
     src/core/HistoryStore.h
     src/core/WarpManager.h
+    src/core/WarpInstaller.h
     src/platform/WindowsBackend.h
     src/platform/LinuxBackend.h
 )
