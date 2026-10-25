@@ -21,6 +21,11 @@ const QString kPingIntervalSec   = QStringLiteral("ping/intervalSec");
 const QString kWatchdogInterval  = QStringLiteral("watchdog/intervalMin");
 const QString kTheme             = QStringLiteral("ui/theme");
 const QString kLanguage          = QStringLiteral("ui/language");
+const QString kUseZapret         = QStringLiteral("ui/useZapret");
+const QString kUseWarp           = QStringLiteral("ui/useWarp");
+// Retired: the single-boolean store the one-choice pill wrote. Read by useWarp() as a fallback so a
+// user who picked WARP before the pill became two switches does not come back to a dark half, and
+// never written again — see the comment on useWarp().
 const QString kWarpMode          = QStringLiteral("ui/warpMode");
 const QString kHideWarpGui       = QStringLiteral("ui/hideWarpGui");
 
@@ -155,11 +160,23 @@ void Settings::setLastStrategyId(const QString &id) { write(kLastStrategyId, id)
 bool Settings::startLastOnLaunch() const { return read<bool>(kStartLastOnLaunch, false); }
 void Settings::setStartLastOnLaunch(bool on) { write(kStartLastOnLaunch, on); }
 
-// Default off: Zapret is the mode the app was designed around, and picking WARP is an explicit
-// switch to a different tool — a first run that lit the tunnel without the user asking would be
-// the interface changing the shape of their traffic on its own.
-bool Settings::warpMode() const { return read<bool>(kWarpMode, false); }
-void Settings::setWarpMode(bool on) { write(kWarpMode, on); }
+// Default on: the Zapret half is the application's own reason to exist, and a store that has never
+// been written to should open on the mode every screen was drawn for.
+bool Settings::useZapret() const { return read<bool>(kUseZapret, true); }
+void Settings::setUseZapret(bool on) { write(kUseZapret, on); }
+
+// Default off, and read through the retired key when the new one has never been written: a store
+// from the one-choice pill holds a single boolean whose true meant "the WARP half is lit" — which,
+// under the rule that WARP cannot be lit alone, is exactly the same claim as the new key's true.
+// Dropping it would silently un-pick the tunnel for everybody who upgrades across this change, and
+// the store cannot say anything finer than that.
+bool Settings::useWarp() const
+{
+    if (m_settings->contains(kUseWarp))
+        return read<bool>(kUseWarp, false);
+    return read<bool>(kWarpMode, false);
+}
+void Settings::setUseWarp(bool on) { write(kUseWarp, on); }
 
 // Default on: the tray application opens itself after an install and after every sign-in, and two
 // controls over one daemon is how a user ends up not knowing which one to press. Turning it off is the

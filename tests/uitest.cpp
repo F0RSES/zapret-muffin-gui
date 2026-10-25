@@ -235,7 +235,8 @@ static void testSettings()
         check(s.startLastOnLaunch() == false, "default startLastOnLaunch is false");
         check(s.minimizeToTray() == true, "default minimizeToTray is true");
         check(s.animationsEnabled() == true, "default animationsEnabled is true");
-        check(s.warpMode() == false, "default warpMode is false — Zapret stays the mode the app is drawn for");
+        check(s.useZapret() == true, "default useZapret is true — Zapret's half is on by default");
+        check(s.useWarp() == false, "default useWarp is false — the tunnel is an explicit decision");
         check(s.pingIntervalSec() == 5, "default ping interval is 5s");
         check(s.watchdogIntervalMin() == 5, "default watchdog interval is 5 min");
         check(Settings::kWatchdogDefaultIntervalMin == 5,
@@ -813,38 +814,87 @@ static void testModeToggle()
 
     // The pill has exactly two labels, each naming one subsystem by what it is called everywhere
     // else on the screen. English + uppercase matches the header's connection chip's design rule.
-    check(ModeToggle::labelFor(ModeToggle::Mode::Zapret) == QStringLiteral("Zapret"),
+    check(ModeToggle::labelFor(ModeToggle::Segment::Zapret) == QStringLiteral("Zapret"),
           "the Zapret half is labelled by name, not by an abstract icon");
-    check(ModeToggle::labelFor(ModeToggle::Mode::Warp) == QStringLiteral("WARP"),
+    check(ModeToggle::labelFor(ModeToggle::Segment::Warp) == QStringLiteral("WARP"),
           "the WARP half is labelled in caps, like the chip's CONNECTED");
-    check(ModeToggle::labelForIndex(0) == ModeToggle::labelFor(ModeToggle::Mode::Zapret),
-          "index 0 and Mode::Zapret name the same half");
+    check(ModeToggle::labelForIndex(0) == ModeToggle::labelFor(ModeToggle::Segment::Zapret),
+          "index 0 and Segment::Zapret name the same half");
 
-    // Colours: Zapret's half uses the theme's accent, WARP's is fixed Cloudflare orange so the
-    // choice does not flip with a theme change.
-    check(ModeToggle::colorFor(ModeToggle::Mode::Zapret) == Theme::accent(),
+    // Colours: Zapret's half uses the theme's accent, WARP's is fixed Cloudflare blue so the
+    // choice does not flip with a theme change. The blue is the one spelling the power button's
+    // live-tunnel ring already wears — a lit half claims "this layer is on", not WARP's brand orange.
+    check(ModeToggle::colorFor(ModeToggle::Segment::Zapret) == Theme::accent(),
           "the Zapret half borrows the accent already everywhere else on the screen");
-    check(ModeToggle::colorFor(ModeToggle::Mode::Warp) == QColor(0xF6, 0x82, 0x1F),
-          "the WARP half is the same orange the power button's Warp palette uses");
-    check(ModeToggle::colorFor(ModeToggle::Mode::Warp)
-              == PowerButton::modeColor(PowerButton::Mode::Idle, PowerButton::Palette::Warp),
-          "toggle and button agree on what a WARP orange looks like — one spelling of that hex");
+    check(ModeToggle::colorFor(ModeToggle::Segment::Warp) == QColor(0x22, 0xA7, 0xF0),
+          "the WARP half is Cloudflare blue, the live-tunnel colour");
+    check(ModeToggle::colorFor(ModeToggle::Segment::Warp)
+              == PowerButton::modeColor(PowerButton::Mode::Active, PowerButton::Palette::Warp),
+          "toggle and button agree on what a live WARP blue looks like — one spelling of that hex");
 
-    // The widget itself: construction, mode round-trip, modeChanged emission.
+    // describe() is what the switch prompt's informative line reads, so its three spellings of a
+    // legal selection — and the dash for the impossible-now empty — are a contract with the seven
+    // translations that never carry a subsystem name themselves.
+    check(ModeToggle::describe(ModeSelection{true, true})
+              == QStringLiteral("Zapret + WARP"),
+          "both halves lit reads as the two subsystems it runs");
+    check(ModeToggle::describe(ModeSelection{true, false})
+              == ModeToggle::labelFor(ModeToggle::Segment::Zapret),
+          "the lone bypass is named by that half's word");
+    check(ModeToggle::describe(ModeSelection(false, false)) == QStringLiteral("\u2014"),
+          "nothing lit is a dash, not a blank a user could read as a name");
+
+    // ---- the two rules, spelled as pure statics ----
+    // clamp() only ever *adds* zapret under a lit tunnel; it never removes a WARP. The illegal set is
+    // just {zapret off, WARP on}, and clamp folds it back onto the dependency the tunnel rides on.
+    check(ModeToggle::clamp(ModeSelection{false, true}) == ModeSelection{true, true},
+          "a request for the tunnel supplies the bypass with it");
+    check(ModeToggle::clamp(ModeSelection{true, false}) == ModeSelection{true, false},
+          "clamp does not touch a legal selection");
+    check(ModeToggle::clamp(ModeSelection(false, false)) == ModeSelection(false, false),
+          "and it does not invent a half that was never asked for");
+
+    // toggled() is what one click on one half leaves lit. Turning the bypass down also takes the tunnel
+    // down (nothing it rides on survives); turning the tunnel up brings the bypass up in the same click.
+    check(ModeToggle::toggled(ModeSelection{true, true}, ModeToggle::Segment::Zapret)
+              == ModeSelection{false, false},
+          "clicking the lit bypass down takes the dependent tunnel with it");
+    check(ModeToggle::toggled(ModeSelection{true, false}, ModeToggle::Segment::Warp)
+              == ModeSelection{true, true},
+          "clicking the dark tunnel up lights the bypass it needs");
+    check(ModeToggle::toggled(ModeSelection{true, false}, ModeToggle::Segment::Zapret)
+              == ModeSelection{false, false},
+          "clicking the lone lit bypass off lands on an empty pill");
+    check(ModeToggle::toggled(ModeSelection{true, true}, ModeToggle::Segment::Warp)
+              == ModeSelection{true, false},
+          "clicking the lit tunnel down leaves the bypass running");
+
+    // The widget itself: construction, selection round-trip, selectionChanged emission. The signal
+    // carries the two halves as separate bools so a queued connection needs no ModeSelection metatype.
     ModeToggle toggle;
-    check(toggle.mode() == ModeToggle::Mode::Zapret, "the default mode is Zapret");
+    check(toggle.selection() == ModeSelection(true, false), "the default selection is Zapret alone");
+    check(toggle.isOn(ModeToggle::Segment::Zapret) && !toggle.isOn(ModeToggle::Segment::Warp),
+          "and the per-half readers agree with the whole");
     int changes = 0;
-    ModeToggle::Mode lastSeen = ModeToggle::Mode::Zapret;
-    QObject::connect(&toggle, &ModeToggle::modeChanged, [&](ModeToggle::Mode m) {
-        ++changes;
-        lastSeen = m;
-    });
-    toggle.setMode(ModeToggle::Mode::Zapret);
-    check(changes == 0, "re-setting the current mode is a no-op, not a signal storm");
-    toggle.setMode(ModeToggle::Mode::Warp);
+    bool lastZapret = false;
+    bool lastWarp = false;
+    QObject::connect(&toggle, &ModeToggle::selectionChanged,
+                     [&](bool zapretOn, bool warpOn) {
+                         ++changes;
+                         lastZapret = zapretOn;
+                         lastWarp = warpOn;
+                     });
+    toggle.setSelection(ModeSelection(true, false));
+    check(changes == 0, "re-setting the current selection is a no-op, not a signal storm");
+    // A request for the impossible combination is clamped before it can emit, so asking for "WARP
+    // without Zapret" lands on both halves and says so — the pill can never report an illegal state.
+    toggle.setSelection(ModeSelection(false, true));
     check(changes == 1, "one change lands on one signal");
-    check(lastSeen == ModeToggle::Mode::Warp, "the signal carries the new mode");
-    check(toggle.mode() == ModeToggle::Mode::Warp, "and it reads back the same");
+    check(lastZapret && lastWarp, "the signal carries the clamped pair — zapret rode in with the tunnel");
+    check(toggle.selection() == ModeSelection(true, true), "and it reads back the same");
+    toggle.setSelection(true, false);
+    check(changes == 2, "turning the tunnel back down is a second change");
+    check(!lastWarp, "…announced with the tunnel now dark");
 }
 
 // ------------------------------------------------------------ Warp mappings ----
@@ -895,32 +945,32 @@ static void testWarpMappings()
     check(!MainWindow::canActFrom(WarpManager::State::Unavailable),
           "no warp-cli, no action");
 
-    // The clamp: a stored Warp intent on a host that no longer has warp-cli falls back to
-    // Zapret so the button still means something; the store keeps the intent, not the widget.
-    check(MainWindow::clampModeForAvailability(ModeToggle::Mode::Warp, false)
-              == ModeToggle::Mode::Zapret,
-          "a stale Warp pick is clamped to Zapret when warp-cli is missing");
-    check(MainWindow::clampModeForAvailability(ModeToggle::Mode::Warp, true)
-              == ModeToggle::Mode::Warp,
-          "and honoured when warp-cli is back");
-    check(MainWindow::clampModeForAvailability(ModeToggle::Mode::Zapret, false)
-              == ModeToggle::Mode::Zapret,
-          "a Zapret pick is never moved by WARP availability");
+    // The clamp: a stored WARP intent on a host that no longer has warp-cli has its tunnel half put
+    // out so the button still means something; the bypass half is never moved by WARP availability.
+    check(MainWindow::clampSelectionForAvailability(ModeSelection{true, true}, false)
+              == ModeSelection{true, false},
+          "a stale WARP pick loses only its tunnel half when warp-cli is missing");
+    check(MainWindow::clampSelectionForAvailability(ModeSelection{true, true}, true)
+              == ModeSelection{true, true},
+          "and the combined pick is honoured when warp-cli is back");
+    check(MainWindow::clampSelectionForAvailability(ModeSelection{true, false}, false)
+              == ModeSelection{true, false},
+          "a Zapret-only pick is never moved by WARP availability");
 }
 
-// ------------------------------------------------------------- mode switch ----
+// --------------------------------------------------------- selection switch ----
 //
-// Moving the Zapret/WARP pill is allowed to do exactly two things: light the other half, and — but
-// only with the user's spoken agreement — take a live bypass DOWN. It never brings one up. The rule is
-// split into pure helpers so that claim is checkable without a backend, a tunnel or a modal dialog, and
-// this section pins each of them: which states hold the path, what a switch tears down once the user has
-// agreed, and which half the pill is left on. MainWindow::onModeChanged is the ordering of these three
-// answers and nothing else, so everything the slot will act on is here.
-static void testModeSwitch()
+// Moving the Zapret/WARP pill is allowed to do exactly two things: light a half, and — but only with
+// the user's spoken agreement — take a live subsystem DOWN. It never brings one up. The rule is split
+// into pure helpers so that claim is checkable without a backend, a tunnel or a modal dialog, and this
+// section pins each of them: which states hold the path, which halves a change takes down, what a
+// confirmed change is permitted to stop, and which selection ends up lit. MainWindow::onSelectionChanged
+// is the ordering of these answers and nothing else, so everything the slot will act on is here.
+static void testSelectionSwitch()
 {
-    std::printf("\n[mode switch]\n");
+    std::printf("\n[selection switch]\n");
 
-    using Mode = ModeToggle::Mode;
+    using Sel = ModeSelection;
     using Action = MainWindow::SwitchAction;
 
     // ---- isBypassHeld: which zapret states mean the path is already altered ----
@@ -1011,75 +1061,309 @@ static void testModeSwitch()
                       .arg(z ? QStringLiteral("true") : QStringLiteral("false"))
                       .arg(w ? QStringLiteral("true") : QStringLiteral("false")));
 
-    // ---- resolveModeSwitch: which half stays lit ----
-    check(MainWindow::resolveModeSwitch(Mode::Zapret, Mode::Warp, false, false, false) == Mode::Warp,
-          "a free switch on an idle host takes the half picked — no question was ever asked");
-    check(MainWindow::resolveModeSwitch(Mode::Warp, Mode::Zapret, false, false, false) == Mode::Zapret,
-          "…and the same holds coming back");
-    check(MainWindow::resolveModeSwitch(Mode::Zapret, Mode::Warp, true, false, true) == Mode::Warp,
-          "an agreed switch takes the half the user picked");
-    check(MainWindow::resolveModeSwitch(Mode::Zapret, Mode::Warp, true, false, false) == Mode::Zapret,
+    // ---- the two per-half teardown predicates ----
+    // A half is taken down only if it was lit, is going dark, and has something running behind it.
+    // Lighting a dark half costs nothing; blanking an idle one takes away nothing. The two are split
+    // because the bypass and the tunnel are stopped by two different managers.
+    check(MainWindow::takesBypassDown(Sel{true, true}, Sel{false, false}, /*zapretHeld=*/true),
+          "a lit, held bypass going dark is owed a stop");
+    check(!MainWindow::takesBypassDown(Sel{true, true}, Sel{false, false}, /*zapretHeld=*/false),
+          "…but not when nothing runs behind the half");
+    check(!MainWindow::takesBypassDown(Sel{true, true}, Sel{true, false}, true),
+          "a half that stays lit is never taken down");
+    check(!MainWindow::takesBypassDown(Sel{false, false}, Sel{true, false}, true),
+          "lighting a dark half stops nothing, held or not");
+    check(MainWindow::takesTunnelDown(Sel{true, true}, Sel{true, false}, /*warpHeld=*/true),
+          "a lit, held tunnel going dark is owed a stop");
+    check(!MainWindow::takesTunnelDown(Sel{true, true}, Sel{true, false}, /*warpHeld=*/false),
+          "…but not when the daemon holds nothing");
+    check(!MainWindow::takesTunnelDown(Sel{true, false}, Sel{true, true}, true),
+          "and lighting the tunnel up takes no tunnel down");
+
+    // strandsAHeldSubsystem is the union of the two — whether a change has a price at all.
+    check(MainWindow::strandsAHeldSubsystem(Sel{true, false}, Sel{false, false}, true, false),
+          "a lone held bypass coming down strands it");
+    check(MainWindow::strandsAHeldSubsystem(Sel{true, true}, Sel{true, false}, false, true),
+          "…and so does a lone held tunnel");
+    check(!MainWindow::strandsAHeldSubsystem(Sel{true, false}, Sel{true, true}, true, false),
+          "adding the tunnel half strands nothing — nothing was going dark");
+    check(!MainWindow::strandsAHeldSubsystem(Sel{true, true}, Sel{false, false}, false, false),
+          "a change over an idle host strands nothing the user can see");
+
+    // ---- resolveSelectionChange: which selection ends up lit ----
+    // One rule: a refused change that costs something keeps what it had; everything else — an idle
+    // host, an agreed change — takes what the user asked for. `somethingHeld` is strandsAHeldSubsystem's
+    // verdict, which is exactly how onSelectionChanged calls it.
+    const Sel zOnly(true, false);
+    const Sel both(true, true);
+    const Sel dark(false, false);
+    check(MainWindow::resolveSelectionChange(zOnly, both, false, false) == both,
+          "a free change on an idle host takes the pick — no question was ever asked");
+    check(MainWindow::resolveSelectionChange(both, zOnly, true, true) == zOnly,
+          "an agreed change takes the selection the user asked for");
+    check(MainWindow::resolveSelectionChange(both, zOnly, true, false) == both,
           "a refused one leaves the pill exactly where it was");
-    check(MainWindow::resolveModeSwitch(Mode::Warp, Mode::Zapret, false, true, false) == Mode::Warp,
-          "…equally when the tunnel is the thing that was held");
-    check(MainWindow::resolveModeSwitch(Mode::Warp, Mode::Zapret, true, true, true) == Mode::Zapret,
-          "and a double-held, double-agreed switch still moves");
+    check(MainWindow::resolveSelectionChange(zOnly, dark, true, false) == zOnly,
+          "…equally when the bypass is the thing that was held");
+    check(MainWindow::resolveSelectionChange(both, dark, true, true) == dark,
+          "and a both-held, agreed change clears both halves");
     // The subtle one: nothing held and nobody asked must NOT read as a refusal. If it did, every
-    // switch on an idle machine would snap the thumb back and the toggle would be useless.
-    check(MainWindow::resolveModeSwitch(Mode::Zapret, Mode::Warp, false, false, /*userAgreed=*/false)
-              == Mode::Warp,
+    // change on an idle machine would snap the halves back and the pill would be useless.
+    check(MainWindow::resolveSelectionChange(zOnly, both, /*somethingHeld=*/false, /*userAgreed=*/false)
+              == both,
           "an unasked question is not a refused one — the idle move is free");
 
-    // ---- the two helpers must agree with each other ----
-    // A switch cannot tear something down and leave the pill unmoved (that would be a stop with no
-    // visible reason), and it cannot move the pill while something was up without stopping what was
-    // up. The idle case is deliberately asymmetric: moving is the whole of what a free switch does,
-    // so it is a move with no teardown owed. Pinned as toreDown == (moved && somethingHeld).
-    for (const Row &r : rows) {
-        const Action action = MainWindow::switchAction(r.zapretHeld, r.warpHeld, r.agreed);
-        const Mode target = MainWindow::resolveModeSwitch(Mode::Zapret, Mode::Warp,
-                                                          r.zapretHeld, r.warpHeld, r.agreed);
-        const bool moved = (target != Mode::Zapret);
-        const bool toreDown = (action != Action::None);
-        const bool somethingHeld = r.zapretHeld || r.warpHeld;
-        check(toreDown == (moved && somethingHeld),
-              QStringLiteral("teardown and pill-move agree (zapret=%1, warp=%2, agreed=%3)")
-                  .arg(r.zapretHeld ? QStringLiteral("held") : QStringLiteral("idle"))
-                  .arg(r.warpHeld ? QStringLiteral("held") : QStringLiteral("idle"))
-                  .arg(r.agreed ? QStringLiteral("yes") : QStringLiteral("no")));
-        // …spelled the other way for the half that must never happen at all: no stop on a pill that
-        // stayed where it was.
-        check(!(toreDown && !moved),
-              QStringLiteral("a switch never stops something while leaving the pill unmoved (agreed=%1)")
-                  .arg(r.agreed ? QStringLiteral("yes") : QStringLiteral("no")));
+    // ---- the strands and the pill-move must agree ----
+    // stopHeldForSelectionChange issues exactly the teardowns takesBypassDown/takesTunnelDown name, and
+    // only after onSelectionChanged agreed to the price strandsAHeldSubsystem reported. So a change is
+    // owed a stop iff it strands something, and the pill moves iff that change is free or agreed.
+    struct Change
+    {
+        Sel from;
+        Sel to;
+        bool zapretHeld;
+        bool warpHeld;
+    };
+    const Change changes[] = {
+        {zOnly, both, true, false},       // lighting the tunnel over a running bypass: a free add
+        {both, zOnly, true, true},        // dropping the tunnel, keeping the bypass
+        {both, dark, true, true},         // dropping both at once
+        {zOnly, dark, true, false},       // dropping the lone bypass
+        {zOnly, dark, false, false},      // dropping a bypass with nothing running behind it
+    };
+    for (const Change &c : changes) {
+        const bool costs = MainWindow::strandsAHeldSubsystem(c.from, c.to, c.zapretHeld, c.warpHeld);
+        // The two per-half stops add up to the change's price by definition.
+        const bool bypassStopOwed = MainWindow::takesBypassDown(c.from, c.to, c.zapretHeld);
+        const bool tunnelStopOwed = MainWindow::takesTunnelDown(c.from, c.to, c.warpHeld);
+        check((bypassStopOwed || tunnelStopOwed) == costs,
+              QStringLiteral("the two per-half stops add up to the change's price"));
+        for (const bool agreed : {false, true}) {
+            const Sel target = MainWindow::resolveSelectionChange(c.from, c.to, costs, agreed);
+            const bool moved = (target != c.from);
+            // A change that strands something and is refused must leave the pill where it was; an
+            // agreed or free one moves it to the requested selection. (`to` always differs from `from`
+            // here — a no-op move is guarded out before onSelectionChanged ever decides.)
+            check(moved == (!costs || agreed),
+                  QStringLiteral("pill moves iff the change is free or agreed (costs=%1, agreed=%2)")
+                      .arg(costs ? QStringLiteral("yes") : QStringLiteral("no"))
+                      .arg(agreed ? QStringLiteral("yes") : QStringLiteral("no")));
+            // …spelled the other way for the case that must never happen: the pill moving off a held
+            // subsystem the user refused to lose.
+            check(!(costs && !agreed && moved),
+                  QStringLiteral("a refused change never strands a held subsystem by moving the pill"));
+        }
     }
 
-    // And the reverse reading of the same rule, for the direction the code travels in the other half
-    // of the pill: a refused answer never strands the user between a moved thumb and a running
-    // subsystem they did not agree to lose. With nothing up there was never a question to answer, so
-    // the pill takes the half picked even on a caller-supplied 'no' — the same asymmetry the idle
-    // rows above assert for the teardown side.
-    for (const Mode from : {Mode::Zapret, Mode::Warp}) {
-        const Mode to = (from == Mode::Zapret) ? Mode::Warp : Mode::Zapret;
-        for (const bool z : {false, true})
-            for (const bool w : {false, true}) {
-                const Mode target = MainWindow::resolveModeSwitch(from, to, z, w, /*userAgreed=*/false);
-                const bool somethingHeld = z || w;
-                const Mode owed = somethingHeld ? from : to;
-                check(target == owed,
-                      QStringLiteral("%1 -> pill ends on %2")
-                          .arg(somethingHeld
-                                   ? QStringLiteral("a 'no' answer")
-                                   : QStringLiteral("nothing was up, so no answer was owed"))
-                          .arg(owed == Mode::Zapret ? QStringLiteral("Zapret") : QStringLiteral("WARP")));
-            }
-    }
+    // And switchAction is the same price read as one decision over both managers at once: an agreed
+    // change stops whatever halves are held, and a refusal (or an idle host) stops nothing — matching
+    // what the per-half predicates would have allowed. Pinned against the held flags alone, since
+    // switchAction is consent- and state-only.
+    for (const bool z : {false, true})
+        for (const bool w : {false, true}) {
+            const Action agreed = MainWindow::switchAction(z, w, /*userAgreed=*/true);
+            check((agreed != Action::None) == (z || w),
+                  QStringLiteral("a confirmed change stops something exactly when a half is held "
+                                 "(zapretHeld=%1, warpHeld=%2)")
+                      .arg(z ? QStringLiteral("true") : QStringLiteral("false"))
+                      .arg(w ? QStringLiteral("true") : QStringLiteral("false")));
+        }
 
     // The last of these helpers' whole purpose is what it cannot say: SwitchAction has no Start
-    // member, so no switch outcome can launch anything. That is a fact about the type rather than a
-    // runtime branch — the four values named above are the entire domain, and onPowerClicked()
-    // stays the only path that brings a bypass up.
+    // member, so no selection change can launch anything. That is a fact about the type rather than a
+    // runtime branch — the four values named above are the entire domain, and onPowerClicked() stays
+    // the only path that brings a subsystem up.
     check(static_cast<int>(Action::None) == 0, "the action set begins at 'do nothing'");
+}
+
+// ------------------------------------------------------------- combined power ----
+//
+// One button drives both subsystems now, so what a press means is a lookup over the pair of live states
+// rather than a branch in a slot — and what the lookup encodes is the dependency: the tunnel rides on
+// the bypass, so it comes up after it and comes down before it. The same dependency survives the
+// deferred start, where the gap between the launch and the connect is filled by a wait the user can
+// cancel. Neither half of that is reachable from a headless runner through a real daemon, so both are
+// pinned here as pure tables, the way the single-subsystem mappings above are: which press a state pair
+// earns, and whether a connect is still owed once the wait has run its time.
+static void testCombinedPower()
+{
+    std::printf("\n[combined power]\n");
+
+    using Press = MainWindow::CombinedPress;
+    using B = IZapretBackend::State;
+    using W = WarpManager::State;
+    using Sel = ModeSelection;
+
+    const auto pressName = [](Press p) {
+        switch (p) {
+        case Press::Blocked: return "Blocked";
+        case Press::ZapretThenWarp: return "ZapretThenWarp";
+        case Press::WarpOnly: return "WarpOnly";
+        case Press::ZapretOnly: return "ZapretOnly";
+        case Press::WarpThenZapret: return "WarpThenZapret";
+        }
+        return "?";
+    };
+    const auto backendName = [](B s) {
+        switch (s) {
+        case B::Starting: return "bypass:Starting";
+        case B::Running: return "bypass:Running";
+        case B::Stopping: return "bypass:Stopping";
+        case B::Stopped: return "bypass:Stopped";
+        case B::Error: return "bypass:Error";
+        }
+        return "?";
+    };
+    const auto tunnelName = [](W s) {
+        switch (s) {
+        case W::Unavailable: return "tunnel:Unavailable";
+        case W::Disconnected: return "tunnel:Disconnected";
+        case W::Connecting: return "tunnel:Connecting";
+        case W::Connected: return "tunnel:Connected";
+        case W::Disconnecting: return "tunnel:Disconnecting";
+        case W::Error: return "tunnel:Error";
+        }
+        return "?";
+    };
+
+    // ---- the press table, pair by pair ----
+    struct Row
+    {
+        B zapret;
+        W tunnel;
+        Press expected;
+        const char *what;
+    };
+    const Row rows[] = {
+        // Nothing running on either side: the bypass goes first and the tunnel follows it once the
+        // queue rules have had their settle time. A failed last verb reads as nothing running, and an
+        // absent warp-cli does too — the press is not the place that decides whether the tunnel half
+        // was ever pressable (clampSelectionForAvailability and the dark half are).
+        {B::Stopped, W::Disconnected, Press::ZapretThenWarp,
+         "a cold host starts the bypass and defers the tunnel"},
+        {B::Error, W::Disconnected, Press::ZapretThenWarp,
+         "…and a bypass whose last run failed is still nothing up"},
+        {B::Stopped, W::Error, Press::ZapretThenWarp,
+         "…and so is a tunnel whose last verb failed"},
+        {B::Stopped, W::Unavailable, Press::ZapretThenWarp,
+         "…and an absent warp-cli is answered as the down tunnel it is"},
+        // The bypass has been up since before the press, so only the tunnel is outstanding — and its
+        // rules have already had all the settle time they need, which is why this one is not delayed.
+        {B::Running, W::Disconnected, Press::WarpOnly,
+         "a live bypass with no tunnel completes the connect, unforced"},
+        // The mirror-image half-failure: a tunnel up over a path that stopped carrying it. Only the
+        // missing floor is asked for; the connected tunnel is left alone.
+        {B::Stopped, W::Connected, Press::ZapretOnly,
+         "a tunnel over no bypass brings the missing path back under it"},
+        {B::Error, W::Connected, Press::ZapretOnly,
+         "…and a bypass that failed is just as much a missing floor"},
+        // Both up, so a press means going down — and down in the order that cannot leave the tunnel
+        // holding an interface that no longer forwards anything.
+        {B::Running, W::Connected, Press::WarpThenZapret,
+         "a full run is taken down tunnel-first, bypass under it"},
+        // Anything in flight, on either side, is not a press's problem to fix.
+        {B::Starting, W::Disconnected, Press::Blocked,
+         "a bypass launching refuses a press that would stack a second start"},
+        {B::Stopping, W::Connected, Press::Blocked,
+         "…and so does one tearing down, whichever half the user meant"},
+        {B::Running, W::Connecting, Press::Blocked,
+         "a tunnel connecting refuses a press that would race its own verb"},
+        {B::Running, W::Disconnecting, Press::Blocked,
+         "…and so does one disconnecting"},
+    };
+    for (const Row &r : rows) {
+        const Press got = MainWindow::combinedPressFor(r.zapret, r.tunnel);
+        check(got == r.expected,
+              QStringLiteral("%1 + %2 -> %3 — %4")
+                  .arg(QString::fromUtf8(backendName(r.zapret)),
+                       QString::fromUtf8(tunnelName(r.tunnel)), QString::fromUtf8(pressName(got)),
+                       QString::fromUtf8(r.what)));
+    }
+
+    // The table above is examples; these loops are the whole domain, so a state added to either enum
+    // cannot fall into a branch written for the states that came before it. Thirty pairs, and each
+    // loop says something the list of examples cannot: which pairs are refused, and what no pair is
+    // ever allowed to ask for.
+    const B backendStates[] = {B::Starting, B::Running, B::Stopping, B::Stopped, B::Error};
+    const W tunnelStates[] = {W::Unavailable, W::Disconnected, W::Connecting, W::Connected,
+                              W::Disconnecting, W::Error};
+
+    // Exactly the in-flight pairs are refused. A press that reached past a Starting bypass or a
+    // Connecting tunnel would spawn a second verb on top of one already settling — the shape of bug
+    // that shows up only on a slow machine, which is why it is pinned as an equality over the cross
+    // product rather than as the four cases above.
+    int blocked = 0;
+    for (B b : backendStates)
+        for (W w : tunnelStates) {
+            const bool inFlight = b == B::Starting || b == B::Stopping || w == W::Connecting
+                                  || w == W::Disconnecting;
+            const Press p = MainWindow::combinedPressFor(b, w);
+            check((p == Press::Blocked) == inFlight,
+                  QStringLiteral("%1 + %2 is refused only while a verb is already under way")
+                      .arg(QString::fromUtf8(backendName(b)), QString::fromUtf8(tunnelName(w))));
+            if (p == Press::Blocked)
+                ++blocked;
+        }
+    check(blocked == 18, "eighteen of the thirty state pairs have a verb in flight");
+
+    // The dependency itself, spelled as two never-minds: a press never asks a tunnel up over one
+    // already held, and never asks a bypass down without naming the tunnel that rides on it. Those are
+    // the ordering facts the folded button exists to enforce, and they hold for every pair — so no
+    // future state pair can produce the sequence that leaves a tunnel routing into a closed path.
+    for (B b : backendStates)
+        for (W w : tunnelStates) {
+            const Press p = MainWindow::combinedPressFor(b, w);
+            check((p != Press::WarpOnly && p != Press::ZapretThenWarp)
+                      || !MainWindow::isTunnelHeld(w),
+                  QStringLiteral("%1 + %2 never brings up a tunnel the daemon already holds")
+                      .arg(QString::fromUtf8(backendName(b)), QString::fromUtf8(tunnelName(w))));
+            check(p != Press::WarpThenZapret || MainWindow::isTunnelHeld(w),
+                  QStringLiteral("%1 + %2 never takes a bypass down over a tunnel left unnamed")
+                      .arg(QString::fromUtf8(backendName(b)), QString::fromUtf8(tunnelName(w))));
+        }
+
+    // ---- the guard that ends the deferred start ----
+    // Three seconds is long enough for the user to have turned the half dark, for the request to have
+    // been answered already, or for the bypass to have died. All three hold the connect back, and the
+    // conjunction is what the slot at the end of the wait is for — so it is pinned as a conjunction,
+    // each conjunct dropped once, rather than as a branch count.
+    const Sel both{true, true};
+    const Sel zOnly{true, false};
+    check(MainWindow::mayConnectWarpAfterDelay(both, true, true),
+          "a lit tunnel half, a still-pending request and a held bypass earn the connect");
+    check(!MainWindow::mayConnectWarpAfterDelay(zOnly, true, true),
+          "…but the half went dark during the wait, so nobody is asking any more");
+    check(!MainWindow::mayConnectWarpAfterDelay(both, false, true),
+          "…and a request already answered is not owed a second tunnel");
+    check(!MainWindow::mayConnectWarpAfterDelay(both, true, false),
+          "…nor is one owed a tunnel over a bypass that never came up");
+
+    // Exhaustively: the answer is the conjunction and nothing else. This matters beyond the button
+    // because the journal's "the tunnel was withheld" line is emitted from the same guard's failure
+    // branch — a connect permitted by a fourth condition would come with no line explaining it.
+    for (const bool warp : {false, true})
+        for (const bool pending : {false, true})
+            for (const bool held : {false, true}) {
+                const Sel s{true, warp};
+                const bool allowed = MainWindow::mayConnectWarpAfterDelay(s, pending, held);
+                check(allowed == (warp && pending && held),
+                      QStringLiteral("mayConnectWarpAfterDelay(warp=%1, pending=%2, bypass=%3) is "
+                                     "the conjunction alone")
+                          .arg(warp ? QStringLiteral("lit") : QStringLiteral("dark"))
+                          .arg(pending ? QStringLiteral("yes") : QStringLiteral("no"))
+                          .arg(held ? QStringLiteral("held") : QStringLiteral("down")));
+            }
+
+    // And the pill cannot light a combination the guard would then have to refuse: clamp() is what
+    // guarantees a lit tunnel half always rides with a lit bypass half, so the selection the wait is
+    // checked against is always one the press table could have ordered. Stated once here because the
+    // guard and the pill are the same dependency, written twice, in two files.
+    for (const bool warp : {false, true}) {
+        const Sel legal = ModeToggle::clamp(Sel{false, warp});
+        check(!legal.warp || legal.zapret,
+              "the pill cannot light a tunnel half the guard would connect under");
+    }
+
 }
 
 // --------------------------------------------------------------- ProfileCard ----
@@ -4146,7 +4430,8 @@ int main(int argc, char **argv)
     testPowerButton();
     testModeToggle();
     testWarpMappings();
-    testModeSwitch();
+    testSelectionSwitch();
+    testCombinedPower();
     testProfileCard();
     testTrayPolicy();
     testWindowPolicy();

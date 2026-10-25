@@ -332,6 +332,30 @@ const QVector<Row> &catalog()
             "Moduswechsel: %1 wird gestoppt", "切换模式：正在停止 %1",
             "Changement de mode : arrêt de %1", "मोड बदल रहे हैं: %1 रोकर"),
 
+        // ---- the two lines the pill writes while the tunnel comes up ----
+        // Both are journal entries about ordering, not about states: the delay between the bypass
+        // and the connect is where a WARP half can end up lit over a path that is not carrying it, and
+        // the window has to say which of the two things happened — the tunnel went up, or it was
+        // withheld. Neither is an error the user is asked to act on, so neither goes in a dialog.
+        ROW("mode.warp_after_zapret",
+            "Обход запущен — поднимаю туннель WARP",
+            "The bypass is up — bringing the WARP tunnel up",
+            "La elusión está activa: elevo el túnel WARP",
+            "Umgehung läuft — der WARP-Tunnel wird aufgebaut",
+            "绕行已就绪——正在建立 WARP 隧道",
+            "Le contournement est actif — lancement du tunnel WARP",
+            "बाईपास चल है — WARP टनल चढ़ाया जा रहा है"),
+        // The mirror case: the three seconds are up, the bypass did not come up, and the connect that
+        // was owed is not paid. Said because a dark WARP half after a lit one is otherwise unexplained.
+        ROW("mode.warp_withheld",
+            "Туннель WARP не запущен — обход не поднялся",
+            "The WARP tunnel was not started — the bypass never came up",
+            "El túnel WARP no se inició: la elusión no llegó a activarse",
+            "WARP-Tunnel nicht gestartet — die Umgehung kam nicht hoch",
+            "未启动 WARP 隧道——绕行未能建立",
+            "Tunnel WARP non lancé — le contournement ne s'est pas établi",
+            "WARP टनल शुरू नहीं किया गया — बाईपास ऊपर नहीं आया"),
+
         // ---- installing the WARP client ----
         // WARP is not this application's software: the window asks permission to put Cloudflare's
         // package on the machine, and the two lines below say what that costs. The question defaults to
@@ -413,6 +437,27 @@ const QVector<Row> &catalog()
             "Cloudflare-WARP-Fenster geschlossen: %1", "已关闭 Cloudflare WARP 窗口：%1",
             "Fenêtre Cloudflare WARP fermée : %1",
             "Cloudflare WARP विंडो बंद की गई: %1"),
+
+        // ---- enrolling the client with Cloudflare ----
+        // Distinct from installing it: the package can be on the machine and still have no
+        // registration, which is the state where `connect` is accepted and never completes. The first
+        // line is said while that is being fixed — enrolling talks to Cloudflare and takes seconds — so
+        // a lit button that has not moved yet has a reason next to it. It promises nothing beyond the
+        // attempt, because the attempt is what is running.
+        ROW("warp.enrolling", "Первичная настройка WARP…",
+            "Setting WARP up for the first time…", "Configurando WARP por primera vez…",
+            "WARP wird zum ersten Mal eingerichtet…", "正在进行 WARP 首次设置…",
+            "Première configuration de WARP…", "WARP को पहली बार सेट किया जा रहा है…"),
+        // The attempt's failure, in the window's words rather than warp-cli's, which are written into
+        // the journal right above this line. Worth saying because the cost of a failed enrolment is not
+        // an error dialog but a tunnel that is simply never brought up, and that needs naming.
+        ROW("warp.enroll_failed", "Не удалось настроить WARP — туннель не запускается",
+            "WARP could not be set up — the tunnel is not being started",
+            "No se pudo configurar WARP: el túnel no se iniciará",
+            "WARP konnte nicht eingerichtet werden — der Tunnel wird nicht gestartet",
+            "无法设置 WARP——不会启动隧道",
+            "Impossible de configurer WARP — le tunnel n'est pas lancé",
+            "WARP सेट नहीं हो सका — टनल शुरू नहीं किया जा रहा"),
 
         // ---- the history and statistics page ----
         // The page's own voice: one aggregate the reader acts on, five column names, and the three words

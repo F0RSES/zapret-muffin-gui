@@ -1,7 +1,7 @@
 #pragma once
 
 #include "IZapretBackend.h"
-#include "ModeToggle.h"    // ModeToggle::Mode is the mode the toggle can be in
+#include "ModeToggle.h"    // ModeSelection is the pair of halves the window runs
 #include "PingIndicator.h" // PingIndicator::PingStatus is stored per host for seeding new rows mid-cycle
 #include "PowerButton.h"   // PowerButton::Mode is the return type of the state -> look mapping
 #include "WarpManager.h"   // WarpManager::State is the tunnel's view of itself
@@ -105,16 +105,18 @@ public:
     // Whether the power button may act for a WARP state — the same reasoning as canStartFrom /
     // canStopFrom, applied to a tunnel that has to be brought up rather than launched.
     static bool canActFrom(WarpManager::State state);
-    // The look the toggle should wear when WARP is unavailable: the Zapret half stays lit so a
-    // missing warp-cli does not leave the whole control in a half-picked state that reads as a
-    // bug in the widget rather than a fact about the host.
-    static ModeToggle::Mode clampModeForAvailability(ModeToggle::Mode desired, bool warpAvailable);
+    // The halves the pill may be left showing on a host that has no WARP client: the tunnel's half
+    // goes dark and Zapret's stays exactly as it was. A stored pick that names a missing binary is
+    // remembered by Settings (the intent survives) and clamped here (the widget must not light a
+    // half nobody can press).
+    static ModeSelection clampSelectionForAvailability(ModeSelection desired, bool warpAvailable);
 
-    // ---- what a mode switch is allowed to do ---------------------------------------
+    // ---- what a change of selection is allowed to do --------------------------------
     //
-    // The pill picks which subsystem the power button will control. Choosing is not starting: the
-    // only press that brings a bypass UP is the button's own (see onPowerClicked), and a switch may
-    // therefore only ever take a live one DOWN — and only after the user agreed to that in words.
+    // The pill says which subsystems the power button will control. Choosing is not starting: the
+    // only press that brings a bypass UP is the button's own (see onPowerClicked), and a change of
+    // selection may therefore only ever take a live one DOWN — and only after the user agreed to
+    // that in words.
     //
     // There are two questions here, and both are pure so the whole rule is checkable without a
     // tunnel, a backend or a modal.
@@ -140,11 +142,75 @@ public:
     Q_ENUM(SwitchAction)
     static SwitchAction switchAction(bool zapretHeld, bool warpHeld, bool userAgreed);
 
-    // Which half ends up lit. A refused question leaves the pill where it was; everything else —
-    // an idle host, an agreed switch — takes the requested half. Keeping the declined case in here
-    // rather than in the slot is what lets a test pin "no means no" without a window.
-    static ModeToggle::Mode resolveModeSwitch(ModeToggle::Mode current, ModeToggle::Mode requested,
-                                              bool zapretHeld, bool warpHeld, bool userAgreed);
+    // Does moving from `from` to `to` take down something the user can see running? Only a half that
+    // was lit, is going dark, and is actually held: lighting a dark half costs nothing, and turning
+    // off a half with nothing behind it takes away nothing.
+    static bool strandsAHeldSubsystem(ModeSelection from, ModeSelection to,
+                                      bool zapretHeld, bool warpHeld);
+    // …split by half, because the two teardowns a change can owe are issued by two different
+    // managers and only this says which ones are owed at all.
+    static bool takesBypassDown(ModeSelection from, ModeSelection to, bool zapretHeld);
+    static bool takesTunnelDown(ModeSelection from, ModeSelection to, bool warpHeld);
+
+    // Which halves end up lit. A refused question leaves the pill exactly where it was; everything
+    // else — an idle host, an agreed change — takes the selection the user asked for. Keeping the
+    // declined case in here rather than in the slot is what lets a test pin "no means no" without a
+    // window.
+    static ModeSelection resolveSelectionChange(ModeSelection current, ModeSelection requested,
+                                                bool somethingHeld, bool userAgreed);
+
+    // ---- the one button with two subsystems under it --------------------------------
+    //
+    // With both halves lit a press means one operation over two steps, and the two directions are
+    // not mirror images. Coming up: zapret first, because the tunnel's packets only reach Cloudflare
+    // through the queue rules the bypass installs — and then the tunnel, after those rules have had
+    // time to settle. Going down: the tunnel first, because taking the floor out from under a live
+    // tunnel leaves it holding an interface that no longer forwards anything.
+    //
+    // Which of those a press is, is a pure function of the two states, named so a test can pin the
+    // whole table without a process, a daemon, or a wait.
+    enum class CombinedPress
+    {
+        Blocked,        // a transition is in flight somewhere; a second press cannot help it
+        ZapretThenWarp, // nothing is up: the bypass, then the tunnel kWarpStartDelayMs later
+        WarpOnly,       // the bypass is up and the tunnel is not: finish what the pick asked for
+        ZapretOnly,     // the tunnel is up and the bypass is not: bring the missing floor back
+        WarpThenZapret  // both are up: the tunnel down first, then the bypass under it
+    };
+    Q_ENUM(CombinedPress)
+    static CombinedPress combinedPressFor(IZapretBackend::State zapret, WarpManager::State tunnel);
+
+    // How long the rules get to settle before the tunnel is asked to connect. Issued the instant a
+    // start is accepted, warp-cli's connect can race the iptables commands that create the queue it
+    // hands packets to; the symptom is a tunnel reporting Connected while nothing passes. One
+    // number, spelled once, and read through warpStartDelayMs() so a test can shorten the wait
+    // without shortening the reasoning.
+    static constexpr int kWarpStartDelayMs = 3000;
+
+    // Whether the delay may fire. The tunnel is only ever asked to connect while the half that
+    // asked for it is still lit and the bypass it rides on is still holding the path — a run that
+    // died in the meantime, a half the user turned back off, or a teardown that got there first all
+    // mean the connect must not be issued. Pure, so the guard is checkable without a timer.
+    static bool mayConnectWarpAfterDelay(ModeSelection selection, bool startStillPending,
+                                         bool bypassHeld);
+
+    // The look the chip and the ring wear while both halves are lit. Grouped in one struct because
+    // the five things a state decides — the button's mode, its palette, the chip's word, the chip's
+    // QSS token, and whether a press would be honoured — must come from one table: two renderers
+    // that disagree about one state is how a header starts lying about a run.
+    struct CombinedLook
+    {
+        PowerButton::Mode mode = PowerButton::Mode::Idle;
+        PowerButton::Palette palette = PowerButton::Palette::Zapret;
+        QString chipText;
+        QString chipKind;
+        bool pulsing = false;
+        bool enabled = false;
+    };
+    // Which layer is live decides the ring's colour: the tunnel's blue while the tunnel is up or on
+    // its way up, zapret's purple otherwise — so the ring says which of the two halves is actually
+    // doing something, rather than claiming both are because both were picked.
+    static CombinedLook combinedLook(IZapretBackend::State zapret, WarpManager::State tunnel);
 
     // ---- action gating: pure predicates again, so the whole matrix is checkable without a process ----
     //
@@ -261,8 +327,19 @@ public:
     // a backend state, and a suite cannot check a claim it has no way to look at.
     PowerButton *powerButton() const { return m_power; }
     // The dashboard's Zapret/WARP pill. Same reasoning as powerButton(): a suite cannot assert
-    // which subsystem the window is pointed at unless the widget that decides it is reachable.
+    // which subsystems the window is pointed at unless the widget that decides it is reachable.
     ModeToggle *modeToggle() const { return m_modeToggle; }
+    // Which halves the window is honouring — its own copy, not a read-through to the pill, which can
+    // be mid-fade or mid-snap-back. The value the power button's meaning is decided from.
+    ModeSelection selection() const { return m_selection; }
+    // How long a combined press lets the bypass's rules settle before it asks the tunnel to connect,
+    // and whether such a wait is running. Hooks for the same reason the power button is exposed: a
+    // timer the suite cannot look at is a timer it cannot prove fired in the right order, and a
+    // three-second wait is a long time for a headless test to spend proving one line of ordering.
+    int warpStartDelayMs() const { return m_warpStartDelayMs; }
+    void setWarpStartDelayMs(int ms);
+    bool warpStartPending() const { return m_warpStartPending; }
+
     // The WARP manager. Exposed for the same reason the power button is: its state — available,
     // disconnected, connected — is a claim the window makes on screen, and reading it off the
     // widget alone would leave a test unable to say whether the toggle's colour matches the
@@ -454,46 +531,93 @@ protected:
     // rotation that left the user with nothing running.
     virtual void performWatchdogRotation(const QString &fromId, const QString &nextId);
 
-    // ---- the mode switch's two seams -------------------------------------------
+    // ---- the selection change's seams -------------------------------------------
     //
-    // Flipping the pill is a decision with one possible cost: a live bypass has to come down first.
-    // Split the same way the watchdog's rotation is — the question here, the act in the slot — so a
-    // suite can answer it by hand instead of blocking on a modal nobody out there can click.
+    // Moving the pill has one possible cost: a live subsystem has to come down first. Split the same
+    // way the watchdog's rotation is — the question here, the acts in the slots — so a suite can
+    // answer it by hand instead of blocking on a modal nobody out there can click.
     //
-    // `from` and `to` name the halves, in the words the pill itself uses; the box shows them as its
-    // informative line so the seven translations of the question never carry a mode name.
-    virtual bool confirmStopAndSwitch(ModeToggle::Mode from, ModeToggle::Mode to);
+    // `from` and `to` are whole selections. The box shows what each of them adds up to
+    // (ModeToggle::describe) in its informative line, so the seven translations of the question never
+    // carry the name of a half.
+    virtual bool confirmStopAndSwitch(ModeSelection from, ModeSelection to);
+
+    // ---- the acts the one button performs ----------------------------------------
+    //
+    // A combined press is an ordering, and an ordering is only checkable if the things it orders can
+    // be watched rather than run. Each seam below is the whole of one step: the base drives the real
+    // subsystem, an override records that it was asked to. Split for the same reason the watchdog's
+    // three seams are — proving which comes first must not require a payload, a daemon, or a root
+    // prompt, none of which a headless suite has.
+    virtual bool startBypass();       // the power button's own start path for the selected profile
+    // Bring the tunnel up. Split into two because the half that makes it work is asynchronous: an
+    // unenrolled client accepts `connect` and then never comes up, so this asks WarpManager to check
+    // the enrolment first, and the tunnel is issued from the answer. Named as the request it is — a
+    // true here means the check started, not that WARP is connecting.
+    virtual void connectWarp();
+    virtual void disconnectWarp();    // warp-cli disconnect, plus the disconnecting look
+    // The connect half of connectWarp(), split out so the enrolment answer can issue it without every
+    // caller having to know the two are separate round trips. This is the seam that actually reaches
+    // warp-cli, so a suite that wants to prove the ordering can record this instead of running it.
+    virtual void startWarpTunnel();
+    // Whether the bypass is up, or on its way up and not being taken down. The wait's guard reads this
+    // rather than the manager directly, so the delay can be proved to withhold a connect over a run
+    // that never came up — the one failure the three seconds exist for.
+    virtual bool bypassIsUpOrRising() const;
+
 
 private slots:
     void onStopRequested();
+    // The tray's "Stop" and Ctrl+Shift+X: everything the selection is holding, the tunnel first and
+    // the bypass under it. Split from onStopRequested() because the two mean different things to
+    // different callers — a watchdog rotation switching profiles has no business touching a tunnel
+    // that is passing traffic happily — and one slot serving both is how a rotation quietly drops a
+    // user's VPN.
+    void onStopAllRequested();
+
     // The badge was pressed. Asks the one question and, on yes, hands the release page to the desktop's
     // browser — the extent of what this feature does without root, and the reason the answer is a
     // question rather than an action.
     void onUpdateBadgeClicked();
-    // The power button: stop what is running, otherwise start what the route pill names. One slot for
-    // both because the button is one control whose meaning the state decides.
+    // The power button: stop what the selection is running, otherwise start what it asks for. One
+    // slot for both because the button is one control whose meaning the state decides — and, with
+    // both halves lit, whose meaning is an order of operations rather than one operation.
     void onPowerClicked();
     void onStateChanged(IZapretBackend::State state);
-    // The WARP half of the button's meaning — reached from onPowerClicked when the toggle is on
-    // Warp. Split out rather than inlined because the two branches share no state at all:
-    // one reads ZapretManager, the other reads WarpManager, and folding them into a single
-    // function is how a mode-check ends up on every line of both.
-    void onWarpPowerClicked();
-    // The user picked a half of the Zapret/WARP pill. Persist the choice, retint the button, and
-    // redraw the chip so the header describes whatever the button is about to control, not what
-    // it used to.
-    void onModeChanged(ModeToggle::Mode mode);
+    // The press when the tunnel is part of the selection. Reached from onPowerClicked; split out
+    // because the combined path reads two managers and the zapret-only path reads one, and folding
+    // them together is how a state check ends up on every line of both.
+    void onCombinedPowerClicked();
+    // The three seconds the bypass's rules were given are up. Guarded, so a run that never came up
+    // or a half the user turned back off in the meantime does not get a connect issued for it.
+    void onWarpStartDelayElapsed();
+    // The user clicked one half of the Zapret/WARP pill. Persist the pair, retint the button, and
+    // redraw the chip so the header describes what the button is about to control, not what it used
+    // to control.
+    void onSelectionChanged(bool zapretOn, bool warpOn);
     // The tunnel moved. Same redraw path as a backend state change, driven from the WARP side.
     void onWarpStateChanged(WarpManager::State state);
-    // warp-cli appeared or disappeared while the window was open. Re-clamp the toggle so a
+    // warp-cli appeared or disappeared while the window was open. Re-clamp the pill so a
     // mid-session uninstall does not leave the button pointed at a subsystem with no binary.
     void onWarpAvailabilityChanged(bool available);
     // The host has no WARP client and the user just asked for the tunnel. Offer to put one there:
     // install is the only way the WARP half of the pill can be honoured on this machine, and this is
-    // the moment the absence is felt rather than a state the window sits in silently.
-    void offerWarpInstall();
+    // the moment the absence is felt rather than a state the window sits in silently. Virtual for the
+    // same reason the acts the button performs are: the question it asks is a modal, and a suite has
+    // nobody to click it.
+    virtual void offerWarpInstall();
+
     void onWarpInstallationProgress(const QString &status);
     void onWarpInstallationFinished(bool success, const QString &error);
+    // The device's enrolment was read. Said while the check is still running, and used for exactly one
+    // thing: putting a line in the journal at the moment WARP is about to be set up for the first time,
+    // because the enrolment round trip takes seconds and a button that appears to do nothing for that
+    // long reads as a button that is stuck. Not a reading the window stores or redraws from — the
+    // tunnel's look comes from stateChanged, and an enrolment has no colour of its own.
+    void onWarpRegistrationChanged(WarpManager::Registration registration);
+    // The enrolment check answered. True means the device is enrolled and the tunnel can be asked for;
+    // false means it is not and no connect is issued behind it — see WarpManager::ensureRegistered().
+    void onWarpRegistrationFinished(bool ok);
     void onStrategyStarted(const QString &id, const QString &name);
     void onStrategyStopped();
     void onLogMessage(const QString &line, int level);
@@ -555,11 +679,16 @@ private:
     void tintUpdateBadge();
     // The one line the header's chip is allowed to be built from: text plus colour from the state.
     void setConnectionChip(const QString &text, const QString &statusKind);
-    // Draw the chip and the power button for one WARP state, in exactly the same way
-    // renderStatus() does for a backend state. Kept apart rather than overloaded because the
-    // two enums do not overlap: an IZapretBackend::State does not know Unavailable is a thing,
-    // and folding both into one switch is how a case ends up falling through on the wrong one.
-    void renderWarpStatus(WarpManager::State state);
+    // Draw the chip and the power button while both halves are lit, from the two states the
+    // selection is about. Kept apart from renderStatus() rather than overloaded because the two
+    // enums do not overlap: an IZapretBackend::State does not know Unavailable is a thing, and
+    // folding both into one switch is how a case ends up falling through on the wrong one.
+    void renderCombinedStatus();
+    // …the same drawing with the states handed in, which is what lets a teardown be painted before
+    // either manager has reported it (see showStoppingFeedback) and what keeps the two renderers
+    // reading one table.
+    void renderCombinedLook(IZapretBackend::State zapret, WarpManager::State tunnel);
+
     // Create the tray icon if the platform has a tray host. Idempotent; returns whether one exists.
     bool ensureTray();
     void startTrayRetry();
@@ -606,17 +735,21 @@ private:
     // does nothing while no rotation is waiting, and the id it consumes it consumes once.
     void continueWatchdogRotation();
     void updateStatusUi();
-    // Record a mode as the current one: the window's own variable, the pill, Settings, the tunnel's
-    // polling and one repaint. This is the only writer of m_mode, and it never starts or stops
-    // anything — a programmatic move (the startup seed, an availability clamp, snapping the thumb back
-    // after a refused question) must not be able to reach the path, and must not re-enter the slot
+    // Record a selection as the current one: the window's own pair, the pill, both Settings keys, the
+    // tunnel's polling and one repaint. This is the only writer of m_selection, and it never starts or
+    // stops anything — a programmatic move (the startup seed, an availability clamp, snapping the halves
+    // back after a refused question) must not be able to reach the path, and must not re-enter the slot
     // that asks. m_settingMode is what makes the pill's own signal ignorable while this runs.
-    void setCurrentMode(ModeToggle::Mode mode);
-    // Take down whatever is holding the path — the bypass, the tunnel, or both — because the user
-    // agreed to a switch that costs it. Named for the reason rather than reusing the power button's
-    // slots: onPowerClicked() and onWarpPowerClicked() are the only places anything is ever brought
-    // UP, and this file has to keep those two facts visibly apart.
-    void stopHeldForModeSwitch();
+    void setCurrentSelection(ModeSelection selection);
+    // Take down whatever the change is leaving behind — the bypass, the tunnel, or both — because the
+    // user agreed to a selection that costs it. Named for the reason rather than reusing the power
+    // button's slots: onPowerClicked() is the only place anything is ever brought UP, and this file has
+    // to keep that fact visibly apart from every place something is put down.
+    void stopHeldForSelectionChange(ModeSelection from, ModeSelection to);
+    // Arm the wait that precedes a tunnel connect, and whether one is running. Only the press paths
+    // call the first; the guard in the slot the timer fires is mayConnectWarpAfterDelay().
+    void scheduleWarpStartAfterBypass();
+
     // Draw the chip and the power button for one state, with no reference to what the manager says it
     // is in. updateStatusUi() calls it with the real state; the Stop press calls the feedback below,
     // which uses the state the teardown is about to enter. Kept apart from the tray so a look can be
@@ -693,15 +826,28 @@ private:
     QToolButton *m_langButton = nullptr;   // the current language's flag, opening the language menu
     PowerButton *m_power = nullptr;        // the dashboard's one control
     ModeToggle *m_modeToggle = nullptr;    // the Zapret/WARP pill under the button
-    // Which subsystem the power button controls. The window's own copy, not a read-through to the
-    // pill: the pill can be mid-animation, mid-clamp or mid-snap-back, and what the button means has
-    // to be one value the switch path writes and nothing else touches. Seeded from Settings and kept
-    // in step by setCurrentMode().
-    ModeToggle::Mode m_mode = ModeToggle::Mode::Zapret;
-    // True while setCurrentMode() is moving the pill, so the modeChanged the widget emits on the way
-    // back is recognised as a programmatic echo and not as a second request from the user.
+    // Which subsystems the power button controls. The window's own copy, not a read-through to the
+    // pill: the pill can be mid-fade, mid-clamp or mid-snap-back, and what the button means has to be
+    // one pair the selection path writes and nothing else touches. Seeded from Settings and kept in
+    // step by setCurrentSelection().
+    ModeSelection m_selection{true, false};
+    // True while setCurrentSelection() is moving the pill, so the selectionChanged the widget emits on
+    // the way back is recognised as a programmatic echo and not as a second request from the user.
     bool m_settingMode = false;
     WarpManager *m_warp = nullptr;         // the tunnel control (a child of the window)
+    // The second half of a combined start: the wait between the bypass coming up and the tunnel being
+    // asked to connect, and whether that wait is owed. Pending is set by the press that asked for both
+    // and cleared by the timer, by a teardown, or by a run that never arrived — the three ways a
+    // connect can be correctly withheld.
+    QTimer *m_warpStartTimer = nullptr;
+    bool m_warpStartPending = false;
+    // Set between asking WarpManager for the enrolment check and that check answering — the window is
+    // lit for WARP, but no tunnel has been issued yet. Two things depend on it: an answer must not be
+    // honoured twice if the user pressed again while the check ran, and a half the user turned back off
+    // during it is a connect owed to nobody.
+    bool m_warpEnrollPending = false;
+    int m_warpStartDelayMs = kWarpStartDelayMs;
+
     // Puts the Cloudflare WARP client on a host that has none, when the user picks the WARP half of the
     // pill and there is nothing behind it. Owns one operation at a time and never offers a cancel — a
     // package manager interrupted halfway leaves a database to repair, so the progress window it opens

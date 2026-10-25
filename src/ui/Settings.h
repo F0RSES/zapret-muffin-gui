@@ -66,13 +66,21 @@ public:
     bool minimizeToTray() const;         // hide to tray instead of quitting on close
     void setMinimizeToTray(bool on);
 
-    // ---- mode toggle --------------------------------------------------------
-    // Whether the dashboard is currently pointed at WARP rather than Zapret. The power button
-    // and the header chip read this to decide which subsystem they control; every other widget
-    // stays out of the decision so a mode flip cannot leave half the screen talking to a
-    // subsystem the other half has stopped watching.
-    bool warpMode() const;
-    void setWarpMode(bool on);
+    // ---- the mode toggle -------------------------------------------------------
+    // Which halves of the dashboard's pill are lit, stored as the two independent switches the pill
+    // now is. Zapret's half is on by default because it is the mode the app was designed around;
+    // WARP's is off because picking the tunnel is an explicit decision about somebody's traffic, and
+    // a first run that lit it unasked would be the interface changing the shape of the network on
+    // its own.
+    //
+    // The pair is read together: the pill's own rule (WARP cannot be lit without Zapret) is applied
+    // by MainWindow when it restores them, so a hand-edited store holding the impossible combination
+    // comes up as the combination it means rather than as a half that cannot be pressed.
+    bool useZapret() const;
+    void setUseZapret(bool on);
+
+    bool useWarp() const;
+    void setUseWarp(bool on);
 
     // ---- the WARP window ----
     // Whether the WARP tray application may sit on screen beside this one. On by default, because the
