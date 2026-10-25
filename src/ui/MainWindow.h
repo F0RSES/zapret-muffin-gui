@@ -24,6 +24,7 @@ class QLabel;
 class QMenu;
 class QMouseEvent;
 class QProgressBar;
+class QProgressDialog;
 class QPushButton;
 class QScrollArea;
 class QStackedWidget;
@@ -46,6 +47,7 @@ class ProfileCard;
 class Settings;
 class SettingsPage;
 class UpdateChecker;
+class WarpInstaller;
 class WarpManager;
 class ZapretManager;
 
@@ -486,6 +488,12 @@ private slots:
     // warp-cli appeared or disappeared while the window was open. Re-clamp the toggle so a
     // mid-session uninstall does not leave the button pointed at a subsystem with no binary.
     void onWarpAvailabilityChanged(bool available);
+    // The host has no WARP client and the user just asked for the tunnel. Offer to put one there:
+    // install is the only way the WARP half of the pill can be honoured on this machine, and this is
+    // the moment the absence is felt rather than a state the window sits in silently.
+    void offerWarpInstall();
+    void onWarpInstallationProgress(const QString &status);
+    void onWarpInstallationFinished(bool success, const QString &error);
     void onStrategyStarted(const QString &id, const QString &name);
     void onStrategyStopped();
     void onLogMessage(const QString &line, int level);
@@ -694,6 +702,12 @@ private:
     // back is recognised as a programmatic echo and not as a second request from the user.
     bool m_settingMode = false;
     WarpManager *m_warp = nullptr;         // the tunnel control (a child of the window)
+    // Puts the Cloudflare WARP client on a host that has none, when the user picks the WARP half of the
+    // pill and there is nothing behind it. Owns one operation at a time and never offers a cancel — a
+    // package manager interrupted halfway leaves a database to repair, so the progress window it opens
+    // has a busy bar and no button (see the class comment in WarpInstaller.h).
+    WarpInstaller *m_warpInstaller = nullptr;
+    QProgressDialog *m_warpProgress = nullptr;   // that window, non-null only while an install runs
     QWidget *m_statusDot = nullptr;        // the 6 px chip beside the connection text
     QLabel *m_statusLabel = nullptr;       // "CONNECTED" and friends
     QLabel *m_footerLabel = nullptr;       // the ping cadence, or a transient message

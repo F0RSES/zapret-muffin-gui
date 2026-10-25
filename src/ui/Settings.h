@@ -74,6 +74,14 @@ public:
     bool warpMode() const;
     void setWarpMode(bool on);
 
+    // ---- the WARP window ----
+    // Whether the WARP tray application may sit on screen beside this one. On by default, because the
+    // tunnel is driven from here and a second control over the same daemon invites the two to disagree;
+    // the switch only means something on the platform whose package ships a window, so the settings page
+    // shows it where WarpInstaller::platformHasWarpGui() says there is one to close.
+    bool hideWarpGui() const;
+    void setHideWarpGui(bool on);
+
     // ---- motion ----
     // Whether the interface may move at all: page fades, card entrances, the power button's breath. On
     // by default, because the design was drawn moving; the switch exists for the machines the movement

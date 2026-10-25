@@ -16,6 +16,7 @@
 #include "SettingsPage.h"
 #include "Theme.h"
 #include "UpdateChecker.h"
+#include "WarpInstaller.h"
 #include "WarpManager.h"
 #include "ZapretManager.h"
 #include "ZapretPaths.h"
@@ -41,6 +42,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QProgressBar>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShortcut>
@@ -172,6 +174,16 @@ MainWindow::MainWindow(QWidget *parent)
     // and probing PATH once on the GUI thread is well under the budget the constructor's own
     // history load already spends.
     m_warp = new WarpManager(this);
+
+    // The installer lives beside the tunnel control rather than inside it, for the same reason the
+    // tunnel control lives beside ZapretManager: putting software on a machine and driving a daemon
+    // are two jobs with two different failure modes, and one object doing both would have to explain
+    // which of them a given error came from. Constructed eagerly because the window asks it for a
+    // platform answer (does this host have a WARP window to close?) while building the settings page,
+    // and because a second operation cannot be started while one runs — an object built lazily inside
+    // the offer would let the pill's second press start a second install.
+    m_warpInstaller = new WarpInstaller(this);
+    m_warpInstaller->setHideWarpGui(m_settings->hideWarpGui());
 
     // The record of every check this window measures, kept in the per-user data directory next to — and
     // deliberately not inside — the payload tree a re-download replaces. load() is the one synchronous
@@ -1401,6 +1413,16 @@ void MainWindow::wire()
     connect(m_warp, &WarpManager::logMessage, this, &MainWindow::onLogMessage);
     connect(m_warp, &WarpManager::errorOccurred, this, &MainWindow::onErrorOccurred);
 
+    // The installer's two channels. Both connections are made here rather than inside offerWarpInstall()
+    // because a lambda connected per press would stack up — one per offer — and the finished() slot closes
+    // a window and rescans availability whether or not this press happened to reach start(). Wiring them
+    // once, beside the object's construction, is the same reason WarpManager's channels live here: the
+    // handler outlives any single operation, so the connect belongs to the object, not the request.
+    connect(m_warpInstaller, &WarpInstaller::installationProgress, this,
+            &MainWindow::onWarpInstallationProgress);
+    connect(m_warpInstaller, &WarpInstaller::installationFinished, this,
+            &MainWindow::onWarpInstallationFinished);
+
     connect(m_settings, &Settings::changed, this, &MainWindow::onSettingsChanged);
     connect(m_ping, &PingService::pingUpdated, this, &MainWindow::onPingUpdated);
 
@@ -2185,6 +2207,14 @@ void MainWindow::onModeChanged(ModeToggle::Mode mode)
     // because "no" should read as the user's own decision rather than as a swallowed click.
     if (somethingHeld && target == from)
         showTransientMessage(LanguageManager::tr(QStringLiteral("mode.switch_declined")), 5000);
+
+    // The pill is on WARP, and the client is not here to serve it. The install is the only way that
+    // half of the interface can be honoured on this machine, and this is the moment the absence is
+    // felt rather than a state the window sits in silently. offerWarpInstall() itself declines silently
+    // when the client exists or an install is already running, so this call is safe from every mode
+    // change — including a programmatic one, which the m_settingMode guard above already ignored.
+    if (target == ModeToggle::Mode::Warp && m_warp && !m_warp->isInstalled())
+        offerWarpInstall();
 }
 
 void MainWindow::onWarpStateChanged(WarpManager::State state)
@@ -2208,6 +2238,121 @@ void MainWindow::onWarpAvailabilityChanged(bool available)
         m_modeToggle->setMode(clamped);
     // A fresh availability answer also means the state is stale — go ask warp-cli what it says.
     updateStatusUi();
+}
+
+// The host has no WARP client and the user just asked for the tunnel. One question, then one
+// un-interruptable operation, then one answer in the journal.
+//
+// The offer lives here rather than in WarpInstaller because it is a decision about the machine, not a
+// step of the install: the core class refuses to start without a yes and has no idea whether anybody
+// gave one. The refusals that need no password (an unknown platform, a host that names no apt suite, a
+// session with nobody to ask for root) come back synchronously from start() and are reported as what
+// they are — a thing that did not even begin — rather than as a failed install.
+void MainWindow::offerWarpInstall()
+{
+    if (!m_warpInstaller || m_warpInstaller->isBusy())
+        return;                 // one install at a time, and its window is already on screen
+    if (m_warp && m_warp->isInstalled())
+        return;                 // nothing to offer a machine that already has the client
+
+    // Asked before the password, because the answer is a system change that outlives this application:
+    // a package the user's own tooling now has to know about, and a network interface it owns. Default
+    // No — the same rule confirmStopAndSwitch() applies to a teardown, for the same reason: a box
+    // closed on the keyboard must not be read as consent to install software.
+    QMessageBox box(QMessageBox::Question,
+                    LanguageManager::tr(QStringLiteral("warp.install_title")),
+                    LanguageManager::tr(QStringLiteral("warp.install_question")),
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setDefaultButton(QMessageBox::No);
+    if (box.exec() != QMessageBox::Yes) {
+        // "No" is the user's own decision and the pill has to agree with it: a half that lights a
+        // subsystem with nothing behind it is the state clampModeForAvailability() exists to avoid.
+        setCurrentMode(ModeToggle::Mode::Zapret);
+        showTransientMessage(LanguageManager::tr(QStringLiteral("warp.install_declined")), 6000);
+        return;
+    }
+
+    // Refresh the single-window policy at the moment of the offer. It was set at construction from the
+    // settings page's default, and the user may have flipped it between then and picking WARP on the
+    // pill — the installer's closeGuiAndVerify() reads m_hideWarpGui when the msiexec has finished, and
+    // the answer it acts on has to be the answer the setting has right now, not at startup.
+    m_warpInstaller->setHideWarpGui(m_settings->hideWarpGui());
+
+    QString error;
+    if (!m_warpInstaller->start(&error)) {
+        // Nothing began, so nothing failed: the line says which precondition was missing, and the
+        // journal keeps it as an error because it is the answer to a request the user made.
+        if (m_log)
+            m_log->appendLine(error, LogPanel::Error);
+        setCurrentMode(ModeToggle::Mode::Zapret);
+        showTransientMessage(error, 8000);
+        return;
+    }
+
+    // The reporter. start() deferred its own first step by a loop turn precisely so this window exists
+    // before anything inside the install can go wrong, and every installationProgress() from here on
+    // has a label to land on.
+    //
+    // A busy bar and no button, shown rather than exec()'d: the operation is asynchronous (a root
+    // process and, on Windows, a download first), so nesting an event loop here would only add a second
+    // one for the exit to unwind. Application modality is enough to keep a press from wandering to the
+    // power button while apt owns the network stack.
+    m_warpProgress = new QProgressDialog(
+        LanguageManager::tr(QStringLiteral("warp.install_progress")), QString(), 0, 0, this);
+    m_warpProgress->setWindowTitle(LanguageManager::tr(QStringLiteral("warp.install_title")));
+    m_warpProgress->setWindowModality(Qt::ApplicationModal);
+    m_warpProgress->setMinimumDuration(0);                    // do not hide a prompt behind a delay
+    m_warpProgress->setCancelButtonText(QString());           // and offer no way to interrupt apt
+    m_warpProgress->show();
+
+    // Dismissing this window is not a way to stop the install — there is no such way, which is why the
+    // window has no button — so a dismissal is undone instead. Without this, Escape or a window manager
+    // close leaves a root package manager running with nothing on screen saying so.
+    connect(m_warpProgress, &QDialog::finished, this, [this](int) {
+        if (m_warpInstaller && m_warpInstaller->isBusy() && m_warpProgress)
+            m_warpProgress->show();
+    });
+}
+
+void MainWindow::onWarpInstallationProgress(const QString &status)
+{
+    // The newest line the tool said, on the window and nowhere else. apt prints hundreds of them, and a
+    // journal holding all of them is a journal nobody reads afterwards; what a failure needs — the
+    // tail of the tool's own output — arrives inside installationFinished()'s error instead, and is
+    // written once there.
+    if (m_warpProgress)
+        m_warpProgress->setLabelText(status);
+}
+
+void MainWindow::onWarpInstallationFinished(bool success, const QString &error)
+{
+    if (m_warpProgress) {
+        m_warpProgress->close();
+        m_warpProgress->deleteLater();
+        m_warpProgress = nullptr;
+    }
+
+    if (success) {
+        if (m_log)
+            m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.installed")), LogPanel::Info);
+        // This process cached the client's absence at startup, and that cache is now stale in the one
+        // direction that matters. rescanAvailability() emits availabilityChanged(true), which
+        // re-clamps the pill, repaints, and starts the poll — the pill is already on WARP from the pick
+        // that asked for this install, so nothing here has to move the mode to honour it.
+        if (m_warp)
+            m_warp->rescanAvailability();
+        return;
+    }
+
+    // The install ran and did not produce a drivable tunnel, or a tool refused it. Either way the pill
+    // goes back: what the user asked for is not there, and the difference between "not installed" and
+    // "installed but useless" belongs in the line, not in a lit half that cannot be pressed.
+    setCurrentMode(ModeToggle::Mode::Zapret);
+    if (m_log) {
+        m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.install_failed")).arg(error),
+                          LogPanel::Error);
+    }
+    notifyError(error, true);
 }
 
 // Answer a Stop press on screen before the teardown it asked for has begun.

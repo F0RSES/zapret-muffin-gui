@@ -5,8 +5,10 @@
 #include "Settings.h"
 #include "StrategyParser.h"
 #include "Theme.h"
+#include "WarpInstaller.h"
 #include "ZapretLocator.h"
 #include "ZapretPaths.h"
+#include "ZapretSource.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -91,6 +93,15 @@ void SettingsPage::build()
     i18nText(m_animationsCheck = new QCheckBox(this), QStringLiteral("settings.animations"));
     i18nTip(m_animationsCheck, QStringLiteral("settings.animations_tip"));
 
+    // The WARP window switch, built like the two above and hidden on a host with nothing to hide. The
+    // Linux package installs a daemon and a CLI and no window at all, and a settings row promising to
+    // close a window that cannot exist is a lie the page would tell on every machine that is not
+    // Windows — hence platformHasWarpGui(), which is the same function the install path asks.
+    i18nText(m_hideWarpCheck = new QCheckBox(this), QStringLiteral("settings.hide_warp"));
+    i18nTip(m_hideWarpCheck, QStringLiteral("settings.hide_warp_tip"));
+    m_hideWarpCheck->setVisible(
+        WarpInstaller::platformHasWarpGui(ZapretSource::hostPlatform()));
+
     // A ticked box that cannot be honoured is worse than an explanation. Sessions without a StatusNotifier
     // host (bare GNOME, a plain Wayland compositor) report no tray at all, so spell out what closing the
     // window will actually do — MainWindow still retries, so the tray may appear later by itself.
@@ -166,6 +177,7 @@ void SettingsPage::build()
     form->addRow(QString(), m_trayCheck);
     form->addRow(QString(), m_trayNote);
     form->addRow(QString(), m_animationsCheck);
+    form->addRow(QString(), m_hideWarpCheck);
     form->addRow(themeRowLabel, themeField);
     form->addRow(pingRowLabel, pingField);
     // Right under the ping interval, because that is what it is: a second cadence, measured in minutes
@@ -218,6 +230,7 @@ void SettingsPage::loadFromSettings()
     m_startLastCheck->setChecked(m_settings.startLastOnLaunch());
     m_trayCheck->setChecked(m_settings.minimizeToTray());
     m_animationsCheck->setChecked(m_settings.animationsEnabled());
+    m_hideWarpCheck->setChecked(m_settings.hideWarpGui());
     m_pingSpin->setValue(m_settings.pingIntervalSec());
     m_watchdogSpin->setValue(m_settings.watchdogIntervalMin());
     m_trayNote->setVisible(!QSystemTrayIcon::isSystemTrayAvailable());
@@ -241,6 +254,10 @@ void SettingsPage::apply()
     // One write, and Motion reads it in answer to Settings::changed() — the page does not touch the
     // policy itself, so a Save from anywhere (the tray, a script editing the store) moves it the same way.
     m_settings.setAnimationsEnabled(m_animationsCheck->isChecked());
+    // Written whether or not the row was shown: the value means nothing on a host with no WARP GUI, and
+    // a hidden box that stopped writing would turn a Windows setting into a Linux one by way of a
+    // shared store. The default is the model's, not the widget's.
+    m_settings.setHideWarpGui(m_hideWarpCheck->isChecked());
     m_settings.setPingIntervalSec(m_pingSpin->value());
     m_settings.setWatchdogIntervalMin(m_watchdogSpin->value());
     m_settings.setTheme(m_themeBox->currentData().toString());

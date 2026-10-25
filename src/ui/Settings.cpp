@@ -22,6 +22,7 @@ const QString kWatchdogInterval  = QStringLiteral("watchdog/intervalMin");
 const QString kTheme             = QStringLiteral("ui/theme");
 const QString kLanguage          = QStringLiteral("ui/language");
 const QString kWarpMode          = QStringLiteral("ui/warpMode");
+const QString kHideWarpGui       = QStringLiteral("ui/hideWarpGui");
 
 constexpr int kPingIntervalDefault = 5;
 constexpr int kPingIntervalMin     = 3;
@@ -159,6 +160,12 @@ void Settings::setStartLastOnLaunch(bool on) { write(kStartLastOnLaunch, on); }
 // the interface changing the shape of their traffic on its own.
 bool Settings::warpMode() const { return read<bool>(kWarpMode, false); }
 void Settings::setWarpMode(bool on) { write(kWarpMode, on); }
+
+// Default on: the tray application opens itself after an install and after every sign-in, and two
+// controls over one daemon is how a user ends up not knowing which one to press. Turning it off is the
+// user's choice to have both; see WarpInstaller::closesWarpGui() for the decision this feeds.
+bool Settings::hideWarpGui() const { return read<bool>(kHideWarpGui, true); }
+void Settings::setHideWarpGui(bool on) { write(kHideWarpGui, on); }
 
 // Default on: zapret is a background service, so closing the window should keep it running.
 // MainWindow refuses to hide when the platform has no system tray, so this can never strand the app.

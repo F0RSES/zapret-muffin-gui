@@ -61,6 +61,10 @@ public:
     // written, looks exactly like a checkbox that works — and because unticking it is the only way to
     // reach the policy from outside, which is what the whole feature is for.
     QCheckBox *animationsField() const { return m_animationsCheck; }
+    // The WARP window switch, and the reason it needs an accessor of its own: on a host whose WARP
+    // package ships no window the row is not shown at all, and "hidden" is the promise a test has to be
+    // able to check. See WarpInstaller::platformHasWarpGui().
+    QCheckBox *hideWarpField() const { return m_hideWarpCheck; }
 
     // True when `dir` is a zapret root, or a base that contains a windows/ or linux/ root.
     static bool pathLooksValid(const QString &dir);
@@ -96,6 +100,7 @@ private:
     QCheckBox *m_startLastCheck = nullptr;
     QCheckBox *m_trayCheck = nullptr;
     QCheckBox *m_animationsCheck = nullptr;   // the motion switch, written through Motion
+    QCheckBox *m_hideWarpCheck = nullptr;     // the single-window policy; hidden where there is no GUI
     QLabel *m_trayNote = nullptr;    // shown only when this desktop has no tray host at all
     QComboBox *m_themeBox = nullptr;
     QSpinBox *m_pingSpin = nullptr;

@@ -332,6 +332,67 @@ const QVector<Row> &catalog()
             "Moduswechsel: %1 wird gestoppt", "切换模式：正在停止 %1",
             "Changement de mode : arrêt de %1", "मोड बदल रहे हैं: %1 रोकर"),
 
+        // ---- installing the WARP client ----
+        // WARP is not this application's software: the window asks permission to put Cloudflare's
+        // package on the machine, and the two lines below say what that costs. The question defaults to
+        // No because the answer is a system change that outlives the application, not a preference.
+        ROW("warp.install_question",
+            "Cloudflare WARP не установлен. Установить его сейчас? Потребуется подтверждение "
+            "прав администратора, и установщик нельзя будет отменить на середине.",
+            "Cloudflare WARP is not installed. Install it now? This asks for administrator rights, "
+            "and the installer cannot be cancelled halfway through.",
+            "Cloudflare WARP no está instalado. ¿Instalarlo ahora? Se pedirán derechos de "
+            "administrador y el instalador no podrá cancelarse a mitad.",
+            "Cloudflare WARP ist nicht installiert. Jetzt installieren? Das verlangt "
+            "Administratorrechte, und der Installer lässt sich nicht halb abbrechen.",
+            "未安装 Cloudflare WARP。现在安装吗？这需要管理员权限，而且安装过程无法中途取消。",
+            "Cloudflare WARP n'est pas installé. L'installer maintenant ? Cela demande des droits "
+            "d'administrateur, et l'installation ne pourra pas être annulée à mi-chemin.",
+            "Cloudflare WARP इंस्टॉल नहीं है। अभी इंस्टॉल करें? इसमें व्यवस्थापक अधिकार चाहिए, और "
+            "इंस्टॉलर को बीच में रद्द नहीं किया जा सकता।"),
+        ROW("warp.install_title", "Установка Cloudflare WARP", "Installing Cloudflare WARP",
+            "Instalando Cloudflare WARP", "Cloudflare WARP wird installiert",
+            "正在安装 Cloudflare WARP", "Installation de Cloudflare WARP",
+            "Cloudflare WARP इंस्टॉल हो रहा है"),
+        ROW("warp.install_progress", "Устанавливаю Cloudflare WARP…", "Installing the WARP client…",
+            "Instalando el cliente de WARP…", "WARP-Client wird installiert…",
+            "正在安装 WARP 客户端…", "Installation du client WARP…",
+            "WARP क्लाइंट इंस्टॉल हो रहा है…"),
+        // The journal's two endings. Success is named as the thing the window can now do, not as an
+        // adjective about a package; failure quotes the tool's own words back, which is the only part
+        // of the message that explains anything.
+        ROW("warp.installed", "Cloudflare WARP установлен — туннель доступен из этого окна",
+            "Cloudflare WARP is installed — the tunnel is now driven from this window",
+            "Cloudflare WARP se ha instalado: el túnel se controla desde esta ventana",
+            "Cloudflare WARP ist installiert — der Tunnel wird nun von diesem Fenster gesteuert",
+            "Cloudflare WARP 已安装——现在可以从本窗口控制隧道",
+            "Cloudflare WARP est installé — le tunnel se pilote depuis cette fenêtre",
+            "Cloudflare WARP इंस्टॉल हो गया — अब टनल इसी विंडो से नियंत्रित होगा"),
+        ROW("warp.install_failed", "Установка Cloudflare WARP не завершилась: %1",
+            "The Cloudflare WARP install did not finish: %1",
+            "La instalación de Cloudflare WARP no terminó: %1",
+            "Die Installation von Cloudflare WARP wurde nicht abgeschlossen: %1",
+            "Cloudflare WARP 安装未完成：%1",
+            "L'installation de Cloudflare WARP n'a pas abouti : %1",
+            "Cloudflare WARP इंस्टॉल पूरा नहीं हुआ: %1"),
+        // The footer's line when the user presses No. It names the consequence the pill now shows
+        // (zapret mode) rather than the decision itself, because the interface did not refuse — the
+        // user did, and the line is there to say the interface heard and moved back.
+        ROW("warp.install_declined", "Установка отменена — переключено в режим zapret",
+            "Installation cancelled — switched back to zapret mode",
+            "Instalación cancelada: se ha vuelto al modo de zapret",
+            "Installation abgebrochen — zurück in den Zapret-Modus",
+            "安装已取消——已切回 zapret 模式",
+            "Installation annulée — retour au mode zapret",
+            "इंस्टॉल रद्द — zapret मोड पर वापस बदल दिया गया"),
+        // The single-window policy's own line: it only writes when it actually took a window down, so
+        // a host with no WARP GUI running never sees it.
+        ROW("warp.gui_closed", "Закрыто окно Cloudflare WARP: %1",
+            "Closed the Cloudflare WARP window: %1", "Se cerró la ventana de Cloudflare WARP: %1",
+            "Cloudflare-WARP-Fenster geschlossen: %1", "已关闭 Cloudflare WARP 窗口：%1",
+            "Fenêtre Cloudflare WARP fermée : %1",
+            "Cloudflare WARP विंडो बंद की गई: %1"),
+
         // ---- the history and statistics page ----
         // The page's own voice: one aggregate the reader acts on, five column names, and the three words
         // a row can be. The verdict words are short on purpose — they sit in a column the width of the
@@ -725,6 +786,26 @@ const QVector<Row> &catalog()
             "Ocultar en la bandeja al cerrar", "Beim Schließen in den Tray minimieren",
             "关闭窗口时缩到托盘", "Masquer dans la barre système à la fermeture",
             "बंद करते समय ट्रे में छिपाएँ"),
+        // The single-window policy. Offered only where there is a window to close, so the label says
+        // which program it means and the tooltip says what the other half of the pair is for.
+        ROW("settings.hide_warp", "Закрывать окно Cloudflare WARP", "Close the Cloudflare WARP window",
+            "Cerrar la ventana de Cloudflare WARP", "Cloudflare-WARP-Fenster schließen",
+            "关闭 Cloudflare WARP 窗口", "Fermer la fenêtre Cloudflare WARP",
+            "Cloudflare WARP विंडो बंद करें"),
+        ROW("settings.hide_warp_tip",
+            "Установщик WARP открывает своё окно, а трей-приложение запускается при входе в систему. "
+            "Muffin закрывает их: туннелем управляет это окно.",
+            "The WARP installer opens a window of its own and its tray app starts at sign-in. Muffin "
+            "closes both: this window is what drives the tunnel.",
+            "El instalador de WARP abre su propia ventana y su aplicación de bandeja se inicia al "
+            "iniciar sesión. Muffin las cierra: esta ventana es la que controla el túnel.",
+            "Der WARP-Installer öffnet ein eigenes Fenster, und seine Tray-App startet bei der "
+            "Anmeldung. Muffin schließt beides: Dieses Fenster steuert den Tunnel.",
+            "WARP 安装程序会打开自己的窗口，托盘应用也会在登录时启动。Muffin 会关闭它们：隧道由本窗口控制。",
+            "L'installateur WARP ouvre sa propre fenêtre et son application de zone de notification "
+            "démarre à la session. Muffin les ferme : c'est cette fenêtre qui pilote le tunnel.",
+            "WARP इंस्टॉलर अपनी विंडो खोलता है और ट्रे ऐप साइन-इन पर चलता है। Muffin दोनों बंद करता है: "
+            "टनल इसी विंडो से नियंत्रित होता है।"),
         // The motion switch. Named for what it turns on rather than for the machines it exists for:
         // a user who never heard of "weak PCs" still has to recognise the word for the movement.
         ROW("settings.animations", "Включить анимации", "Enable animations",
