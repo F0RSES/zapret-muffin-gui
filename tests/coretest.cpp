@@ -4931,8 +4931,30 @@ int main(int argc, char **argv)
             check(script.contains(QStringLiteral("gpg --yes --dearmor --output \"$KEYRING\"")),
                   "the key is dearmoured into the keyring path");
             check(script.contains(QStringLiteral("apt-get update"))
-                      && script.contains(QStringLiteral("apt-get install -y \"$PACKAGE\"")),
+                      && script.contains(QStringLiteral("install -y \"$PACKAGE\""))
+                      && script.indexOf(QStringLiteral("apt-get update"))
+                             < script.indexOf(QStringLiteral("install -y \"$PACKAGE\"")),
                   "update then install, in that order");
+            // The network options the flaky-CDN failures need. apt's own default is a short per-
+            // connection timeout and no retries, so a 75 MB .deb over a stalling link is reported as a
+            // plain install failure; these three keys are what change that. Each is pinned by name so a
+            // dropped or typo'd one fails here rather than on somebody's Kali box.
+            check(script.contains(QStringLiteral("-o Acquire::Retries=3"))
+                      && script.contains(QStringLiteral("-o Acquire::http::Timeout=60"))
+                      && script.contains(QStringLiteral("-o Acquire::https::Timeout=60")),
+                  "the install names retries and both http and https timeouts (apt reads them apart)");
+            // The fallback, and the guard that lets it run under `set -eu`: the primary install is the
+            // condition of an `if !`, so its failure is handled instead of fatal, and only then does the
+            // direct-download path execute.
+            check(script.contains(QStringLiteral("if ! DEBIAN_FRONTEND=noninteractive apt-get"))
+                      && script.contains(QStringLiteral("; then")),
+                  "the install is guarded by `if ! ... ; then` so a failed fetch reaches the fallback");
+            check(script.contains(QStringLiteral("apt-get download \"$PACKAGE\""))
+                      || script.contains(QStringLiteral("download \"$PACKAGE\"")),
+                  "the fallback re-fetches the package by name, not by a hardcoded URL");
+            check(script.contains(QStringLiteral("dpkg -i \"$PACKAGE\"*.deb || true"))
+                      && script.contains(QStringLiteral("install -y -f")),
+                  "dpkg installs the fetched file and apt-get -f resolves its dependencies");
             check(script.contains(QStringLiteral("DEBIAN_FRONTEND=noninteractive")),
                   "the frontend stays non-interactive: nobody is watching a terminal");
             // The whole printf line, spelled: the format is quoted so the two variables arrive as
@@ -5172,6 +5194,47 @@ int main(int argc, char **argv)
         check(WarpInstaller::installFoundFrom(QStringLiteral("/usr/bin/warp-cli")), "a PATH hit counts");
         check(WarpInstaller::installFoundFrom(QStringLiteral("C:/Program Files/Cloudflare/Cloudflare WARP/warp-cli.exe")),
               "so does the off-PATH copy in the vendor's own directory");
+
+        // ---- naming a network failure as one ----
+        //
+        // The transcripts below are the shapes apt and curl really write when a fetch dies; the point of
+        // each is that a network stall gets the "turn the bypass on" hint and every other failure — a
+        // refused password, a held lock, a missing suite — does not, because that hint sends the user to
+        // change something that was never the problem.
+        {
+            // A real fetch that ran past the timeout, in apt's own words, with curl's status prefix.
+            check(WarpInstaller::isNetworkFailure(QStringLiteral(
+                      "Err:1 https://pkg.cloudflareclient.com/pool/main/c/cloudflare-warp.deb\n"
+                      "  Connection timed out [IP: 104.16.0.0 443]\n"
+                      "E: Failed to fetch ... Connection timed out")),
+                  "a connection that timed out mid-fetch is a network failure");
+            check(WarpInstaller::isNetworkFailure(
+                      QStringLiteral("curl: (28) Failed to connect to pkg.cloudflareclient.com port 443 "
+                                     "after 30000 ms: Connection refused")),
+                  "a refused connection is one too");
+            check(WarpInstaller::isNetworkFailure(
+                      QStringLiteral("Cannot initiate the connection to pkg.cloudflareclient.com:443 "
+                                     "(x.x.x.x). - connect (110: Connection timed out)")),
+                  "apt's longer transport sentence is recognised in whatever case it is written");
+            check(WarpInstaller::isNetworkFailure(
+                      QStringLiteral("Temporary failure resolving 'pkg.cloudflareclient.com'")),
+                  "a name that would not resolve is a network problem, not a missing package");
+
+            // The failures that must NOT be dressed up as network trouble.
+            check(!WarpInstaller::isNetworkFailure(QStringLiteral(
+                      "E: The repository 'https://pkg.cloudflareclient.com kali-rolling Release' does "
+                      "not have a Release file.")),
+                  "a 404 suite is the repository's answer, not a dead link");
+            check(!WarpInstaller::isNetworkFailure(
+                      QStringLiteral("E: Could not get lock /var/lib/dpkg/lock-frontend - open (11: "
+                                     "Resource temporarily unavailable)")),
+                  "a held dpkg lock is not a network failure even though apt exits the same code");
+            check(!WarpInstaller::isNetworkFailure(
+                      QStringLiteral("The last command exited with value 126")),
+                  "a refused password is nothing to do with the wire");
+            check(!WarpInstaller::isNetworkFailure(QString()),
+                  "no output at all is not evidence of a network");
+        }
 
         // ---- the refusal a caller has to hear synchronously ----
         //

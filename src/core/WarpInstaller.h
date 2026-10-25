@@ -221,6 +221,23 @@ public:
     // question the toggle asks a moment later.
     static bool installFoundFrom(const QString &resolvedProgram);
 
+    // ---- naming a network failure as one ----
+    //
+    // The installer fails for reasons with nothing in common, and the difference is the whole point of
+    // this classifier: a repository that returns 404 is the suite name, an refused password is the 126
+    // the caller already handles, but a fetch that timed out mid-transfer is a live network the user can
+    // put behind the bypass this application runs. Only that last one has an answer the interface can
+    // offer — "turn Zapret on, then install again" — and offering it on any other failure would send a
+    // user to change something that was never the problem.
+    //
+    // It reads the command's own output rather than the exit code because the code says nothing: apt
+    // answers 100 for a timeout, for a held lock, and for a missing dependency alike. Pure and static
+    // for the reason every other value here is — the answer decides a message the user sees, and a test
+    // has to be able to hand it the transcript of a link that died, not only the ones this runner can
+    // produce. Matching is case-insensitive because curl and apt write "timed out" and "Timed out" and
+    // "Connection refused" depending on the version.
+    static bool isNetworkFailure(const QString &output);
+
 signals:
     // One human-readable line per phase, including the tail of the package manager's own output.
     // English, like every other message the core emits (see WarpManager::logMessage): it reports what a

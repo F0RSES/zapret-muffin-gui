@@ -375,6 +375,27 @@ const QVector<Row> &catalog()
             "Cloudflare WARP 安装未完成：%1",
             "L'installation de Cloudflare WARP n'a pas abouti : %1",
             "Cloudflare WARP इंस्टॉल पूरा नहीं हुआ: %1"),
+        // The same failure, when the transcript says the download itself died. It is called out apart
+        // from the generic line above because it is the only install failure with something the user can
+        // do about it inside this application: the package comes from Cloudflare over the same kind of
+        // route Zapret exists to make reachable, so turning the bypass on and installing again is an
+        // instruction rather than a consolation. Every other failure keeps quoting the tool's own words.
+        ROW("warp.install_failed_network",
+            "Не удалось скачать пакет WARP из-за ошибки сети. Включите обход Zapret и повторите "
+            "установку. Подробные сообщения пакетного менеджера — в журнале.",
+            "The WARP package could not be downloaded because of a network error. Turn the Zapret "
+            "bypass on and install again; the package manager's own report is in the log.",
+            "No se pudo descargar el paquete WARP por un error de red. Active el bypass de Zapret e "
+            "intente instalar de nuevo; el informe del gestor de paquetes está en el registro.",
+            "Das WARP-Paket konnte aufgrund eines Netzwerkfehlers nicht heruntergeladen werden. "
+            "Aktivieren Sie den Zapret-Umgehung und wiederholen Sie die Installation; die Meldung des "
+            "Paketmanagers steht im Protokoll.",
+            "由于网络错误，无法下载 WARP 软件包。请开启 Zapret 绕行后重试安装；包管理器的报告见日志。",
+            "Impossible de télécharger le paquet WARP à cause d'une erreur réseau. Activez le "
+            "contournement Zapret puis relancez l'installation ; le rapport du gestionnaire de "
+            "paquets est dans le journal.",
+            "नेटवर्क त्रुटि के कारण WARP पैकेज डाउनलोड नहीं हो सका। Zapret बायपास चालू करें और "
+            "इंस्टॉल दोहराएँ; पैकेज प्रबंधक की रिपोर्ट लॉग में है।"),
         // The footer's line when the user presses No. It names the consequence the pill now shows
         // (zapret mode) rather than the decision itself, because the interface did not refuse — the
         // user did, and the line is there to say the interface heard and moved back.

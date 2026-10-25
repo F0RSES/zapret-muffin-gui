@@ -2352,7 +2352,15 @@ void MainWindow::onWarpInstallationFinished(bool success, const QString &error)
         m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.install_failed")).arg(error),
                           LogPanel::Error);
     }
-    notifyError(error, true);
+    // A failed download and a refused password arrive as the same two things — an exit code and a
+    // transcript — and only the transcript says which. The core appends its own English note to the
+    // error (WarpInstaller::isNetworkFailure), but the user's sentence is this one, and the modal shows
+    // it instead of a paragraph of apt, which is what nobody reads and why the detail goes to the log
+    // above rather than into the dialog.
+    notifyError(WarpInstaller::isNetworkFailure(error)
+                    ? LanguageManager::tr(QStringLiteral("warp.install_failed_network"))
+                    : error,
+                true);
 }
 
 // Answer a Stop press on screen before the teardown it asked for has begun.

@@ -78,6 +78,30 @@ constexpr int kMsiRebootRequired = 3010;
 // explains a failure is at the end, so the tail is what survives.
 constexpr qsizetype kOutputTailChars = 2000;
 
+// The phrases that say a fetch died on the wire rather than on a decision apt made. Each is a string
+// curl or apt writes when a connection is the thing that failed — a stall that ran past the timeout, a
+// host that refused, a name that would not resolve — and none of them appears in the failures this
+// class must NOT call a network problem: a 404 is spelled by the server's status line, a held dpkg lock
+// and a missing dependency are apt's own "E:" sentences, and a refused password never reaches a fetch
+// at all. Matching on the transport words, not on a generic "E:" or on the exit code, is what keeps
+// those three out of the answer. Lower-cased on both sides; see isNetworkFailure() for why.
+const char *const kNetworkFailureMarkers[] = {
+    "timed out",
+    "could not connect",
+    "unable to connect",
+    "failed to connect",
+    "cannot initiate the connection",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "no route to host",
+    "temporary failure resolving",
+    "could not resolve host",
+    "name not resolved",
+    "failed to fetch",
+    "was not able to reach",
+};
+
 } // namespace
 
 WarpInstaller::WarpInstaller(QObject *parent)
@@ -207,7 +231,44 @@ QString WarpInstaller::linuxScriptBody(const QString &codename)
           // The line the whole class exists for, spelled as the repository documents it, with the
           // frontend kept non-interactive because nobody is watching a terminal — the same reason every
           // verb in WarpManager carries --accept-tos.
-          << QStringLiteral("DEBIAN_FRONTEND=noninteractive apt-get install -y \"$PACKAGE\"")
+          //
+          // The three `-o` options are what the unstable links this install keeps meeting need. The
+          // package is roughly 75 MB, and apt's own default — a 30 second wait per connection and no
+          // retry at all — is shorter than the pause a CDN sitting behind a rate limiter leaves between
+          // packets, so a healthy-but-slow download dies mid-transfer and the user is left with the
+          // bare `apt-get failed (exit code 100)` this comment describes. `Retries` re-issues a fetch
+          // that broke rather than giving up on it, and the two `Timeout` values raise how long each
+          // attempt waits; http and https are separate keys because apt reads them separately, so
+          // naming only one leaves the other on its default.
+          //
+          // The primary install sits inside `if !` for the reason the fallback needs it: `set -eu`
+          // stops a top-level failing command before any later line could run, and this is the one
+          // failure with a second attempt worth making. The exit code is what the whole operation
+          // reports on, exactly as it did when the line stood alone.
+          << QStringLiteral("if ! DEBIAN_FRONTEND=noninteractive apt-get "
+                            "-o Acquire::Retries=3 -o Acquire::http::Timeout=60 "
+                            "-o Acquire::https::Timeout=60 install -y \"$PACKAGE\"; then")
+          << QStringLiteral("    echo \"WARP install: apt-get could not fetch the package; "
+                            "retrying with a direct download\" >&2")
+          // The fallback, entered only after the fetch failed. `apt-get download` names the file from
+          // the index the update above just wrote, which is why this is not a `curl` of a literal URL:
+          // Cloudflare publishes no stable path to the current .deb, and hardcoding one is the same
+          // rot the key URL and the suite name are documented against higher up this file. The file
+          // lands in a fresh temp directory (mktemp -d is 0700, and this shell is root) rather than the
+          // caller's cwd, because `sh -s` inherits whatever directory Muffin happened to be started in.
+          // dpkg is then allowed to fail — a package it cannot configure for want of dependencies is
+          // not the end of the attempt — because the line after it resolves exactly those dependencies
+          // and decides the exit. Its timeouts are looser than the primary's: this pass exists to
+          // finish the fetch the first one lost.
+          << QStringLiteral("    TMPD=\"$(mktemp -d)\"")
+          << QStringLiteral("    cd \"$TMPD\"")
+          << QStringLiteral("    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=120 "
+                            "-o Acquire::https::Timeout=120 download \"$PACKAGE\"")
+          << QStringLiteral("    dpkg -i \"$PACKAGE\"*.deb || true")
+          << QStringLiteral("    DEBIAN_FRONTEND=noninteractive apt-get "
+                            "-o Acquire::Retries=3 -o Acquire::http::Timeout=60 "
+                            "-o Acquire::https::Timeout=60 install -y -f")
+          << QStringLiteral("fi")
           << QString();
     return lines.join(QLatin1Char('\n'));
 }
@@ -407,6 +468,21 @@ QStringList WarpInstaller::closeWindowsGui()
 bool WarpInstaller::installFoundFrom(const QString &resolvedProgram)
 {
     return !resolvedProgram.isEmpty();
+}
+
+bool WarpInstaller::isNetworkFailure(const QString &output)
+{
+    // One lower-cased copy of the transcript, then the markers. apt prints the transport's own error
+    // text with a capital that changes between versions ("Cannot initiate the connection" in one,
+    // "Could not connect" in another, curl adds its own "(28 Timeout)" prefix), so case-sensitive
+    // matching would miss whichever spelling this host's tool happened to choose and leave the user
+    // without the one hint that could have helped them.
+    const QString haystack = output.toLower();
+    for (const char *const marker : kNetworkFailureMarkers) {
+        if (haystack.contains(QLatin1String(marker)))
+            return true;
+    }
+    return false;
 }
 
 // ---- the operation ----
@@ -736,6 +812,16 @@ void WarpInstaller::runCommand(const QString &program, const QStringList &args, 
             if (code == 126 || code == 127)
                 message += QStringLiteral(" A 126 is what pkexec answers when the password was refused "
                                           "or the prompt was dismissed.");
+            // The one failure with an action attached to it. A fetch that timed out is not apt refusing
+            // the package and not a repository that lost the suite — it is this machine's route to
+            // Cloudflare, and the application owns a tool that changes that route. Naming it here means
+            // the sentence travels with the error into the journal and any caller, not only the window
+            // that happens to be able to translate it; the UI says the same thing in the user's own
+            // language, and this is what a log read over someone's shoulder still explains.
+            if (isNetworkFailure(m_output))
+                message += QStringLiteral(" The package could not be downloaded: the connection failed "
+                                          "or timed out. If it keeps happening, start the Zapret bypass "
+                                          "first and run the install again.");
             finishWith(false, message);
             return;
         }
