@@ -488,6 +488,149 @@ static QString makeScript(const QString &path, const QString &body)
     return path;
 }
 
+// A stand-in for the WARP control client, for the one part of WarpManager the static checks cannot
+// reach: the enrolment sequence is three verbs long, and its whole contract — which verbs run, in what
+// order, and what reaches their stdin — lives in the QProcess layer.
+//
+// It answers `registration show` from a mode file so the caller can put the daemon in any of the four
+// readings, and answers delete and new from mode files of their own so a sequence can be failed at any
+// step. Every invocation is appended to a call log, including the bytes read from stdin — the only way
+// to prove the terms-of-service answer actually lands rather than merely being composed. Reading stdin
+// is restricted to the two verbs the manager feeds, because a script that cat'd it unconditionally
+// would block forever on the channel startVerb() leaves open for the others, and a fixture that hangs
+// measures nothing.
+static QString makeFakeWarpCli(const QString &dirPath)
+{
+    const QString calls = dirPath + QStringLiteral("/warp-calls.log");
+    const QString body = QStringLiteral(
+        "MODE_SHOW=$(cat '%1/mode_show' 2>/dev/null)\n"
+        "MODE_DEL=$(cat '%1/mode_delete' 2>/dev/null)\n"
+        "MODE_NEW=$(cat '%1/mode_new' 2>/dev/null)\n"
+        "echo \"CALL: $*\" >> '%2'\n"
+        "case \"$*\" in\n"
+        "*\"registration new\"*|*\"registration delete\"*)\n"
+        "  IN=$(cat)\n"
+        "  if [ -n \"$IN\" ]; then echo \"STDIN:$IN\" >> '%2'; fi\n"
+        "  ;;\n"
+        "esac\n"
+        "case \"$*\" in\n"
+        "*\"registration show\"*)\n"
+        "  case \"$MODE_SHOW\" in\n"
+        "  notregistered) echo 'Client registration does not exist!'; exit 1 ;;\n"
+        "  conflict) echo 'Registration error: 409 Conflict'; exit 1 ;;\n"
+        "  chatter) echo 'some daemon chatter'; exit 0 ;;\n"
+        "  *) echo 'Registration'; echo '  Type: enrollment'; echo '  Key: 4c6f2f'; exit 0 ;;\n"
+        "  esac\n"
+        "  ;;\n"
+        "*\"registration delete\"*)\n"
+        "  case \"$MODE_DEL\" in\n"
+        "  fail) echo 'Could not delete registration: daemon error'; exit 1 ;;\n"
+        "  *) echo 'Registration deleted'; exit 0 ;;\n"
+        "  esac\n"
+        "  ;;\n"
+        "*\"registration new\"*)\n"
+        "  case \"$MODE_NEW\" in\n"
+        "  fail) echo 'Could not enroll the device: server refused'; exit 1 ;;\n"
+        "  *) echo 'Device has been enrolled'; exit 0 ;;\n"
+        "  esac\n"
+        "  ;;\n"
+        "esac\n"
+        "echo 'Disconnected'\n"
+        "exit 0\n").arg(dirPath, calls);
+    return makeScript(dirPath + QStringLiteral("/warp-cli"), body);
+}
+
+// Records WarpManager's enrolment channels, in the shape BackendProbe above records a backend's:
+// keep what was seen, and offer predicates the section asserts against.
+//
+// Order is what makes this probe worth having. An enrolment is a sequence rather than a state, so the
+// interesting facts are which signal came first and how many closed it: registrationChanged has to
+// arrive while the check is still running — that is what puts the window's "setting WARP up" line at
+// the right moment instead of after the fact — and exactly one registrationFinished has to end every
+// sequence whatever the reading was. MainWindow issues the tunnel connect from that answer, so a
+// sequence that emitted it twice would bring WARP up twice, and one that never emitted it would leave
+// the power button waiting for a reply that cannot come.
+class WarpEnrolProbe : public QObject
+{
+public:
+    explicit WarpEnrolProbe(WarpManager *manager)
+        : QObject(manager)
+    {
+        QObject::connect(manager, &WarpManager::registrationChanged, this,
+                         [this](WarpManager::Registration r) {
+                             m_readings.append(r);
+                             m_events << QStringLiteral("changed(%1)").arg(regName(r));
+                         });
+        QObject::connect(manager, &WarpManager::registrationFinished, this, [this](bool ok) {
+            ++m_finishes;
+            m_lastOk = ok;
+            m_events << QStringLiteral("finished(%1)").arg(ok ? QStringLiteral("yes")
+                                                              : QStringLiteral("no"));
+        });
+        QObject::connect(manager, &WarpManager::logMessage, this,
+                         [this](const QString &line, int level) {
+                             m_logs << QStringLiteral("%1 %2").arg(level).arg(line);
+                         });
+    }
+
+    int finishes() const { return m_finishes; }
+    bool lastOk() const { return m_lastOk; }
+    bool sawReading(WarpManager::Registration r) const { return m_readings.contains(r); }
+    // The signal trace as text ("changed(NotRegistered) finished(yes)"), which is what a failed
+    // ordering assertion can be diagnosed from instead of merely being false.
+    QString events() const { return m_events.join(QLatin1Char(' ')); }
+    bool lastEventIsFinished(bool ok) const
+    {
+        return !m_events.isEmpty()
+               && m_events.last() == QStringLiteral("finished(%1)").arg(ok ? QStringLiteral("yes")
+                                                                           : QStringLiteral("no"));
+    }
+    // Whether a reading was announced before the sequence closed — the journal line's whole claim,
+    // reduced to an ordering. Both halves are searched by position rather than by "is it in the list",
+    // because the claim is precisely that the reading came first: a sequence that announced the
+    // enrolment after finishing it would still satisfy a membership test, and would put the journal
+    // line after the thing it was supposed to be explaining.
+    bool announcedBeforeFinish(const QString &needle) const
+    {
+        int reading = -1;
+        int finish = -1;
+        for (int i = 0; i < m_events.size(); ++i) {
+            if (reading < 0 && m_events.at(i) == needle)
+                reading = i;
+            if (m_events.at(i).startsWith(QStringLiteral("finished("))) {
+                finish = i;
+                break;
+            }
+        }
+        return reading >= 0 && finish > reading;
+    }
+    bool loggedSubstring(const QString &needle) const
+    {
+        for (const QString &l : m_logs)
+            if (l.contains(needle))
+                return true;
+        return false;
+    }
+
+    static QString regName(WarpManager::Registration r)
+    {
+        switch (r) {
+        case WarpManager::Registration::Registered: return QStringLiteral("Registered");
+        case WarpManager::Registration::NotRegistered: return QStringLiteral("NotRegistered");
+        case WarpManager::Registration::Conflict: return QStringLiteral("Conflict");
+        case WarpManager::Registration::Unknown: break;
+        }
+        return QStringLiteral("Unknown");
+    }
+
+private:
+    QVector<WarpManager::Registration> m_readings;
+    QStringList m_events;
+    QStringList m_logs;
+    int m_finishes = 0;
+    bool m_lastOk = false;
+};
+
 // A Strategy shaped exactly like the parser's DirectBinary output, but pointed at a fake payload.
 static Strategy fakeDirectStrategy(const QString &id, const QString &script, Strategy::Platform platform)
 {
@@ -4731,10 +4874,12 @@ int main(int argc, char **argv)
     //
     // The whole class exists so the window has something to talk to that is not a backend, and the
     // tests below reach for the statics that make that claim checkable without a daemon: the
-    // status parser is a pure function, the argv each verb runs is a fixed string, and
-    // availability is a PATH lookup. The async half — the QProcess that actually runs warp-cli —
+    // status parser is a pure function, the argv each verb runs is a fixed string, the enrolment
+    // parser is a pure function too, and availability is a PATH lookup. The async half — the
+    // QProcess that actually runs warp-cli, and the ensureRegistered() sequence built on it —
     // never fires here, because a suite that runs `warp-cli connect` would take this machine's
-    // real traffic with it.
+    // real traffic with it, and a suite that runs `warp-cli registration new` would ask Cloudflare
+    // for a key that identifies the machine running the tests.
     out << "\n[WarpManager]\n";
     {
         // The program name is what a test can hand back to QStandardPaths and what the process
@@ -4814,7 +4959,377 @@ int main(int argc, char **argv)
               "an empty resolved path means not available");
         check(WarpManager::isAvailableFromPath(QStringLiteral("/usr/bin/warp-cli")),
               "a real resolved path means available");
+
+        // ---- the enrolment verbs ----
+        //
+        // `registration` is a subcommand with three forms, and two of them change the machine: `new`
+        // asks Cloudflare for a key that identifies it, `delete` throws the existing one away. The
+        // argv is pinned for the same reason the connect argv is — a wrong third token is not a
+        // cosmetic problem but an unintended mutation — and pinning that the three differ is what keeps
+        // a future edit from making `show` quietly run something else.
+        for (const QStringList &args : {WarpManager::registrationShowArgs(),
+                                        WarpManager::registrationNewArgs(),
+                                        WarpManager::registrationDeleteArgs()}) {
+            check(args.first() == QStringLiteral("--accept-tos"),
+                  "a registration verb carries --accept-tos first, like every other verb");
+            check(args.contains(QStringLiteral("registration")),
+                  "a registration verb names warp-cli's own `registration` subcommand");
+        }
+        check(WarpManager::registrationShowArgs().contains(QStringLiteral("show")),
+              "registrationShowArgs ends in `show` — the read-only form");
+        check(WarpManager::registrationNewArgs().contains(QStringLiteral("new")),
+              "registrationNewArgs ends in `new`");
+        check(WarpManager::registrationDeleteArgs().contains(QStringLiteral("delete")),
+              "registrationDeleteArgs ends in `delete`");
+        check(WarpManager::registrationShowArgs() != WarpManager::registrationNewArgs()
+                  && WarpManager::registrationNewArgs() != WarpManager::registrationDeleteArgs()
+                  && WarpManager::registrationShowArgs() != WarpManager::registrationDeleteArgs(),
+              "the three enrolment argvs are three distinct requests");
+
+        // The terms-of-service answer, and the only reason it is a function of its own: some builds
+        // ignore `--accept-tos` and ask on the console instead, and a GUI has nobody to type into a
+        // console. The newline is not decoration — the prompt reads a line, so without one the answer is
+        // never delivered and the verb waits until our own timeout kills it mid-registration.
+        check(WarpManager::termsAnswer() == QByteArrayLiteral("y\n"),
+              "the enrolment verbs answer the ToS prompt with `y` and a newline");
+        check(WarpManager::termsAnswer().endsWith('\n'),
+              "…and the answer is line-terminated, because a line-reading prompt never sees a bare 'y'");
+
+        // ---- the enrolment parser ----
+        //
+        // warp-cli answers this in prose, not in a schema, and the prose has moved between versions and
+        // platforms. Every case below is a shape the CLI really prints; what the collection is actually
+        // pinning is the order the substring collisions force, because that is the part a future edit
+        // breaks silently — a parser that read "not enrolled" as enrolled would leave a device's key
+        // alone when it should have created one, or create a second one when it should have left it.
+        {
+            using Reg = WarpManager::Registration;
+
+            // The enrolled shape: a block of fields, on a clean exit.
+            check(WarpManager::parseRegistration(QStringLiteral(
+                      "Registration\n  Type: enrollment\n  Key: 4c6f2f\n  Account type: free\n  Mode: warp"), 0)
+                      == Reg::Registered,
+                  "a full registration block on exit 0 is Registered");
+            check(WarpManager::parseRegistration(QStringLiteral(
+                      "2024-11-20T10:00:00.000Z warp-cli [INFO] Name: Muffin\n  Key: 4c6f2f"), 0)
+                      == Reg::Registered,
+                  "a logged `Key:` line alone is enough to call a device enrolled");
+            check(WarpManager::parseRegistration(QStringLiteral("Registration id: 7f3a"), 0)
+                      == Reg::Registered,
+                  "the field name the older builds print is still recognised");
+            check(WarpManager::parseRegistration(QStringLiteral("REGISTRATION ID: 7f3A"), 0)
+                      == Reg::Registered,
+                  "the casing of the field names is not significant");
+
+            // The unenrolled shapes, including the exit code that comes with them.
+            check(WarpManager::parseRegistration(QStringLiteral(
+                      "Could not get configuration: Client registration does not exist!"), 1)
+                      == Reg::NotRegistered,
+                  "current Linux's `does not exist` is NotRegistered, non-zero exit and all");
+            check(WarpManager::parseRegistration(QStringLiteral("Device is not enrolled."), 1)
+                      == Reg::NotRegistered,
+                  "the Windows and older spelling `not enrolled` is NotRegistered");
+            check(WarpManager::parseRegistration(QStringLiteral(
+                      "2024-11-20T10:00:00.000Z warp-cli [INFO] Not registered"), 0)
+                      == Reg::NotRegistered,
+                  "`Not registered` is NotRegistered even on a zero exit");
+
+            // The collisions, as checks of their own rather than as a by-product of the three above:
+            // every negative answer contains words from the positive side, and "Client registration does
+            // not exist!" contains the very word a careless parser would test for first.
+            check(WarpManager::parseRegistration(QStringLiteral(
+                      "Could not get configuration: Client registration does not exist!"), 1)
+                      != Reg::Registered,
+                  "…so text naming `registration` while refusing it is never read as Registered");
+            check(WarpManager::parseRegistration(QStringLiteral("Device is not enrolled."), 1)
+                      != Reg::Registered,
+                  "…and `not enrolled` is never read as enrolled");
+
+            // The conflicting shapes: an enrolment the daemon will not use, which has to be deleted
+            // before a new one can go in. Three spellings because the answer comes from three different
+            // places — the HTTP status, the CLI's own word, and the account-limit message — and all
+            // three are answered the same way.
+            check(WarpManager::parseRegistration(
+                      QStringLiteral("Registration error: 409 Conflict"), 1)
+                      == Reg::Conflict,
+                  "a 409 from the API is Conflict");
+            check(WarpManager::parseRegistration(QStringLiteral("Already registered"), 1)
+                      == Reg::Conflict,
+                  "`Already registered` is Conflict, not Registered");
+            check(WarpManager::parseRegistration(
+                      QStringLiteral("Could not enroll: maximum number of devices registered"), 1)
+                      == Reg::Conflict,
+                  "the device-limit answer is the same problem and gets the same handling");
+
+            // Unknown: anything that does not affirmatively name one of the three states. An exit code
+            // cannot rescue an unreadable answer, and a field echoed by a run that failed is not a
+            // registration the daemon handed back — which is the one place this parser consults the
+            // code, and it consults it only to refuse the positive claim.
+            check(WarpManager::parseRegistration(QString(), 0) == Reg::Unknown,
+                  "an empty answer is Unknown, never Registered");
+            check(WarpManager::parseRegistration(QStringLiteral("some daemon chatter"), 0)
+                      == Reg::Unknown,
+                  "text naming no state is Unknown");
+            check(WarpManager::parseRegistration(QStringLiteral("Timed out talking to the daemon"), 1)
+                      == Reg::Unknown,
+                  "a failure with no marker for it is Unknown, not NotRegistered");
+            check(WarpManager::parseRegistration(QStringLiteral("Key: 4c6f2f"), 1) == Reg::Unknown,
+                  "a field echoed by a run that failed is Unknown — only a clean exit proves a registration");
+
+            // Which readings mean `registration new` has to run. Both ends of this table are load
+            // bearing: enrolling NotRegistered is why a fresh client ever gets a tunnel, and refusing
+            // to enrol Unknown is what stops a misread daemon from being re-keyed behind the user's
+            // back — the reading that does nothing is the safe one precisely because it is the
+            // reading the manager is least sure of.
+            check(!WarpManager::needsEnrollment(Reg::Registered),
+                  "an enrolled device needs no enrolment — its key is left alone");
+            check(WarpManager::needsEnrollment(Reg::NotRegistered),
+                  "an unenrolled device is enrolled");
+            check(WarpManager::needsEnrollment(Reg::Conflict),
+                  "a conflicting enrolment is replaced");
+            check(!WarpManager::needsEnrollment(Reg::Unknown),
+                  "a device that could not be read is not enrolled over that uncertainty");
+
+            // And which needs the delete first. Only Conflict: a never-enrolled device has nothing to
+            // remove, so `registration delete` there would be a verb issued to destroy something the
+            // machine does not have.
+            check(WarpManager::needsDeleteFirst(Reg::Conflict),
+                  "Conflict is deleted before it is re-enrolled");
+            check(!WarpManager::needsDeleteFirst(Reg::NotRegistered),
+                  "NotRegistered has nothing to delete");
+            check(!WarpManager::needsDeleteFirst(Reg::Registered),
+                  "Registered is never deleted");
+            check(!WarpManager::needsDeleteFirst(Reg::Unknown),
+                  "Unknown is never deleted either — that is the whole point of the fallback");
+        }
     }
+
+    // [WarpManager: real enrolment] — the sequence run against a stand-in warp-cli.
+    //
+    // Everything in the section above is pure functions, and pure functions cannot prove what this
+    // feature actually promises: that a device already enrolled is NOT touched, that an unenrolled one
+    // gets exactly one `registration new`, that a conflict is deleted before it is re-enrolled, and
+    // that a device which cannot be read gets nothing at all. Those are claims about which verbs reach
+    // QProcess and in what order, so the verbs are run against a fixture script put first on PATH.
+    //
+    // The section is guarded rather than assumed, because what it drives is a program that can enrol
+    // this machine with Cloudflare: if PATH does not resolve `warp-cli` to the fixture, nothing is
+    // attempted at all. A suite that enrols the box running it is not a passing suite.
+    out << "\n[WarpManager: real enrolment]\n";
+#if defined(Q_OS_UNIX)
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "enrolment fixture directory created");
+        const QString fake = makeFakeWarpCli(tmp.path());
+        check(!fake.isEmpty(), "the stand-in warp-cli was written and made executable");
+        const QString calls = tmp.path() + QStringLiteral("/warp-calls.log");
+        const QString oldPath = qEnvironmentVariable("PATH");
+        qputenv("PATH", (tmp.path() + QLatin1Char(':') + oldPath).toLocal8Bit());
+
+        // Checked before anything is constructed: WarpManager resolves the program name inside its own
+        // constructor, so by the time a manager exists the host has already been asked a question.
+        // Finding a real client here is not a failure of the code under test, so the section says so
+        // and steps away rather than reporting one.
+        const QString resolved = QStandardPaths::findExecutable(WarpManager::warpCliProgram());
+        if (resolved != fake) {
+            qputenv("PATH", oldPath.toLocal8Bit());
+            out << "  SKIP  PATH does not resolve warp-cli to the fixture — the enrolment "
+                   "sequence was not run\n";
+        } else {
+            using Reg = WarpManager::Registration;
+            check(resolved == fake,
+                  "the fixture is what PATH hands WarpManager, so the verbs below are safe to drive");
+
+            auto setMode = [&tmp](const QString &name, const QString &value) {
+                QFile f(tmp.path() + QLatin1Char('/') + name);
+                if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    return;
+                f.write(value.toUtf8());
+            };
+            // The registration verbs in the order they were invoked. The status probe the constructor
+            // issues lands in the same log, so only registration lines count — which also keeps the
+            // assertions independent of whether that probe was still in flight when the sequence was
+            // asked for, since a busy verb slot makes ensureRegistered() queue instead of failing.
+            auto regCalls = [&calls]() {
+                QStringList names;
+                QFile f(calls);
+                if (!f.open(QIODevice::ReadOnly))
+                    return names;
+                const QString text = QString::fromUtf8(f.readAll());
+                for (const QString &line : text.split(QLatin1Char('\n'))) {
+                    if (!line.startsWith(QStringLiteral("CALL: ")))
+                        continue;
+                    const QString verb = line.mid(6);
+                    if (verb.contains(QStringLiteral("registration new")))
+                        names << QStringLiteral("new");
+                    else if (verb.contains(QStringLiteral("registration delete")))
+                        names << QStringLiteral("delete");
+                    else if (verb.contains(QStringLiteral("registration show")))
+                        names << QStringLiteral("show");
+                }
+                return names;
+            };
+            // How many verbs were handed the terms-of-service answer. Counting them is the only way to
+            // see that the bytes composed by termsAnswer() actually reach a child's stdin, and that
+            // they reach the two that may ask and not the read that may not.
+            auto stdinAnswers = [&calls]() {
+                int n = 0;
+                QFile f(calls);
+                if (!f.open(QIODevice::ReadOnly))
+                    return n;
+                for (const QString &line : QString::fromUtf8(f.readAll()).split(QLatin1Char('\n')))
+                    if (line == QStringLiteral("STDIN:y"))
+                        ++n;
+                return n;
+            };
+
+            // ---- an enrolled device is left alone ----
+            //
+            // The case the check exists for, and the one whose failure is the worst: running
+            // `registration new` beside a working enrolment hands the machine a second key and changes
+            // the identity of a connection the user thought was settled — a silent downgrade of their
+            // IP, by a GUI, for no reason.
+            {
+                setMode(QStringLiteral("mode_show"), QString());  // fixture default: the enrolled block
+                WarpManager m;
+                WarpEnrolProbe p(&m);
+                pumpFor(400);              // let the constructor's status probe land first
+                QFile::remove(calls);
+                QString err;
+                check(m.ensureRegistered(&err), "the check starts on an available client");
+                check(pumpUntil([&p] { return p.finishes() > 0; }, 8000), "the check answered");
+                check(p.finishes() == 1, "exactly one registrationFinished closes an enrolled check");
+                check(p.lastOk(), "an enrolled device answers ok");
+                check(p.sawReading(Reg::Registered), "and answers on the reading Registered");
+                check(regCalls() == QStringList{QStringLiteral("show")},
+                      "an enrolled device costs one verb: the read, and nothing that changes it");
+                check(stdinAnswers() == 0,
+                      "nothing is fed to stdin when no verb could be waiting on a prompt");
+            }
+
+            // ---- an unenrolled device is enrolled, once ----
+            {
+                setMode(QStringLiteral("mode_show"), QStringLiteral("notregistered"));
+                setMode(QStringLiteral("mode_new"), QString());   // fixture default: enrolment succeeds
+                WarpManager m;
+                WarpEnrolProbe p(&m);
+                pumpFor(400);
+                QFile::remove(calls);
+                QString err;
+                check(m.ensureRegistered(&err), "the check starts on an unenrolled client");
+                check(pumpUntil([&p] { return p.finishes() > 0; }, 8000), "the enrolment answered");
+                check(p.finishes() == 1, "exactly one registrationFinished closes an enrolment");
+                check(p.lastOk(), "a successful enrolment answers ok, so the tunnel is asked for");
+                check(p.sawReading(Reg::NotRegistered), "the reading that drove it was NotRegistered");
+                check(regCalls() == QStringList{QStringLiteral("show"), QStringLiteral("new")},
+                      "an unenrolled device is read, then enrolled — and enrolled exactly once");
+                check(stdinAnswers() == 1,
+                      "the enrolment was fed the terms-of-service answer");
+                check(p.announcedBeforeFinish(QStringLiteral("changed(NotRegistered)")),
+                      "the enrolment was announced before the sequence closed — the journal line's turn");
+            }
+
+            // ---- a conflict is deleted before it is replaced ----
+            //
+            // The only branch that destroys something, which is why its ordering is asserted rather
+            // than assumed: `new` without the `delete` earns the same conflict back, and a `delete`
+            // followed by a `new` that was never attempted leaves the machine with no enrolment at
+            // all — strictly worse state than the one it started from.
+            {
+                setMode(QStringLiteral("mode_show"), QStringLiteral("conflict"));
+                WarpManager m;
+                WarpEnrolProbe p(&m);
+                pumpFor(400);
+                QFile::remove(calls);
+                QString err;
+                check(m.ensureRegistered(&err), "the check starts on a conflicting client");
+                check(pumpUntil([&p] { return p.finishes() > 0; }, 8000), "the replacement answered");
+                check(p.lastOk(), "a replaced conflict ends enrolled");
+                check(p.sawReading(Reg::Conflict), "and the reading that drove it was Conflict");
+                check(regCalls() == QStringList{QStringLiteral("show"), QStringLiteral("delete"),
+                                                     QStringLiteral("new")},
+                      "a conflict is read, deleted, then enrolled — in that order");
+                check(stdinAnswers() == 2,
+                      "both verbs that mutate the device were fed the terms-of-service answer");
+                check(p.loggedSubstring(QStringLiteral("conflicts")),
+                      "the replacement of an existing enrolment is said in the log, not done quietly");
+            }
+
+            // ---- a device that cannot be read gets nothing done to it ----
+            //
+            // The safety property the whole design turns on. `Unknown` is what an unreadable answer
+            // means, and the honest response to it is to leave the enrolment alone and refuse the
+            // tunnel — the alternative being to guess, and the guess being wrong half the time, in a
+            // way that is invisible to the user and irreversible for their key.
+            {
+                setMode(QStringLiteral("mode_show"), QStringLiteral("chatter"));
+                WarpManager m;
+                WarpEnrolProbe p(&m);
+                pumpFor(400);
+                QFile::remove(calls);
+                QString err;
+                check(m.ensureRegistered(&err), "the check starts even on an unreadable device");
+                check(pumpUntil([&p] { return p.finishes() > 0; }, 8000), "the unreadable check answered");
+                check(p.finishes() == 1, "and closed exactly once — the caller is never left waiting");
+                check(!p.lastOk(), "an unreadable device is not reported as ready");
+                check(p.lastEventIsFinished(false), "with the failure as the last thing said");
+                check(regCalls() == QStringList{QStringLiteral("show")},
+                      "an unreadable device is read and then left alone: no delete, no new");
+            }
+
+            // ---- a conflict whose delete fails is not enrolled over ----
+            //
+            // The half-way state, and the reason the sequence is not simply "delete then new no matter
+            // what": if the delete did not take, `new` would be a second key minted beside the first.
+            // Stopping at the failed step leaves the device exactly as it was found — a conflict, which
+            // is broken but not lost.
+            {
+                setMode(QStringLiteral("mode_show"), QStringLiteral("conflict"));
+                setMode(QStringLiteral("mode_delete"), QStringLiteral("fail"));
+                WarpManager m;
+                WarpEnrolProbe p(&m);
+                pumpFor(400);
+                QFile::remove(calls);
+                QString err;
+                check(m.ensureRegistered(&err), "the check starts on a device whose conflict will not delete");
+                check(pumpUntil([&p] { return p.finishes() > 0; }, 8000), "the failed replacement answered");
+                check(!p.lastOk(), "and says so, so no tunnel is issued behind a half-done change");
+                check(regCalls() == QStringList{QStringLiteral("show"), QStringLiteral("delete")},
+                      "the sequence stops at the failed delete — no new is minted over a live key");
+                setMode(QStringLiteral("mode_delete"), QString());   // put the fixture back for what follows
+            }
+
+            // ---- asking twice enrols once ----
+            //
+            // The window can ask for a tunnel twice inside the seconds a first enrolment takes — the
+            // power button, then the delay slot, then a tray action. Two `registration new` calls would
+            // be two keys for one device, so the second request has to join the first and be answered
+            // by it rather than by a second sequence and a second finished().
+            {
+                setMode(QStringLiteral("mode_show"), QStringLiteral("notregistered"));
+                WarpManager m;
+                WarpEnrolProbe p(&m);
+                pumpFor(400);
+                QFile::remove(calls);
+                QString err;
+                check(m.ensureRegistered(&err), "the first request starts the sequence");
+                check(m.ensureRegistered(&err),
+                      "a second request while the first runs is accepted as the same request");
+                check(pumpUntil([&p] { return p.finishes() > 0; }, 8000), "the joined request was answered");
+                pumpFor(300);              // give a hypothetical second sequence time to answer too
+                check(p.finishes() == 1, "two requests, one answer — the second joined the first");
+                check(regCalls().count(QStringLiteral("new")) == 1,
+                      "and the device was enrolled once, not once per request");
+            }
+
+            // PATH goes back before anything else in this suite can read it. The fixture directory is
+            // removed with the temporary dir below, and leaving a dead entry in front of PATH would make
+            // every later section that resolves a program by name fail for a reason it cannot see.
+            qputenv("PATH", oldPath.toLocal8Bit());
+            check(qEnvironmentVariable("PATH") == oldPath, "PATH is restored after the fixture runs");
+        }
+    }
+#endif
 
     // [WarpInstaller] — putting the Cloudflare WARP client on a machine that has none.
     //
