@@ -31,6 +31,18 @@ namespace zapret {
 // and the fallback when warp-cli is absent are all static functions a headless suite can call
 // directly.
 //
+// The instance surface is virtual as well, and that is for the half of testing the statics cannot
+// reach. What the statics prove is what one verb does with one answer; what they cannot prove is
+// that a *caller* asks at the right moment — that a window which means to bring the tunnel up
+// settles the enrolment first, and does not connect behind an answer that said no. Proving that
+// needs a control the suite can hand answers out of, and no daemon to hand them from. So the verbs,
+// the state and the availability are virtual, a suite subclasses this class and counts the calls,
+// and MainWindow takes its control from outside — see its constructor's injected form.
+//
+// Virtual only on the instance methods, never on the statics: a parser a test calls directly is
+// already a seam, and a virtual static would be a second way to be wrong about which answer the
+// running object means.
+//
 // Threading: like every other QObject here, WarpManager belongs to the GUI thread's event loop
 // and is not internally locked.
 class WarpManager : public QObject
@@ -87,7 +99,11 @@ public:
     // Whether warp-cli resolves on this host right now. Testable form: pass the PATH-resolved
     // path — non-empty means available. The instance method caches the last answer so an
     // unavailable state does not re-probe PATH on every repaint.
-    bool isAvailable() const { return m_available; }
+    //
+    // Virtual because availability is the answer a window branches on — a client that is not there
+    // is an offer to install one, a client that is there is a tunnel to drive — and a suite that
+    // wants to watch which branch it took cannot manufacture a warp-cli on a machine that has none.
+    virtual bool isAvailable() const { return m_available; }
     static bool isAvailableFromPath(const QString &resolvedPath);
 
     // Whether the WARP client is on this machine — the question a caller asks before offering to
@@ -95,7 +111,11 @@ public:
     // probes: "can I drive the tunnel?" and "is there a tunnel to drive?" have exactly one source of
     // truth (a warp-cli we can find), and a second lookup that could disagree with the first would
     // be a toggle that offers to install software the machine already has.
-    bool isInstalled() const { return m_available; }
+    //
+    // A mock that overrides these two must give them the same answer, for the same reason: they are
+    // one flag read under two names, and a control that says "there is a client" to one caller and
+    // "there is none" to another is the disagreement the two names exist to avoid.
+    virtual bool isInstalled() const { return m_available; }
 
     // The Program Files root this process was started with, or empty on every other platform. Read
     // from the environment rather than hardcoded, exactly as ZapretPaths::systemInstallDir() does:
@@ -193,12 +213,15 @@ public:
     static QByteArray termsAnswer();
 
     // ---- current view ---------------------------------------------------------
-    State state() const { return m_state; }
+    // Virtual for the same reason the verbs below are: the state is what a caller reads to decide
+    // what a press means, and a suite that wants to watch that decision has to be able to hand out a
+    // state without owning a daemon that is in it.
+    virtual State state() const { return m_state; }
 
     // The last enrolment reading, which is Unknown until a check has answered. A caller may read it
     // to decide whether to mention enrolment at all; it is not a substitute for ensureRegistered(),
     // which re-reads the daemon rather than trusting what was seen last time.
-    Registration registrationState() const { return m_registration; }
+    virtual Registration registrationState() const { return m_registration; }
 
     // ---- verbs ----------------------------------------------------------------
     // Each returns false when the operation could not even be started (warp-cli absent, or a
@@ -211,9 +234,13 @@ public:
     // application already speaks start/stop about a tunnel — the power button, ZapretManager,
     // the tray menu — so a second vocabulary here would be a translation table waiting to
     // drift.
-    bool start(QString *error = nullptr);
-    bool stop(QString *error = nullptr);
-    bool refresh(QString *error = nullptr);
+    //
+    // Virtual so a caller's ordering is checkable. The claim worth testing is not that `connect`
+    // reaches warp-cli — the statics above already pin the argv — but that a window asks for it
+    // *after* the enrolment answered and not before; that is only observable by counting the asks.
+    virtual bool start(QString *error = nullptr);
+    virtual bool stop(QString *error = nullptr);
+    virtual bool refresh(QString *error = nullptr);
 
     // Make sure this machine has a WARP enrolment, without disturbing one it already has.
     //
@@ -240,16 +267,22 @@ public:
     // (warp-cli is absent) and *error then says so; true means it was started, or was already running
     // and this call joined it — either way registrationFinished will answer. Asking twice is safe: a
     // second `registration new` would be a second key for one device.
-    bool ensureRegistered(QString *error = nullptr);
+    //
+    // The one method here that a window has to be proved to call, and the reason the instance surface
+    // is virtual at all: a connect issued while this was still owed an answer is the silent hang the
+    // method exists to prevent, and no static parser can see that mistake.
+    virtual bool ensureRegistered(QString *error = nullptr);
 
     // Re-probe availability. Called on construction; a caller who just installed WARP while the
     // window was open can ask for the same effect without a full restart.
-    void rescanAvailability();
+    virtual void rescanAvailability();
 
     // Cadence-driven polling. Off by default; MainWindow turns it on only while a mode is
     // active, because a status probe on a machine with no warp-cli is a wasted fork every tick.
-    void setPollingEnabled(bool on);
-    bool isPollingEnabled() const { return m_pollEnabled; }
+    // Virtual because it arms a timer, and a mock that let the base arm one would have a poll
+    // firing out from under the test that was counting calls.
+    virtual void setPollingEnabled(bool on);
+    virtual bool isPollingEnabled() const { return m_pollEnabled; }
     // How often a poll fires while enabled. Exposed so a test can pin the cadence without
     // reaching into the private timer.
     static constexpr int kPollIntervalMs = 5000;

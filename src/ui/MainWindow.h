@@ -75,6 +75,23 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    // The same window with its tunnel control handed in rather than built.
+    //
+    // Why a constructor and not a virtual factory: the window needs the control before its first
+    // repaint — the pill's halves are clamped against whether warp-cli exists on this host, and the
+    // chip is drawn from the tunnel's state — so the object has to be there inside the constructor
+    // body. A virtual `createWarpManager()` would not answer there: a call made while constructing
+    // a base class resolves to the base, and a suite would silently get the real warp-cli driver it
+    // was trying to keep away from a test binary. Taking the dependency as an argument is the one
+    // form that is honest about being decided before the window exists.
+    //
+    // `warp` is non-null only in a headless suite; production goes through the parent-only form
+    // above and builds its own. The window adopts a supplied control exactly as it adopts one it
+    // made — parented, and deleted with itself — so there is one owner on either path and a test
+    // that passes a heap-allocated mock never has to wonder who frees it. A null `warp` is not an
+    // absent tunnel: it means "build the real one", which is why this form takes `parent` with no
+    // default — a bare `MainWindow(nullptr)` would be the one call that could mean either ctor.
+    MainWindow(WarpManager *warp, QWidget *parent);
     ~MainWindow() override;
 
     // Text/colour of the toolbar status chip for a backend state. Static so the mapping is testable.

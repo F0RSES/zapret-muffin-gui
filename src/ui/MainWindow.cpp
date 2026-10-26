@@ -150,6 +150,11 @@ QString pingCadenceText(int seconds)
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
+    : MainWindow(nullptr, parent)
+{
+}
+
+MainWindow::MainWindow(WarpManager *warp, QWidget *parent)
     : QMainWindow(parent)
 {
     m_errorClock.start();
@@ -173,7 +178,15 @@ MainWindow::MainWindow(QWidget *parent)
     // eagerly — an unavailable warp-cli is a fact the toggle has to show from the first frame,
     // and probing PATH once on the GUI thread is well under the budget the constructor's own
     // history load already spends.
-    m_warp = new WarpManager(this);
+    //
+    // A control handed in by the caller is adopted, not borrowed: parented here, so the window's
+    // teardown deletes it and exactly one owner exists on either path. It still has to be the one
+    // that exists at this point in the body — the selection below is clamped against what the
+    // control says about this host, and a control that arrived after that read would leave the
+    // pill lit for a tunnel the window never asked about.
+    m_warp = warp ? warp : new WarpManager(this);
+    if (warp)
+        m_warp->setParent(this);
 
     // The installer lives beside the tunnel control rather than inside it, for the same reason the
     // tunnel control lives beside ZapretManager: putting software on a machine and driving a daemon

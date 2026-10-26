@@ -4,23 +4,28 @@
 // runnable straight from a shell). Like coretest it is a plain console program: readable PASS/FAIL
 // lines, non-zero exit on any failure, no QTest data-driven scaffolding.
 //
-// Deliberately NOT covered here: anything that would spawn pkexec or winws, and real network
-// reachability (the ping test only asserts that a verdict arrives). DownloadDialog is constructed but
-// never started: startFetch() is the only thing in it that touches GitHub, and a test suite must not
-// depend on that answer. UpdateChecker::check() is the release feed's one socket and is likewise never
-// called — the badge section hands the window the answer it would have carried instead.
+// Deliberately NOT covered here: anything that would spawn pkexec or winws, anything that would spawn
+// warp-cli (the WARP section hands each window an injected control that counts the verbs instead of
+// running them), and real network reachability (the ping test only asserts that a verdict arrives).
+// DownloadDialog is constructed but never started: startFetch() is the only thing in it that touches
+// GitHub, and a test suite must not depend on that answer. UpdateChecker::check() is the release feed's
+// one socket and is likewise never called — the badge section hands the window the answer it would have
+// carried instead.
 //
-// A constructed MainWindow is covered in three places: the watchdog section, which needs the real catalog
-// and journal to prove that a dead bypass turns into an offer; the release-badge section, which needs the
-// header the badge lives in; and the rounded-shell section, which needs the window's own pixels. All are
-// built without a window manager (offscreen) — the watchdog's three seams that would need a desktop, a
-// network or a root prompt are overridden — and all read the redirected test identity, skipping themselves
-// when the harness has not redirected it. Neither the watchdog nor the badge section asks the release feed
-// anything: the GitHub lookup is armed by main.cpp, which is not part of this binary, so a window here
-// cannot reach the network however the suite drives it. Motion is the one thing in the suite that has to
-// put a window on screen: a page behind another page has nothing to appear on, so a fade can only be
-// watched on a visible window — and so can a badge that breathes, and so can the corners of the window
-// itself, which the shell section reads out of a rendered grab.
+// A constructed MainWindow is covered in four places: the watchdog section, which needs the real catalog
+// and journal to prove that a dead bypass turns into an offer; the enrolment section, which needs the
+// window's own press to prove that a tunnel is asked for only after the device was settled; the
+// release-badge section, which needs the header the badge lives in; and the rounded-shell section,
+// which needs the window's own pixels. All are built without a window manager (offscreen) — the
+// watchdog's three seams that would need a desktop, a network or a root prompt are overridden, and so
+// are the enrolment section's launch, its consent question and its install offer — and all read the
+// redirected test identity, skipping themselves when the harness has not redirected it. Neither the
+// watchdog nor the badge section asks the release feed anything: the GitHub lookup is armed by
+// main.cpp, which is not part of this binary, so a window here cannot reach the network however the
+// suite drives it. Motion is the one thing in the suite that has to put a window on screen: a page
+// behind another page has nothing to appear on, so a fade can only be watched on a visible window —
+// and so can a badge that breathes, and so can the corners of the window itself, which the shell
+// section reads out of a rendered grab.
 
 #include "BlockcheckEngine.h"
 #include "IZapretBackend.h"
@@ -3762,6 +3767,425 @@ static void testWatchdog()
     store.setWatchdogIntervalMin(savedInterval);
 }
 
+// ------------------------------------------------ WARP enrolment wiring ----
+//
+// testCombinedPower() pins what a combined press means; it cannot pin that the window performs it.
+// The claim worth checking is the one a state machine gets wrong in silence: the tunnel is asked to
+// connect only after this machine's Cloudflare enrolment has been settled, never instead of it —
+// because warp-cli accepts a connect from a client it has no registration for, never comes up, and
+// reports the same "not registered" line on every poll, so the button reads idle instead of stuck.
+//
+// Everything below therefore drives a real MainWindow whose tunnel control answers rather than acts.
+// What is observed is the window's own sequence of calls, in the order it made them: the virtual
+// instance surface of WarpManager is what makes those calls countable, and MainWindow's
+// two-argument constructor is what keeps the control — rather than a warp-cli driver reaching for a
+// daemon — inside a test binary.
+
+namespace {
+
+// One ordered record, shared by a window and its control.
+//
+// An ordering claim needs the two objects' acts interleaved. Two counters that happen to agree would
+// also have agreed about a connect issued before the enrolment was asked for, which is the one case
+// worth failing, so both objects write into the same list as they are called.
+struct ActLog
+{
+    QStringList acts;
+    void record(const QString &act) { acts << act; }
+};
+
+// The tunnel control under test: the real class, with every verb replaced by a count and every
+// answer handed out by the scenario that needs it. Nothing here spawns warp-cli, and nothing here
+// needs a daemon, a network, or a machine that has Cloudflare's client installed at all.
+class CountingWarpManager : public WarpManager
+{
+public:
+    explicit CountingWarpManager(QObject *parent = nullptr) : WarpManager(parent) {}
+
+    ActLog *log = nullptr;
+    // What the window is told about this host and this tunnel. One flag under two names, as the
+    // control it replaces insists on: a mock that disagreed between "is it drivable" and "is it
+    // there" would be a toggle offering to install a client it says it can already drive.
+    bool available = true;
+    State reported = State::Disconnected;
+    // Whether the enrolment check reports that it started. False is the answer of a host with no
+    // warp-cli: the caller is told why in the error and owes the check nothing further.
+    bool enrolmentStarts = true;
+
+    int ensureCalls = 0;
+    int startCalls = 0;
+    int stopCalls = 0;
+    int refreshCalls = 0;
+    bool polling = false;
+
+    // Overridden without default arguments on purpose: the base's defaults belong to the base, and a
+    // caller reaching this object through a WarpManager* keeps taking them from there.
+    State state() const override { return reported; }
+    bool isAvailable() const override { return available; }
+    bool isInstalled() const override { return available; }
+    bool isPollingEnabled() const override { return polling; }
+
+    bool ensureRegistered(QString *error) override
+    {
+        ++ensureCalls;
+        if (log)
+            log->record(QStringLiteral("ensureRegistered"));
+        if (!enrolmentStarts) {
+            if (error)
+                *error = QStringLiteral("warp-cli is not installed on this host");
+            return false;
+        }
+        return true;
+    }
+
+    bool start(QString *error) override
+    {
+        Q_UNUSED(error);
+        ++startCalls;
+        if (log)
+            log->record(QStringLiteral("start"));
+        // The state a real connect would move to, so the repaint it triggers redraws from the answer
+        // a caller would have got rather than from one nobody asked for.
+        reported = State::Connecting;
+        emit stateChanged(reported);
+        return true;
+    }
+
+    bool stop(QString *error) override
+    {
+        Q_UNUSED(error);
+        ++stopCalls;
+        if (log)
+            log->record(QStringLiteral("stop"));
+        return true;
+    }
+
+    bool refresh(QString *error) override
+    {
+        Q_UNUSED(error);
+        ++refreshCalls;
+        return true;
+    }
+
+    // Takes the flag and nothing else. The base's implementation arms a status timer, and a control
+    // that let it would have a poll firing out from under the scenario that was counting calls.
+    void setPollingEnabled(bool on) override { polling = on; }
+
+    // Nothing to re-probe: PATH is not what this control is answering about.
+    void rescanAvailability() override {}
+
+    // The two answers the real object gives from the asynchronous show -> delete -> new sequence,
+    // handed out by hand. A scenario decides when the enrolment has settled; nothing here waits.
+    void answerReading(Registration reading) { emit registrationChanged(reading); }
+    void answerFinished(bool ok) { emit registrationFinished(ok); }
+};
+
+// The window under test: the same class, with the acts that would need a payload, a root prompt or a
+// modal replaced by a record, and its tunnel control handed in rather than built.
+class EnrolmentProbe : public MainWindow
+{
+public:
+    EnrolmentProbe(WarpManager *warp, QWidget *parent = nullptr) : MainWindow(warp, parent) {}
+
+    ActLog *log = nullptr;
+    int bypassStarts = 0;
+    int confirmations = 0;
+    int installsOffered = 0;
+    // Whether the bypass is up for the wait's guard. A press records the request; this is what the
+    // delay exists to wait for, and the guard is what makes the delay a condition rather than a pause.
+    bool bypassHeld = true;
+
+protected:
+    bool startBypass() override
+    {
+        ++bypassStarts;
+        if (log)
+            log->record(QStringLiteral("startBypass"));
+        // Not the base: that brings a profile up through the backend, which is a pkexec prompt and a
+        // payload. The press only needs to know the launch was accepted for the wait to be armed.
+        return true;
+    }
+
+    bool bypassIsUpOrRising() const override { return bypassHeld; }
+
+    bool confirmStopAndSwitch(ModeSelection, ModeSelection) override
+    {
+        ++confirmations;
+        return true;   // no modal anywhere in this suite — nothing out here could answer one
+    }
+
+    void offerWarpInstall() override
+    {
+        ++installsOffered;
+        // Not the base: that installs software as root.
+    }
+};
+
+// A window and its counting control, built fresh for one scenario and taken down with it.
+//
+// Fresh, because everything worth checking here lives in a per-request flag: a scenario that
+// inherited another's pending enrolment would be testing a sequence that had already run. The control
+// is allocated rather than a member because the window adopts it and deletes it — one owner, exactly
+// as with the one it builds itself — and the window must outlive the control it owns.
+//
+// The store is armed on the way in for the same reason the fixture is rebuilt: the window reads its
+// two halves from the store before anything can be said to it, and a scenario that ran after one
+// which turned the tunnel half dark would otherwise come up with the half it had just watched go.
+struct ArmBothHalves
+{
+    explicit ArmBothHalves(Settings &store)
+    {
+        store.setStartLastOnLaunch(false);   // nothing may start itself while the window is built
+        store.setUseZapret(true);
+        store.setUseWarp(true);
+    }
+};
+
+struct EnrolmentFixture
+{
+    // Declared ahead of the control and the window because that is the order they are built in, and
+    // the store write has to precede the window's own read of it.
+    ArmBothHalves armed;
+    ActLog log;
+    CountingWarpManager *warp;
+    EnrolmentProbe *window;
+
+    explicit EnrolmentFixture(Settings &store)
+        : armed(store), warp(new CountingWarpManager), window(new EnrolmentProbe(warp, nullptr))
+    {
+        warp->log = &log;
+        window->log = &log;
+        // The wait a combined press arms is the gap being survived, not the thing being observed:
+        // three real seconds would be a test of the clock rather than of the ordering.
+        window->setWarpStartDelayMs(0);
+    }
+
+    ~EnrolmentFixture() { delete window; }   // takes the control with it
+
+    EnrolmentFixture(const EnrolmentFixture &) = delete;
+    EnrolmentFixture &operator=(const EnrolmentFixture &) = delete;
+
+    // The press, through the button rather than a call into a slot. A click is what the user gives,
+    // and whether the control was even enabled for this state is part of what is being claimed. The
+    // wait is for the zero-millisecond settle timer a combined press arms, which has to reach the
+    // event loop to fire.
+    void press()
+    {
+        if (PowerButton *power = window->powerButton())
+            power->click();
+        QTest::qWait(20);
+    }
+};
+
+} // namespace
+
+// The enrolment half of a combined start, checked through the window that has to perform it.
+static void testWarpEnrolmentWiring()
+{
+    std::printf("\n[WARP enrolment wiring]\n");
+
+    if (!configRedirectedIntoBuildTree()) {
+        std::printf("  SKIP  the wiring belongs to a window, and constructing one needs XDG_CONFIG_HOME "
+                    "redirected into the build tree (run it through ctest)\n");
+        return;
+    }
+
+    // A two-profile tree for the same reason the watchdog section wants one: the press's first act is
+    // asking for the selected profile, and a window with no rows to select would say so instead of
+    // reaching the ordering this section is here to watch. (The act itself is overridden — nothing
+    // here may reach pkexec — but the press has to have a reason to reach it.)
+    QTemporaryDir dir;
+    check(dir.isValid(), "temporary directory for the fixture tree");
+    const QString root = dir.filePath(QStringLiteral("zapret/linux"));
+    check(makeWatchdogTree(root), "a two-profile linux tree written");
+
+    Settings store;   // the same store a MainWindow constructed here resolves to
+    const QString savedPath = store.zapretPath();
+    const bool savedZapret = store.useZapret();
+    const bool savedWarp = store.useWarp();
+    const bool savedStart = store.startLastOnLaunch();
+
+    store.setZapretPath(root);
+    // The two halves each fixture comes up with is armed per fixture (see ArmBothHalves), not once
+    // here: a scenario below watches the user turn the tunnel half dark, and that move is persisted
+    // the moment it is agreed — the store is the window's own, not a copy the test holds apart.
+
+    // ---- the press asks the enrolment, and asks nothing else yet ----
+    {
+        EnrolmentFixture f(store);
+        check(f.window->warpManager() == f.warp,
+              "the window drives the control it was handed, not a second one it built for itself");
+        check(f.window->selection() == ModeSelection{true, true},
+              "both halves came up lit, which is the only selection a combined press reads");
+        check(f.warp->polling, "…and the tunnel's polling was turned on in that control");
+        check(f.window->warpStartDelayMs() == 0, "…and the press's wait is set to nothing");
+
+        f.press();
+        check(f.warp->ensureCalls == 1,
+              "a press with the tunnel half lit asks whether this device is enrolled");
+        check(f.warp->startCalls == 0,
+              "…and asks nothing of the tunnel while that question is still owed an answer");
+        check(f.log.acts == (QStringList{QStringLiteral("startBypass"),
+                                         QStringLiteral("ensureRegistered")}),
+              "bypass first, then the enrolment check — the order the press table encodes, read off "
+              "the acts rather than asserted of the table");
+    }
+
+    // ---- an answer that says no earns no connect ----
+    {
+        EnrolmentFixture f(store);
+        f.press();
+        // Counted from after the press, because the press writes a journal line of its own when the
+        // wait lands: charging that to the answer would be measuring two claims as though they were one.
+        const int linesBefore = f.window->logPanel()->storedLineCount();
+        f.warp->answerFinished(false);
+        check(f.warp->startCalls == 0,
+              "a failed enrolment issues no connect — the tunnel this protects is the one that "
+              "would have hung silently");
+        check(f.window->logPanel()->storedLineCount() == linesBefore + 1
+                  && f.window->logPanel()->view()->toPlainText()
+                         .contains(LanguageManager::tr(QStringLiteral("warp.enroll_failed"))),
+              "…and the journal says what the failure cost, which is the half a raw CLI error never "
+              "carries");
+
+        // The request is closed out by the answer that refused it, so nothing further is owed.
+        f.warp->answerFinished(true);
+        check(f.warp->startCalls == 0,
+              "and a later yes does not revive a request the failed one already answered");
+    }
+
+    // ---- an answer that says yes earns exactly one ----
+    {
+        EnrolmentFixture f(store);
+        f.press();
+        f.warp->answerFinished(true);
+        check(f.warp->startCalls == 1,
+              "a settled enrolment is answered with the connect it was waiting for");
+        check(f.log.acts == (QStringList{QStringLiteral("startBypass"),
+                                         QStringLiteral("ensureRegistered"),
+                                         QStringLiteral("start")}),
+              "…and the connect came last: the ordering is the whole claim of connectWarp(), and two "
+              "counters that agreed would also have agreed about it being issued first");
+        f.warp->answerFinished(true);
+        check(f.warp->startCalls == 1,
+              "one request earns one tunnel, not one connect per answer that happens to arrive");
+    }
+
+    // ---- an answer to a request this window never made ----
+    {
+        EnrolmentFixture f(store);
+        // Nothing was pressed, so nothing is pending: this is the guard that keeps a registration
+        // finished() from some other caller's check from bringing a tunnel up here.
+        f.warp->answerReading(WarpManager::Registration::Registered);
+        f.warp->answerFinished(true);
+        check(f.warp->ensureCalls == 0, "an idle window asks the daemon for nothing");
+        check(f.warp->startCalls == 0,
+              "…and an enrolment answer nobody is waiting for brings no tunnel up");
+
+        // A reading worth mentioning is still said, even with no press behind it: the journal line
+        // exists because enrolling takes seconds and a silent button reads as a stuck one.
+        const int linesBefore = f.window->logPanel()->storedLineCount();
+        f.warp->answerReading(WarpManager::Registration::NotRegistered);
+        check(f.window->logPanel()->storedLineCount() == linesBefore + 1,
+              "a device that is about to be enrolled is announced before it is");
+        check(f.window->logPanel()->view()->toPlainText()
+                  .contains(LanguageManager::tr(QStringLiteral("warp.enrolling"))),
+              "…in the words the journal keeps for it, not in a placeholder");
+        f.warp->answerReading(WarpManager::Registration::Registered);
+        check(f.window->logPanel()->storedLineCount() == linesBefore + 1,
+              "a device that already has an enrolment promises nothing about making one");
+    }
+
+    // ---- the user changes their mind while the check runs ----
+    {
+        EnrolmentFixture f(store);
+        // Said here because this is the scenario that ends with the tunnel half written dark, and the
+        // store is the window's own: what it persists is the next window's starting point, which is
+        // why every fixture arms itself rather than trusting the last one.
+        check(f.window->selection() == ModeSelection{true, true},
+              "this scenario's window came up with both halves lit");
+        f.press();
+        check(f.warp->ensureCalls == 1, "the check is running");
+        // The pill is the user's own gesture, so it goes through the widget rather than through the
+        // window's private writer — a programmatic move would be the window answering itself.
+        f.window->modeToggle()->setSelection(ModeSelection{true, false});
+        check(f.window->selection() == ModeSelection{true, false}, "the tunnel half went dark");
+        check(f.window->confirmations == 0,
+              "and darkening a half that holds nothing asks no consent question about it");
+        f.warp->answerFinished(true);
+        check(f.warp->startCalls == 0,
+              "a successful enrolment is no licence to connect a tunnel the user just turned off");
+        check(f.warp->stopCalls == 0,
+              "…and nothing that was never held is taken down on the way out");
+    }
+
+    // ---- a second press while the check runs ----
+    {
+        EnrolmentFixture f(store);
+        f.press();
+        f.press();
+        check(f.warp->ensureCalls == 1,
+              "one request per press, and no second enrolment stacked on the first — a device enrolled "
+              "twice is a device that asked Cloudflare for two keys");
+        check(f.warp->startCalls == 0, "…and still no connect while the answer is outstanding");
+    }
+
+    // ---- the bypass the wait was waiting for never came up ----
+    {
+        EnrolmentFixture f(store);
+        f.window->bypassHeld = false;
+        f.press();
+        check(f.window->bypassStarts == 1, "the press did reach the launch it had to survive");
+        check(f.warp->ensureCalls == 0,
+              "and a wait that ends over a bypass that never held asks the daemon for nothing");
+        check(f.warp->startCalls == 0, "…and certainly connects no tunnel on top of it");
+    }
+
+    // ---- a host with no client at all ----
+    {
+        EnrolmentFixture f(store);
+        f.warp->enrolmentStarts = false;
+        f.press();
+        check(f.warp->ensureCalls == 1, "the press still asks");
+        check(f.warp->startCalls == 0,
+              "a check that could not even begin is answered with no connect and no promise of one");
+        f.warp->answerFinished(true);
+        check(f.warp->startCalls == 0, "…and a request that never began owes nothing to a late answer");
+    }
+
+    // ---- a tunnel this machine cannot serve ----
+    {
+        // Availability is read while the window is built, so this needs the control configured before
+        // the ctor runs rather than after — which is also why it is built by hand rather than through
+        // the fixture, whose control arrives already available.
+        ArmBothHalves armed(store);   // both halves asked for; the host is what refuses one
+        ActLog log;
+        auto *warp = new CountingWarpManager;
+        warp->available = false;
+        warp->log = &log;
+        EnrolmentProbe window(warp, nullptr);
+        window.log = &log;
+        window.setWarpStartDelayMs(0);
+        check(window.selection() == ModeSelection{true, false},
+              "a stored WARP half the host cannot serve comes up dark rather than unpressable");
+        window.powerButton()->click();
+        QTest::qWait(20);
+        check(warp->ensureCalls == 0,
+              "and pressing on a dark tunnel half asks no enrolment of a client that is not here");
+        window.modeToggle()->setSelection(ModeSelection{true, true});
+        check(window.installsOffered == 1,
+              "…while lighting that half is answered with the install that would make it true");
+        check(warp->ensureCalls == 0, "…and not with an enrolment against nothing");
+    }
+
+    // The store is left exactly as the section found it: a run that ended with the WARP half lit would
+    // be a next launch that asks for a tunnel.
+    store.setZapretPath(savedPath);
+    store.setUseZapret(savedZapret);
+    store.setUseWarp(savedWarp);
+    store.setStartLastOnLaunch(savedStart);
+}
+
 // A release answer has to become something a person can see, and the seeing is the window's claim
 // rather than the checker's: UpdateChecker decides whether a build is ahead, MainWindow decides what an
 // offer looks like. This section hands the window an answer by hand — the same way the watchdog section
@@ -4442,6 +4866,7 @@ int main(int argc, char **argv)
     testHistoryPage();
     testMotion();
     testWatchdog();
+    testWarpEnrolmentWiring();
     testUpdateNotice();
     testWindowFrame();
 
