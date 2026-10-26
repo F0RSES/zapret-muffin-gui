@@ -29,6 +29,9 @@
         <file>icons/more.svg</file>
         <file>icons/ping-test.svg</file>
         <file>icons/shield-check.svg</file>
+        <file>icons/folder.svg</file>
+        <file>icons/search.svg</file>
+        <file>icons/download-cloud.svg</file>
         <file>icons/update-available.svg</file>
         <file>icons/window-close.svg</file>
         <file>icons/window-minimize.svg</file>

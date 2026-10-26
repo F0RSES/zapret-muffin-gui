@@ -1662,6 +1662,12 @@ void MainWindow::wire()
     // issued at all — connectWarp() asks, and this is the only way back to a connect.
     connect(m_warp, &WarpManager::registrationChanged, this, &MainWindow::onWarpRegistrationChanged);
     connect(m_warp, &WarpManager::registrationFinished, this, &MainWindow::onWarpRegistrationFinished);
+    // The third of the object's answers, and the one that decides whether an offer is ever made:
+    // installationChanged() arrives when the host has finished saying whether it owns a WARP package
+    // this process cannot run. Connected once, here, for the same reason as the pair above — the
+    // answer belongs to the manager's round, not to the press that happened to be waiting for it.
+    connect(m_warp, &WarpManager::installationChanged, this,
+            &MainWindow::onWarpInstallationChanged);
 
     // The installer's two channels. Both connections are made here rather than inside offerWarpInstall()
     // because a lambda connected per press would stack up — one per offer — and the finished() slot closes
@@ -2044,6 +2050,15 @@ ModeSelection MainWindow::clampSelectionForAvailability(ModeSelection desired, b
     if (!warpAvailable)
         desired.warp = false;
     return desired;
+}
+
+QString MainWindow::installQuestionKey(bool repair)
+{
+    // Two sentences, not one with a clause bolted on. The difference between them is the thing the
+    // user is consenting to — putting a package here, or clearing one that is already here — and a
+    // modal that blurred the two would be asking for permission to do something it did not say.
+    return repair ? QStringLiteral("warp.reinstall_question")
+                  : QStringLiteral("warp.install_question");
 }
 
 
@@ -2522,13 +2537,32 @@ void MainWindow::onSelectionChanged(bool zapretOn, bool warpOn)
     if (costs && target == from)
         showTransientMessage(LanguageManager::tr(QStringLiteral("mode.switch_declined")), 5000);
 
-    // The selection now asks for the tunnel, but the client is not here to serve it. The install is
-    // the only way that half of the interface can be honoured on this machine, and this is the moment
-    // the absence is felt rather than a state the window sits in silently. offerWarpInstall() declines
-    // silently when the client exists or an install is already running, so this is safe to reach for
-    // from every selection change — the m_settingMode guard above already ignored a programmatic one.
-    if (target.warp && m_warp && !m_warp->isInstalled())
-        offerWarpInstall();
+    // The selection now asks for the tunnel. Before anything is offered, the machine gets to answer
+    // whether it already has the client: isInstalled() asks PATH, the package databases, the Windows
+    // service and the registry, and it answers yes while any of them is still replying. An install
+    // offered to a machine that owns the package would be at worst the removal of somebody's working
+    // tunnel, so the offer is the last resort here and not the first.
+    if (target.warp && m_warp) {
+        if (m_warp->isAvailable()) {
+            // Nothing to say and nothing to offer: the half is pressable and connectWarp() will run
+            // through the enrolment gate like any other request.
+        } else if (m_warp->installLooksBroken()) {
+            // A client is here and does not work. That is the one case where installing over the top
+            // is what the machine needs, and offerWarpInstall() says so in its own question.
+            offerWarpInstall();
+        } else if (m_warp->isInstalled()) {
+            // Installed, but not drivable from here — a snap whose command is off this PATH, a service
+            // the registry knows and a permission this process does not. Said rather than offered,
+            // because the honest summary of that machine is "already has it", not "shall I install it".
+            if (m_log) {
+                m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.already_installed"))
+                                      .arg(m_warp->installedVia()),
+                                  LogPanel::Info);
+            }
+        } else {
+            offerWarpInstall();
+        }
+    }
 }
 
 void MainWindow::onWarpStateChanged(WarpManager::State state)
@@ -2554,6 +2588,35 @@ void MainWindow::onWarpAvailabilityChanged(bool available)
     // A fresh availability answer also means the state is stale — redraw from what warp-cli now says.
     else
         updateStatusUi();
+    // One of the two ways a half goes dark is worth naming out loud: a client that exists, answers to
+    // nothing, and leaves the interface looking like it broke on its own. The core has already logged
+    // the tool's own words; this is the user's sentence, and the repair offer follows from it.
+    if (!available && m_warp && m_warp->installLooksBroken() && m_log) {
+        m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.client_broken")), LogPanel::Error);
+    }
+}
+
+// The host has finished saying whether it owns a WARP client this process cannot run.
+//
+// Two answers matter, and they are the two halves of the gate in onSelectionChanged(): a machine that
+// turns out to have the package needs the journal to say so rather than an install it did not ask
+// for, and a machine that turns out not to have it needs the offer it was told to wait for. The
+// second one is the reason this handler exists at all — a press that arrived while the round was
+// running was deliberately not answered, and this is where it is paid.
+void MainWindow::onWarpInstallationChanged(bool installed, const QString &via)
+{
+    if (installed) {
+        if (m_log && m_warp && !m_warp->isAvailable()) {
+            m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.already_installed")).arg(via),
+                              LogPanel::Info);
+        }
+        return;
+    }
+    // Not installed, the round is over, and the selection is still asking. Nothing else will ever
+    // reach the offer for this request: the pill has already been clamped dark, and a user is not
+    // going to press a half that is lit a second time to get the answer they already waited for.
+    if (m_selection.warp)
+        offerWarpInstall();
 }
 
 // The host has no WARP client and the user just asked for the tunnel. One question, then one
@@ -2568,8 +2631,16 @@ void MainWindow::offerWarpInstall()
 {
     if (!m_warpInstaller || m_warpInstaller->isBusy())
         return;                 // one install at a time, and its window is already on screen
-    if (m_warp && m_warp->isInstalled())
-        return;                 // nothing to offer a machine that already has the client
+    if (m_warp && m_warp->isInstalled() && !m_warp->installLooksBroken())
+        return;                 // nothing to offer a machine that already has the client and works
+
+    // Which of the two questions this is, and the one difference between them in what the user is
+    // agreeing to: a first install puts a package here, a repair admits one is already here in a
+    // state worth clearing first. Both are the same operation afterwards — the installer's own
+    // setRepair() decides what the script does with it — but they are not the same consent, and a
+    // box that says "not installed" about a machine that has it is a box that should not be trusted
+    // with the rest of the sentence.
+    const bool repair = m_warp && m_warp->installLooksBroken();
 
     // Asked before the password, because the answer is a system change that outlives this application:
     // a package the user's own tooling now has to know about, and a network interface it owns. Default
@@ -2577,7 +2648,7 @@ void MainWindow::offerWarpInstall()
     // closed on the keyboard must not be read as consent to install software.
     QMessageBox box(QMessageBox::Question,
                     LanguageManager::tr(QStringLiteral("warp.install_title")),
-                    LanguageManager::tr(QStringLiteral("warp.install_question")),
+                    LanguageManager::tr(installQuestionKey(repair)),
                     QMessageBox::Yes | QMessageBox::No, this);
     box.setDefaultButton(QMessageBox::No);
     if (box.exec() != QMessageBox::Yes) {
@@ -2594,6 +2665,10 @@ void MainWindow::offerWarpInstall()
     // pill — the installer's closeGuiAndVerify() reads m_hideWarpGui when the msiexec has finished, and
     // the answer it acts on has to be the answer the setting has right now, not at startup.
     m_warpInstaller->setHideWarpGui(m_settings->hideWarpGui());
+    // The same argument for the repair flag, and the same moment: both are read from the state of the
+    // machine when the operation is composed rather than from what the interface believed when the
+    // half was lit. What the user agreed to is the question above; what the script does is this.
+    m_warpInstaller->setRepair(repair);
 
     QString error;
     if (!m_warpInstaller->start(&error)) {
@@ -2751,6 +2826,18 @@ void MainWindow::applyTheme()
             continue;   // the language button is a flag, not a glyph, and keeps its own tint
         const int px = b->property("glyphPx").toInt();
         b->setIcon(Theme::themedIcon(glyph, px > 0 ? px : 16));
+    }
+    // A glyph placed inside a QLineEdit is a QAction rather than a widget: the field draws it through an
+    // internal button the two passes above cannot reach. The settings page's folder icon is the app's only
+    // instance, and it is baked at build time like every other one, so the same two properties carry it —
+    // otherwise a theme switch would leave a dark-sheet glyph sitting in a light-sheet field.
+    const auto actions = findChildren<QAction *>();
+    for (QAction *a : actions) {
+        const QString glyph = a->property("glyph").toString();
+        if (glyph.isEmpty())
+            continue;   // menu and shortcut actions carry text, not a baked glyph
+        const int px = a->property("glyphPx").toInt();
+        a->setIcon(Theme::themedIcon(glyph, px > 0 ? px : 16));
     }
     if (QLabel *logo = findChild<QLabel *>(QStringLiteral("brandLogo")))
         logo->setPixmap(Theme::icon(QStringLiteral("app"), Theme::accent(), kBrandGlyphPx)

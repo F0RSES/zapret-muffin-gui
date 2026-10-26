@@ -374,6 +374,31 @@ const QVector<Row> &catalog()
             "d'administrateur, et l'installation ne pourra pas être annulée à mi-chemin.",
             "Cloudflare WARP इंस्टॉल नहीं है। अभी इंस्टॉल करें? इसमें व्यवस्थापक अधिकार चाहिए, और "
             "इंस्टॉलर को बीच में रद्द नहीं किया जा सकता।"),
+        // The repair's question, asked where the sentence above would be false. A machine that owns a
+        // client which does not answer needs to be told the difference between "install" and "clear
+        // what is here and install again", because the second one is what its own package manager
+        // will do to its own leftovers.
+        ROW("warp.reinstall_question",
+            "На этом компьютере уже есть клиент Cloudflare WARP, но он не отвечает. Очистить его "
+            "остатки и установить заново? Потребуется подтверждение прав администратора, и установщик "
+            "нельзя будет отменить на середине.",
+            "This computer already has a Cloudflare WARP client, but it does not answer. Clear what it "
+            "left behind and install it again? This asks for administrator rights, and the installer "
+            "cannot be cancelled halfway through.",
+            "Este equipo ya tiene un cliente de Cloudflare WARP, pero no responde. ¿Limpiar lo que "
+            "dejó e instalarlo de nuevo? Se pedirán derechos de administrador y el instalador no podrá "
+            "cancelarse a mitad.",
+            "Dieser Rechner hat bereits einen Cloudflare-WARP-Client, aber er antwortet nicht. Seine "
+            "Reste entfernen und neu installieren? Das verlangt Administratorrechte, und der "
+            "Installer lässt sich nicht halb abbrechen.",
+            "此电脑上已经有 Cloudflare WARP 客户端，但它没有响应。清除它留下的内容并重新安装吗？这需要 "
+            "管理员权限，而且安装过程无法中途取消。",
+            "Ce ordinateur possède déjà un client Cloudflare WARP, mais il ne répond pas. Nettoyer ce "
+            "qu'il a laissé et le réinstaller ? Cela demande des droits d'administrateur, et "
+            "l'installation ne pourra pas être annulée à mi-chemin.",
+            "या संगणकावर आधीच Cloudflare WARP क्लाइंट आहे, पण तो प्रतिसाद देत नाही. त्याचे उरलेले "
+            "हटवून परत इंस्टॉल करायचे? याला व्यवस्थापक अधिकार लागतील, आणि इंस्टॉलर मधेत रद्द करता "
+            "येणार नाही."),
         ROW("warp.install_title", "Установка Cloudflare WARP", "Installing Cloudflare WARP",
             "Instalando Cloudflare WARP", "Cloudflare WARP wird installiert",
             "正在安装 Cloudflare WARP", "Installation de Cloudflare WARP",
@@ -430,6 +455,31 @@ const QVector<Row> &catalog()
             "安装已取消——已切回 zapret 模式",
             "Installation annulée — retour au mode zapret",
             "इंस्टॉल रद्द — zapret मोड पर वापस बदल दिया गया"),
+        // Said instead of an offer, on a machine the package databases describe as already owning the
+        // client. %1 is where the answer came from — "dpkg", "snap", "flatpak", "rpm", "service",
+        // "registry" — because "it is already installed" is only reassuring if it says by what, and the
+        // half of the interface that stayed dark is otherwise unexplained.
+        ROW("warp.already_installed", "Cloudflare WARP уже установлен в системе (%1) — использую "
+            "существующий клиент",
+            "Cloudflare WARP is already installed on this machine (%1) — using the existing client",
+            "Cloudflare WARP ya está instalado en este equipo (%1): se usará el cliente existente",
+            "Cloudflare WARP ist auf diesem Rechner bereits installiert (%1) — der vorhandene Client "
+            "wird verwendet",
+            "此电脑上已安装 Cloudflare WARP（%1）——使用现有的客户端",
+            "Cloudflare WARP est déjà installé sur cette machine (%1) — utilisation du client existant",
+            "या संगणकावर Cloudflare WARP आधीच इंस्टॉल आहे (%1) — अस्तित्वातील क्लाइंट वापरत आहोत"),
+        // The other reason a lit half goes dark without anybody asking it to: the client is here, and
+        // it does not answer. Distinct from an absence because the fix is different — this machine needs
+        // its package repaired, not a new one — and the offer that follows says so in those words.
+        ROW("warp.client_broken", "Клиент Cloudflare WARP найден, но не отвечает — требуется "
+            "переустановка",
+            "The Cloudflare WARP client was found but does not answer — it needs reinstalling",
+            "Se ha encontrado el cliente de Cloudflare WARP, pero no responde: hay que reinstalarlo",
+            "Der Cloudflare-WARP-Client wurde gefunden, antwortet aber nicht — er muss neu "
+            "installiert werden",
+            "已找到 Cloudflare WARP 客户端，但它没有响应——需要重新安装",
+            "Le client Cloudflare WARP a été trouvé mais ne répond pas — il faut le réinstaller",
+            "Cloudflare WARP क्लाइंट सापडला पण प्रतिसाद देत नाही — त्याला परत इंस्टॉल करावे लागेल"),
         // The single-window policy's own line: it only writes when it actually took a window down, so
         // a host with no WARP GUI running never sees it.
         ROW("warp.gui_closed", "Закрыто окно Cloudflare WARP: %1",
@@ -817,13 +867,31 @@ const QVector<Row> &catalog()
             "后端拒绝了本次启动。", "Le backend a refusé le démarrage.",
             "बैकएंड ने शुरू करने से इनकार किया।"),
 
-        // ---- settings dialog ----
+        // ---- settings page ----
+        // The three card headings. They are words rather than rules because the page is grouped by what a
+        // setting costs: a folder on disk, a look, a cadence of probes. Naming the groups is what lets the
+        // eye skip the ones that are already right, and a heading in the wrong language is the one thing a
+        // card layout cannot hide.
+        ROW("settings.group.general", "Основные", "General", "General", "Allgemein", "常规",
+            "Général", "सामान्य"),
+        ROW("settings.group.interface", "Интерфейс", "Interface", "Interfaz", "Oberfläche", "界面",
+            "Interface", "इंटरफ़ेस"),
+        ROW("settings.group.network", "Сеть", "Network", "Red", "Netzwerk", "网络", "Réseau",
+            "नेटवर्क"),
         ROW("settings.title", "Настройки Muffin", "Muffin settings", "Ajustes de Muffin",
             "Muffin-Einstellungen", "Muffin 设置", "Paramètres de Muffin", "Muffin सेटिंग्स"),
         ROW("settings.path", "Путь к zapret", "zapret path", "Ruta de zapret", "Pfad zu zapret",
             "zapret 路径", "Chemin de zapret", "zapret पथ"),
         ROW("settings.browse", "Обзор…", "Browse…", "Examinar…", "Durchsuchen…", "浏览…",
             "Parcourir…", "ब्राउज़ करें…"),
+        // The folder glyph inside the path field says "Browse…" as its name and needs a sentence as its
+        // tooltip: an icon-only control must state what pressing it opens.
+        ROW("settings.browse_tip", "Выбрать папку с деревом zapret",
+            "Choose the folder that holds the zapret tree",
+            "Elegir la carpeta que contiene el árbol de zapret",
+            "Ordner mit dem zapret-Baum auswählen", "选择包含 zapret 目录树的文件夹",
+            "Choisir le dossier contenant l'arborescence zapret",
+            "zapret ट्री वाला फ़ोल्डर चुनें"),
         ROW("settings.autodetect", "Автопоиск", "Auto-detect", "Búsqueda automática",
             "Automatisch suchen", "自动搜索", "Recherche auto", "स्वतः खोज"),
         ROW("settings.autodetect_tip",
@@ -903,6 +971,16 @@ const QVector<Row> &catalog()
             "इस वातावरण में सूचना क्षेत्र नहीं है: विंडो बंद करने पर zapret रुकेगा और ऐप बंद होगा।\n"
             "सेटिंग सहेजी गई — पैनल बाद में चालू हुआ तो ट्रे खुद दिख जाएगा।"),
         ROW("settings.theme", "Тема", "Theme", "Tema", "Thema", "主题", "Thème", "थीम"),
+        // The row's label is translated; the entries under it are not, on purpose — a language is always
+        // named in its own script so the person who cannot read the current UI can still find their own.
+        ROW("settings.language", "Язык", "Language", "Idioma", "Sprache", "语言", "Langue",
+            "भाषा"),
+        ROW("settings.language_tip", "Сменить язык интерфейса сразу после сохранения",
+            "Switch the interface language as soon as you save",
+            "Cambiar el idioma de la interfaz al guardar",
+            "Sprache der Oberfläche nach dem Speichern wechseln",
+            "保存后立即切换界面语言", "Changer la langue de l'interface après l'enregistrement",
+            "सहेजते ही इंटरफ़ेस की भाषा बदलें"),
         ROW("theme.dark", "Тёмная", "Dark", "Oscura", "Dunkel", "深色", "Sombre", "डार्क"),
         ROW("theme.light", "Светлая", "Light", "Clara", "Hell", "浅色", "Clair", "लाइट"),
         ROW("theme.system", "Системная", "System", "Del sistema", "System", "跟随系统",
@@ -1173,6 +1251,19 @@ int retranslateTree(QObject *root)
         const QString key = action->property("i18nKey").toString();
         if (!key.isEmpty()) {
             action->setText(LanguageManager::tr(key));
+            ++rewritten;
+        }
+        // An action's tooltip is read as often as its text — a glyph inside a line edit is an action, and
+        // it is icon-only, so the tooltip is the only words it ever shows. Leaving this out would keep
+        // that sentence in the language the page was built in after every other label had moved.
+        const QString tip = action->property("i18nTip").toString();
+        if (!tip.isEmpty()) {
+            action->setToolTip(LanguageManager::tr(tip));
+            ++rewritten;
+        }
+        const QString acc = action->property("i18nAcc").toString();
+        if (!acc.isEmpty()) {
+            action->setProperty("accessibleName", LanguageManager::tr(acc));
             ++rewritten;
         }
     }

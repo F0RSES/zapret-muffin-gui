@@ -52,6 +52,7 @@
 
 #include <QApplication>
 #include <QBrush>
+#include <QAction>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QAbstractItemModel>
@@ -64,6 +65,7 @@
 #include <QFont>
 #include <QFontInfo>
 #include <QFontMetrics>
+#include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
 #include <QHeaderView>
@@ -72,6 +74,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QLayout>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -129,6 +132,30 @@ static void check(bool cond, const QString &what)
     std::printf(cond ? "  PASS  %s\n" : "  FAIL  %s\n", qUtf8Printable(what));
     if (!cond)
         ++g_failures;
+}
+
+// The card a widget sits in, or null when it is outside every card (the commit row is, on purpose).
+//
+// The settings page parents each of its rows to the card that holds them, which is what makes "did this
+// setting land in the right group" a question about the object tree rather than about coordinates: it
+// survives any later change to the layout's geometry, and it fails the moment a row is moved to another
+// card — which is the only way the grouping can silently rot.
+static QWidget *settingsCardOf(QWidget *w)
+{
+    for (QWidget *p = w ? w->parentWidget() : nullptr; p; p = p->parentWidget())
+        if (p->objectName() == QLatin1String("settingsCard"))
+            return p;
+    return nullptr;
+}
+
+// Two colours the eye cannot tell apart are two colours that failed: antialiasing and the sheet's own
+// gradient-free fills mean a rendered pixel is within a few units of the hex the sheet declared, and
+// nothing tighter is provable on a machine whose font rendering this file does not control.
+static bool rgbClose(const QColor &a, const QColor &b, int tol)
+{
+    return a.isValid() && b.isValid()
+           && qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol
+           && qAbs(a.blue() - b.blue()) <= tol;
 }
 
 // The sheet with every /* … */ block removed.
@@ -1689,6 +1716,320 @@ static void testTrayPolicy()
     check(page.zapretPath() == other, "an external change re-reads into the field");
 }
 
+// --------------------------------------------- settings page: cards, path row ----
+//
+// The redesign's promise is a shape, so that is what is checked: three titled cards, the settings grouped
+// into them, one text field with a glyph inside it, two 32 px icons beside it, and no wide text buttons
+// left. Behaviours (Save, the tray note, the ranges) belong to the section above; this one is about what
+// the page looks like and where each row lives, because those are the two things a "make it prettier"
+// commit can get wrong while every behaviour still passes.
+static void testSettingsPageCards(QApplication &app)
+{
+    std::printf("\n[SettingsPage: cards and the path row]\n");
+
+    QTemporaryDir dir;
+    check(dir.isValid(), "temporary dir created");
+    Settings settings(dir.filePath(QStringLiteral("muffin-cards.ini")));
+    const QString root = dir.filePath(QStringLiteral("zapret/linux"));
+    QDir().mkpath(root + QStringLiteral("/init.d/sysv"));
+    QFile marker(root + QStringLiteral("/init.d/sysv/zapret"));
+    check(marker.open(QIODevice::WriteOnly), "planted a zapret marker so the path validates");
+    marker.close();
+    settings.setZapretPath(root);
+    settings.setLanguage(QStringLiteral("ru"));
+
+    // Layout is only computed for a widget that has been shown, and every assertion below about position
+    // (which card, which column, which centre line) is a layout fact.
+    Theme::apply(app, true);
+    SettingsPage page(settings);
+    page.resize(830, 560);
+    page.show();
+    QTest::qWait(30);
+
+    // ---- the cards ----
+    QFrame *general = page.generalCard();
+    QFrame *ui = page.interfaceCard();
+    QFrame *network = page.networkCard();
+    check(general && ui && network, "the page is built as three cards");
+    const auto cards = page.findChildren<QFrame *>(QStringLiteral("settingsCard"));
+    check(cards.size() == 3, "…and exactly three frames answer to the card's object name");
+    check(general && ui && network && cards.indexOf(general) == 0 && cards.indexOf(ui) == 1
+                  && cards.indexOf(network) == 2,
+          "…in the order the page stacks them: general, interface, network");
+
+    const struct { QFrame *card; const char *key; } headings[] = {
+        { general, "settings.group.general" },
+        { ui, "settings.group.interface" },
+        { network, "settings.group.network" },
+    };
+    for (const auto &h : headings) {
+        QLabel *title = h.card ? h.card->findChild<QLabel *>(QStringLiteral("settingsCardTitle"))
+                               : nullptr;
+        check(title && title->text() == LanguageManager::tr(QString::fromLatin1(h.key)),
+              QStringLiteral("each card carries its own heading (%1)")
+                  .arg(QString::fromLatin1(h.key)));
+    }
+
+    // ---- the grouping ----
+    check(settingsCardOf(page.pathField()) == general, "the zapret path is a general setting");
+    check(settingsCardOf(page.trayNote()) == general,
+          "…and so are the switches beside it, which are the program's own behaviour");
+    check(settingsCardOf(page.themeField()) == ui, "the theme is an interface setting");
+    check(settingsCardOf(page.languageField()) == ui, "…and so is the language");
+    check(settingsCardOf(page.animationsField()) == ui, "…and so is the motion switch");
+    check(settingsCardOf(page.pingIntervalField()) == network, "the ping interval is a network setting");
+    check(settingsCardOf(page.watchdogIntervalField()) == network,
+          "…and so is the interval a live profile is re-asked on");
+    check(settingsCardOf(page.saveButton()) == nullptr,
+          "the commit row belongs to no card — it closes the page, it is not one of its groups");
+
+    // ---- one field column, three cards ----
+    // The reason the row labels are pinned to one width: a QFormLayout takes as much label column as its
+    // widest label asks for, so three forms left to themselves would start their fields three pixels apart.
+    const auto rowLabels = page.findChildren<QLabel *>(QStringLiteral("settingsRowLabel"));
+    // Five labelled rows: the path, the theme, the language, and the two intervals. The switches carry
+    // their own text and are not counted here — they are the reason the form has an empty label column.
+    check(rowLabels.size() == 5, "every labelled row carries a label widget of its own");
+    bool allPinned = !rowLabels.isEmpty();
+    for (QLabel *label : rowLabels)
+        if (label->minimumWidth() != SettingsPage::rowLabelWidth()
+            || label->maximumWidth() != SettingsPage::rowLabelWidth())
+            allPinned = false;
+    check(allPinned, "every row label is pinned to one width, so the cards share a field edge");
+    if (!rowLabels.isEmpty())
+        check(rowLabels.first()->wordWrap(),
+              "…and a long label wraps rather than breaking the column it is pinned to");
+
+    const int fieldX = page.themeField()->mapTo(&page, QPoint(0, 0)).x();
+    check(page.pingIntervalField()->mapTo(&page, QPoint(0, 0)).x() == fieldX,
+          "the interface and the network cards start their fields at the same pixel");
+    check(page.pathField()->mapTo(&page, QPoint(0, 0)).x() == fieldX,
+          "…and so does the path field in the first one");
+
+    // ---- the path row ----
+    QLineEdit *field = page.pathField();
+    check(field != nullptr, "the path row is one text field");
+    // Asked of the card, and of its direct children only: a QSpinBox owns a QLineEdit of its own, so a
+    // page-wide search counts three edits on a page with one. The promise is about the row, not about Qt.
+    const auto rowEdits = general ? general->findChildren<QLineEdit *>(QString(),
+                                                                    Qt::FindDirectChildrenOnly)
+                                  : QList<QLineEdit *>();
+    check(rowEdits.size() == 1 && !rowEdits.isEmpty() && rowEdits.first() == field,
+          "…and the only field the row holds — one box for one value");
+
+    QAction *browse = page.browseAction();
+    check(browse != nullptr, "the field carries a folder glyph of its own");
+    check(field && browse && field->actions().contains(browse),
+          "…as an action of the field itself, so it is drawn inside the box rather than beside it");
+    // Which end of the box, asked of the widgets the field lays out for its actions — the position is the
+    // field's business and not something the action carries.
+    const auto inFieldButtons = field ? field->findChildren<QToolButton *>()
+                                      : QList<QToolButton *>();
+    bool glyphOnTheRight = false;
+    for (QToolButton *b : inFieldButtons)
+        if (!b->icon().isNull() && b->geometry().x() > field->width() / 2)
+            glyphOnTheRight = true;
+    check(glyphOnTheRight, "…and on the right, where the field puts the things that act on it");
+    check(browse && !browse->icon().isNull(), "…as an icon, not as a word");
+    check(browse && !browse->toolTip().isEmpty() && !browse->toolTip().contains(QLatin1String("%1")),
+          "…explained by a tooltip with no unfilled placeholder in it");
+    check(browse && !browse->text().isEmpty(), "…and named, for anything reading the screen");
+
+    QToolButton *detect = page.autoDetectButton();
+    QToolButton *download = page.downloadButton();
+    check(detect && detect->size() == QSize(32, 32), "auto-detect is a 32x32 icon button");
+    check(download && download->size() == QSize(32, 32), "…and so is the download");
+    check(detect && download
+                  && detect->objectName() == QLatin1String("pathToolButton")
+                  && download->objectName() == QLatin1String("pathToolButton"),
+          "both are styled by the same object name, so one sheet rule draws the pair");
+    check(detect && !detect->icon().isNull() && detect->text().isEmpty(),
+          "the pair is glyphs and nothing else");
+    check(detect && !detect->toolTip().isEmpty() && !detect->accessibleName().isEmpty(),
+          "a wordless button still says what it does, to the pointer and to the accessibility tree");
+    check(download && !download->toolTip().isEmpty() && !download->accessibleName().isEmpty(),
+          "…and so does the second one");
+    check(detect && download && detect->toolTip() != download->toolTip()
+                  && detect->accessibleName() != download->accessibleName(),
+          "the two say different things — one searches the disk, the other fetches a tree");
+    check(detect && download && detect->parentWidget() == field->parentWidget()
+                  && download->parentWidget() == field->parentWidget(),
+          "field and both icons are one row, not a row each");
+    if (general && field && detect && download) {
+        const int fieldCentre = field->mapTo(general, QPoint(0, field->height() / 2)).y();
+        check(detect->mapTo(general, QPoint(0, detect->height() / 2)).y() == fieldCentre
+                      && download->mapTo(general, QPoint(0, download->height() / 2)).y() == fieldCentre,
+              "…centred on the field's line, so the row reads as one control with two appendages");
+        check(detect->mapTo(general, QPoint(0, 0)).x()
+                      >= field->mapTo(general, QPoint(0, field->width())).x(),
+              "…and to the right of it, where the field ends");
+    }
+
+    // What the redesign removed. Three wide text buttons used to share this row's width with the field,
+    // which is how one setting came to be the loudest line on the page.
+    const auto textButtons = page.findChildren<QPushButton *>();
+    check(textButtons.size() == 1 && !textButtons.isEmpty()
+                  && textButtons.first() == page.saveButton(),
+          "the only text button left on the page is Save");
+
+    // ---- the language picker ----
+    QComboBox *lang = page.languageField();
+    check(lang != nullptr, "the interface card offers a language of its own");
+    check(lang && lang->count() == LanguageManager::codes().size(),
+          "…with one entry per catalog language");
+    check(lang && lang->currentData().toString() == settings.language(),
+          "…and it opens on the stored code, not on the widget's first row");
+    check(lang && lang->itemText(0) == LanguageManager::nativeName(LanguageManager::codes().first()),
+          "entries name themselves in their own script — a language is never translated");
+    check(lang && lang->maximumWidth() == 200,
+          "…and it is held to the same narrow shape as the theme picker");
+    check(lang && lang->property("i18nItems").toStringList().isEmpty(),
+          "…which is why it is the one combo on the page NOT tagged for retranslation");
+
+    if (lang)
+        lang->setCurrentIndex(lang->findData(QStringLiteral("de")));
+    page.saveButton()->click();
+    check(settings.language() == QLatin1String("de"), "Save stores the language that was picked");
+    check(LanguageManager::instance().currentCode() == QLatin1String("de"),
+          "…and moves the catalog with it, so the change is on screen and not only in the store");
+    QLabel *generalTitle = general
+        ? general->findChild<QLabel *>(QStringLiteral("settingsCardTitle")) : nullptr;
+    check(generalTitle && generalTitle->text()
+                              == LanguageManager::translate(QStringLiteral("de"),
+                                                            QStringLiteral("settings.group.general")),
+          "the card headings are re-read, so the new grouping does not speak the old language");
+    check(browse && browse->toolTip()
+                          == LanguageManager::translate(QStringLiteral("de"),
+                                                        QStringLiteral("settings.browse_tip")),
+          "…and so is the folder glyph's tooltip, which is all an icon-only control ever says");
+    check(field && field->placeholderText().contains(
+                       LanguageManager::translate(QStringLiteral("de"),
+                                                 QStringLiteral("common.or"))),
+          "…even the placeholder, which is composed of three texts rather than one catalog key");
+    check(!page.zapretPath().isEmpty(), "a language change does not lose the value in the field");
+
+    // The catalog is shared state: the rest of the binary, and the application itself, open in Russian.
+    if (lang)
+        lang->setCurrentIndex(lang->findData(QStringLiteral("ru")));
+    page.saveButton()->click();
+    check(LanguageManager::instance().currentCode() == QLatin1String("ru"),
+          "and the section puts the language back the way it found it");
+
+    // ---- the render ----
+    // A card that is not styled is a rectangle of the page's own colour with a border nobody asked for,
+    // and every assertion above would still pass on it. So the pixels are read too: the sheet's own
+    // declaration for a card must be what the render paints inside the card, and something else in the
+    // gap between two of them — which is the whole difference between a card and a line of text.
+    const QString sheet = app.styleSheet();
+    const QColor pageBg = sheetRuleColor(sheet, QStringLiteral("QWidget#settingsPage"),
+                                         QStringLiteral("background-color"));
+    const QColor cardBg = sheetRuleColor(sheet, QStringLiteral("QFrame#settingsCard"),
+                                         QStringLiteral("background-color"));
+    check(pageBg.isValid() && cardBg.isValid(), "the sheet says what the page and its cards paint");
+    check(pageBg != cardBg, "a card is a different surface from the page it floats on");
+    const QImage img = page.grab().toImage().convertToFormat(QImage::Format_ARGB32);
+    const QPoint inside = general ? general->mapTo(&page, QPoint(20, 6)) : QPoint(-1, -1);
+    check(img.rect().contains(inside) && rgbClose(img.pixelColor(inside), cardBg, 8),
+          QStringLiteral("the card paints the sheet's surface where it is empty (%1 at (%2,%3), "
+                         "wanted %4)")
+              .arg(img.rect().contains(inside) ? img.pixelColor(inside).name(QColor::HexRgb)
+                                               : QStringLiteral("<off-image>"))
+              .arg(inside.x()).arg(inside.y())
+              .arg(cardBg.isValid() ? cardBg.name(QColor::HexRgb) : QStringLiteral("<none>")));
+    check(rgbClose(img.pixelColor(QPoint(4, 4)), pageBg, 8),
+          "…and the page behind the cards paints its own, so the gap between cards is a gap");
+
+    // The stroke is the other half of a card, and a stylesheet border is not decoration drawn OVER the
+    // widget: it moves the contents in by its own width. So the leftmost pixel of the card's own column
+    // must be the sheet's border colour, and the fill must begin one pixel inside it.
+    const QColor stroke = sheetRuleHex(sheet, QStringLiteral("QFrame#settingsCard"),
+                                       QStringLiteral("border"));
+    const QPoint edge = general ? general->mapTo(&page, QPoint(0, general->height() / 2))
+                                : QPoint(-1, -1);
+    const QPoint justInside = general
+                                  ? general->mapTo(&page, QPoint(1, general->height() / 2))
+                                  : QPoint(-1, -1);
+    check(stroke.isValid() && img.rect().contains(edge) && rgbClose(img.pixelColor(edge), stroke, 24),
+          QStringLiteral("…and the card is stroked: %1 at its left edge, wanted %2")
+              .arg(img.rect().contains(edge) ? img.pixelColor(edge).name(QColor::HexRgb)
+                                             : QStringLiteral("<off-image>"))
+              .arg(stroke.isValid() ? stroke.name(QColor::HexRgb) : QStringLiteral("<none>")));
+    check(rgbClose(img.pixelColor(justInside), cardBg, 8),
+          "…with the fill beginning one pixel inside that stroke");
+
+    // Nothing may sit on top of anything else inside a card. Every row of a card is a direct child of it,
+    // so their geometries are in one coordinate system and an overlap is a layout that stopped laying
+    // out — which is exactly what a nested-layout mistake looks like on screen.
+    int overlaps = 0;
+    for (const QFrame *c : {general, ui, network}) {
+        if (!c)
+            continue;
+        const auto pieces = c->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly);
+        for (int i = 0; i < pieces.size(); ++i) {
+            for (int j = i + 1; j < pieces.size(); ++j) {
+                const QRect a = pieces.at(i)->geometry();
+                const QRect b = pieces.at(j)->geometry();
+                if (pieces.at(i)->isVisible() && pieces.at(j)->isVisible() && a.intersects(b))
+                    ++overlaps;
+            }
+        }
+    }
+    check(overlaps == 0,
+          QStringLiteral("no two widgets in a card occupy the same pixels (%1 collisions)").arg(overlaps));
+
+    // And a card is only a card if it is taller than its own rows: the heading must be above the first
+    // field, and the last row must end inside the frame rather than on its stroke.
+    if (general && field) {
+        const QRect titleOf = general->findChild<QLabel *>(QStringLiteral("settingsCardTitle"))
+                                  ->geometry();
+        check(titleOf.top() < field->geometry().top(), "the heading sits above the card's first field");
+        check(field->geometry().bottom() < general->height() - 1,
+              "…and every row finishes inside the card, not under its border");
+    }
+
+    // The three glyphs are baked pixmaps, so a theme switch cannot recolour them: the window re-bakes
+    // every widget (and the field's action) that carries the name and the size it was drawn at. Without
+    // these properties a light sheet would keep a dark-sheet glyph in its path field.
+    check(browse && browse->property("glyph").toString() == QLatin1String("folder")
+                  && browse->property("glyphPx").toInt() == 16,
+          "the folder glyph declares the name and size applyTheme() must re-bake it at");
+    check(detect && detect->property("glyph").toString() == QLatin1String("search"),
+          "auto-detect declares its magnifier…");
+    check(download && download->property("glyph").toString() == QLatin1String("download-cloud"),
+          "…and the download its cloud");
+
+    // ---- the light sheet ----
+    // A card whose surface equals its page's is not a card, and the dark sheet is the only one where that
+    // mistake is invisible — on white canvas a missing rule shows as a flat page with hairlines on it.
+    Theme::apply(app, false);
+    QTest::qWait(30);
+    const QColor lightPage = sheetRuleColor(app.styleSheet(), QStringLiteral("QWidget#settingsPage"),
+                                            QStringLiteral("background-color"));
+    const QColor lightCard = sheetRuleColor(app.styleSheet(), QStringLiteral("QFrame#settingsCard"),
+                                            QStringLiteral("background-color"));
+    check(lightPage.isValid() && lightCard.isValid() && lightPage != lightCard,
+          "the light sheet gives its cards a surface of their own too");
+    const QImage lightImg = page.grab().toImage().convertToFormat(QImage::Format_ARGB32);
+    const QPoint lightInside = general ? general->mapTo(&page, QPoint(20, 6)) : QPoint(-1, -1);
+    check(lightImg.rect().contains(lightInside)
+                  && rgbClose(lightImg.pixelColor(lightInside), lightCard, 8),
+          QStringLiteral("…and paints it (%1 at (%2,%3), wanted %4)")
+              .arg(lightImg.rect().contains(lightInside)
+                       ? lightImg.pixelColor(lightInside).name(QColor::HexRgb)
+                       : QStringLiteral("<off-image>"))
+              .arg(lightInside.x()).arg(lightInside.y())
+              .arg(lightCard.isValid() ? lightCard.name(QColor::HexRgb)
+                                       : QStringLiteral("<none>")));
+    check(general && general->mapTo(&page, QPoint(20, 6)).y() > 0
+                  && rgbClose(lightImg.pixelColor(QPoint(4, 4)), lightPage, 8),
+          "…with the page still its own colour behind the cards");
+
+    // Everything after this section — and the application itself — is drawn on the dark sheet.
+    Theme::apply(app, true);
+    QTest::qWait(30);
+    page.hide();
+}
+
 // ---------------------------------------------------------- window policy ----
 static void testWindowPolicy()
 {
@@ -2153,6 +2494,32 @@ static void testTheme(QApplication &app)
         check(sheet.contains(QStringLiteral("trayNote")),
               QStringLiteral("%1 sheet colours the tray notice").arg(dark ? QStringLiteral("dark")
                                                                          : QStringLiteral("light")));
+        // The settings page's cards. Each name is a widget the page builds by objectName, and an
+        // unstyled one is visible: a card without its rule is a rectangle of the page's own colour with a
+        // border nobody asked for, and the pair of icons beside the path field would take the generic
+        // QToolButton padding that no longer fits them at 32 px.
+        for (const QString &name : {QStringLiteral("settingsCard"),
+                                    QStringLiteral("settingsCardTitle"),
+                                    QStringLiteral("pathToolButton")})
+            check(sheet.contains(name),
+                  QStringLiteral("%1 sheet styles the settings card and its parts: %2")
+                      .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"), name));
+        // The card must be a different surface from the page it floats on — that is the whole idea of a
+        // card — and the theme's own surface token is what makes it so in both sheets.
+        const QColor pageBg = sheetRuleColor(sheet, QStringLiteral("QWidget#settingsPage"),
+                                             QStringLiteral("background-color"));
+        const QColor cardBg = sheetRuleColor(sheet, QStringLiteral("QFrame#settingsCard"),
+                                             QStringLiteral("background-color"));
+        check(pageBg.isValid() && cardBg.isValid() && pageBg != cardBg,
+              QStringLiteral("%1 sheet paints its cards on a surface distinct from the page (%2 vs %3)")
+                  .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"),
+                       pageBg.isValid() ? pageBg.name(QColor::HexRgb) : QStringLiteral("<none>"),
+                       cardBg.isValid() ? cardBg.name(QColor::HexRgb) : QStringLiteral("<none>")));
+        // The in-field glyph must be flattened: the generic tool-button padding would push it out of the
+        // field it is supposed to sit inside.
+        check(sheet.contains(QStringLiteral("QLineEdit QToolButton")),
+              QStringLiteral("%1 sheet flattens the glyph drawn inside a line edit")
+                  .arg(dark ? QStringLiteral("dark") : QStringLiteral("light")));
         check(sheet.contains(QStringLiteral("navButton")),
               QStringLiteral("%1 sheet styles the rail").arg(dark ? QStringLiteral("dark")
                                                                  : QStringLiteral("light")));
@@ -2366,10 +2733,33 @@ static void testTheme(QApplication &app)
                                 QStringLiteral("more"), QStringLiteral("cards"),
                                 // The frameless window's own chrome.
                                 QStringLiteral("window-close"), QStringLiteral("window-minimize"),
-                                QStringLiteral("ping-test")};
+                                QStringLiteral("ping-test"),
+                                // The settings page's path row: the glyph inside the field and the two
+                                // beside it. Each is looked up by name from C++ and baked into a pixmap at
+                                // load time, so a missing file is an invisible control rather than an
+                                // error — the one failure mode an icon-only button can have quietly.
+                                QStringLiteral("folder"), QStringLiteral("search"),
+                                QStringLiteral("download-cloud")};
     for (const QString &g : glyphs)
         check(QFile::exists(QStringLiteral(":/icons/%1.svg").arg(g)),
               QStringLiteral("icon file exists: %1").arg(g));
+
+    // The three path-row glyphs are the app's only wordless buttons, so an icon that resolves to an empty
+    // pixmap would leave a user staring at two 32 px plates with no clue what either is. Existence is not
+    // enough — they have to carry ink at the size they are drawn at.
+    for (const QString &g : {QStringLiteral("folder"), QStringLiteral("search"),
+                             QStringLiteral("download-cloud")}) {
+        const QPixmap pm = Theme::icon(g, Theme::iconColor(), 16).pixmap(16, 16);
+        check(!pm.isNull(), QStringLiteral("path-row glyph rasterises: %1").arg(g));
+        bool inked = false;
+        if (!pm.isNull()) {
+            const QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32);
+            for (int y = 0; y < img.height() && !inked; ++y)
+                for (int x = 0; x < img.width(); ++x)
+                    if (qAlpha(img.pixel(x, y)) > 40) { inked = true; break; }
+        }
+        check(inked, QStringLiteral("path-row glyph has ink: %1").arg(g));
+    }
 
     // The chrome and menu glyphs are thin strokes drawn for 16 px; a glyph that only "exists" but fails to
     // rasterise (a malformed path, a size that never got its currentColor) shows up as a hole in the header
@@ -4824,6 +5214,67 @@ static void testWindowFrame()
                       .arg(moved.y() - before.y()));
         }
 
+        // ---- the in-field glyph, across a theme switch ----
+        //
+        // The folder icon inside the settings page's path field is the app's only glyph that is neither a
+        // QPushButton nor a QToolButton — a QLineEdit draws a QAction through a button of its own — so the
+        // window's re-bake pass has to be told about actions as well. A colour baked into a pixmap does not
+        // follow the sheet by itself, and the failure would be invisible to every assertion that looks only
+        // at properties: the glyph would simply stay the colour of the theme the page was built in, which is
+        // dark-on-light the moment the user picks the light theme.
+        {
+            SettingsPage *windowPage = window.findChild<SettingsPage *>();
+            QAction *fieldAction = windowPage ? windowPage->browseAction() : nullptr;
+            check(fieldAction != nullptr, "the window's settings page carries the in-field glyph");
+
+            // A fingerprint of a glyph's colour, cheap and stable: the weighted sum of the pixels that
+            // carry ink. Two tints of one shape differ here, and a missing icon lands on zero.
+            auto inkOf = [](QAction *a) {
+                const QImage img = a->icon().pixmap(16, 16).toImage()
+                                       .convertToFormat(QImage::Format_ARGB32);
+                quint64 ink = 0;
+                for (int y = 0; y < img.height(); ++y) {
+                    for (int x = 0; x < img.width(); ++x) {
+                        if (qAlpha(img.pixel(x, y)) > 40) {
+                            ink += quint64(qRed(img.pixel(x, y))) * 3
+                                   + quint64(qGreen(img.pixel(x, y))) * 5
+                                   + quint64(qBlue(img.pixel(x, y))) * 7;
+                        }
+                    }
+                }
+                return ink;
+            };
+
+            const QString savedTheme = window.settingsModel()->theme();
+            window.settingsModel()->setTheme(QStringLiteral("dark"));
+            QTest::qWait(30);
+            const quint64 darkInk = fieldAction ? inkOf(fieldAction) : 0;
+            window.settingsModel()->setTheme(QStringLiteral("light"));
+            QTest::qWait(30);
+            const quint64 lightInk = fieldAction ? inkOf(fieldAction) : 0;
+            check(fieldAction && darkInk != lightInk && darkInk != 0 && lightInk != 0,
+                  QStringLiteral("switching theme on the model re-bakes the glyph inside the field "
+                                 "(%1 -> %2 of ink)").arg(darkInk).arg(lightInk));
+            // And not merely differently: the new pixels are the ones the light sheet's own icon colour
+            // paints, so the in-field glyph cannot drift from the icons beside it.
+            const QImage wanted = Theme::themedIcon(QStringLiteral("folder"), 16)
+                                      .pixmap(16, 16).toImage().convertToFormat(QImage::Format_ARGB32);
+            quint64 wantedInk = 0;
+            for (int y = 0; y < wanted.height(); ++y) {
+                for (int x = 0; x < wanted.width(); ++x) {
+                    if (qAlpha(wanted.pixel(x, y)) > 40) {
+                        wantedInk += quint64(qRed(wanted.pixel(x, y))) * 3
+                                     + quint64(qGreen(wanted.pixel(x, y))) * 5
+                                     + quint64(qBlue(wanted.pixel(x, y))) * 7;
+                    }
+                }
+            }
+            check(fieldAction && lightInk == wantedInk,
+                  "…to the light theme's own icon colour, not to some third tint");
+            window.settingsModel()->setTheme(savedTheme);
+            QTest::qWait(30);
+        }
+
         // Back on the theme the rest of the binary — and the application itself — expects.
         Theme::apply(app, true);
         window.hide();
@@ -4858,6 +5309,7 @@ int main(int argc, char **argv)
     testCombinedPower();
     testProfileCard();
     testTrayPolicy();
+    testSettingsPageCards(app);
     testWindowPolicy();
     testLanguage();
     testTheme(app);

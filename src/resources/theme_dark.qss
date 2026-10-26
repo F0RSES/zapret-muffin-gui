@@ -185,6 +185,54 @@ QLabel#pageTitle {
     background-color: transparent;
     font-size: 15pt; font-weight: 700; color: #E7E9F2;
 }
+
+/* ---------- settings cards ----------
+   The settings page is three titled surfaces rather than one long form: the column of rows it used to be
+   read as a dialog dumped onto a page, and its path row — one field and three wide text buttons — was the
+   loudest line on the screen. A card is the same #15161C the profile rows use, so "a thing you can set"
+   and "a thing you can run" are visibly the same kind of object, and the page reads as three decisions
+   instead of eleven lines.
+
+   The heading is the sheet's muted token at 9pt bold, not the accent: it names a group rather than offering
+   an action, and #C084FC on every heading would leave the page with no colour left for the buttons. */
+QFrame#settingsCard {
+    background-color: #15161C;
+    border: 1px solid #262A36;
+    border-radius: 14px;
+}
+QLabel#settingsCardTitle {
+    background-color: transparent;
+    color: #8A91A6; font-size: 9pt; font-weight: 700; letter-spacing: 0.8px;
+}
+/* The row labels are pinned to one width in C++ (SettingsPage::rowLabelWidth), and that is what makes the
+   field column start at the same pixel in all three cards; here they only need to not paint a plate of
+   their own inside the card. */
+QLabel#settingsRowLabel { background-color: transparent; }
+/* The two icons beside the path field, and the folder glyph inside it. 32x32 fixed in code, so the sheet's
+   job is the plate: the recessed fill of a field rather than the raised fill of a button, because these
+   controls act ON the field beside them and should look like part of it. */
+QToolButton#pathToolButton {
+    background-color: #0F1116; color: #B8BED0;
+    border: 1px solid #262A36; border-radius: 9px; padding: 0;
+}
+QToolButton#pathToolButton:hover { background-color: #1F222D; border-color: #343A4A; color: #E7E9F2; }
+QToolButton#pathToolButton:pressed { background-color: #15161C; border-color: #2A3644; }
+QToolButton#pathToolButton:focus { outline: none; border-color: #2E2545; }
+QToolButton#pathToolButton:disabled { color: #454A5C; background-color: #15161C; border-color: #1A1D26; }
+/* The glyph inside the path field is a QAction, and QLineEdit draws it with its own little button — which
+   the generic QToolButton rules above would hand 11 px of horizontal padding, pushing it out of a 32 px
+   field. Flattening it here is what keeps the folder sitting in the field as part of the field. */
+QLineEdit QToolButton {
+    background-color: transparent; border: none; border-radius: 6px; padding: 0;
+}
+QLineEdit QToolButton:hover { background-color: #1F222D; }
+QLineEdit QToolButton:pressed { background-color: #15161C; }
+/* The scroll area the cards ride in. The page is taller than the fixed window's body now that its rows
+   carry titles and padding, and a clipped last card is worse than a scrollbar — which the sheet already
+   draws as a 9 px thread. The host widget takes the page colour from the surface block at the foot of this
+   file, so the cards float on the same canvas the rest of the window uses. */
+QScrollArea#settingsScroll { background: transparent; border: none; }
+
 /* ---------- tool buttons ---------- */
 /* The main window has no toolbar any more; these survive for the tool buttons a native file dialog or a
    QComboBox can still put on screen. */

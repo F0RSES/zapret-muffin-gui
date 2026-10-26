@@ -166,6 +166,40 @@ QLabel#pageTitle {
     font-size: 15pt; font-weight: 700; color: #1F2937;
 }
 
+/* ---------- settings cards ----------
+   The same three titled surfaces as the dark sheet, in daylight tokens: a white card behind a grey
+   hairline reads as raised off the #F3F4F6 canvas, which is how every other panel in this theme says it.
+   The heading is the sheet's muted grey — this theme's own quietest label colour is reserved for the
+   footer's hints, and a heading one step louder than its rows is the point. */
+QFrame#settingsCard {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D5DB;
+    border-radius: 14px;
+}
+QLabel#settingsCardTitle {
+    background-color: transparent;
+    color: #6B7280; font-size: 9pt; font-weight: 700; letter-spacing: 0.8px;
+}
+QLabel#settingsRowLabel { background-color: transparent; }
+/* The two icons beside the path field. White plate on the card's white would vanish, so they take the
+   theme's recessed fill — the same one the fields themselves use — and answer the pointer in the accent. */
+QToolButton#pathToolButton {
+    background-color: #F9FAFB; color: #4B5563;
+    border: 1px solid #D1D5DB; border-radius: 8px; padding: 0;
+}
+QToolButton#pathToolButton:hover { background-color: #EDE9FE; border-color: #7C3AED; color: #1F2937; }
+QToolButton#pathToolButton:pressed { background-color: #E5E7EB; border-color: #6D28D9; }
+QToolButton#pathToolButton:focus { outline: none; border-color: #DDD6FE; }
+QToolButton#pathToolButton:disabled { color: #9CA3AF; background-color: #E5E7EB; border-color: #E5E7EB; }
+/* The in-field glyph: flattened for the same reason as the dark sheet — the generic QToolButton padding
+   above would push it out of the field it is supposed to sit inside. */
+QLineEdit QToolButton {
+    background-color: transparent; border: none; border-radius: 6px; padding: 0;
+}
+QLineEdit QToolButton:hover { background-color: #EDE9FE; }
+QLineEdit QToolButton:pressed { background-color: #E5E7EB; }
+QScrollArea#settingsScroll { background: transparent; border: none; }
+
 /* ---------- profile rows ----------
     One horizontal row per profile: the name at the left, the mini ping chips in the middle, the row menu
     at the right. A row is a choice, not a control — starting belongs to the dashboard's power button — so

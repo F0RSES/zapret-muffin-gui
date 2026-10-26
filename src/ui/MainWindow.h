@@ -128,6 +128,13 @@ public:
     // half nobody can press).
     static ModeSelection clampSelectionForAvailability(ModeSelection desired, bool warpAvailable);
 
+    // Which question an offer asks: the ordinary "install it?" or the repair's "it is here and broken,
+    // clear it and install again?". A key rather than a sentence because the sentence belongs to the
+    // catalog, and because the choice between the two is the whole of the feature's promise — a
+    // machine that already owns the client must never be told it does not. Static and pure so a test
+    // can pin the pair without pressing anything.
+    static QString installQuestionKey(bool repair);
+
     // ---- what a change of selection is allowed to do --------------------------------
     //
     // The pill says which subsystems the power button will control. Choosing is not starting: the
@@ -617,6 +624,10 @@ private slots:
     // warp-cli appeared or disappeared while the window was open. Re-clamp the pill so a
     // mid-session uninstall does not leave the button pointed at a subsystem with no binary.
     void onWarpAvailabilityChanged(bool available);
+    // The host finished answering whether it owns a WARP client this process cannot run. A yes is said
+    // in the journal instead of being acted on; a no is where an offer that a press had to withhold
+    // finally gets made, because the press that asked for it has long since returned.
+    void onWarpInstallationChanged(bool installed, const QString &via);
     // The host has no WARP client and the user just asked for the tunnel. Offer to put one there:
     // install is the only way the WARP half of the pill can be honoured on this machine, and this is
     // the moment the absence is felt rather than a state the window sits in silently. Virtual for the

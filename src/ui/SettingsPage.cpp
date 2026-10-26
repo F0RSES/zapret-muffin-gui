@@ -10,19 +10,23 @@
 #include "ZapretPaths.h"
 #include "ZapretSource.h"
 
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QStyle>
 #include <QSystemTrayIcon>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -37,6 +41,39 @@ constexpr int kSavedNoteMs = 2000;
 // theme picker that spans the page reads as a sentence rather than as a choice of three words — the same
 // reason the interval box does not need a line long enough to type a novel into.
 constexpr int kNarrowFieldPx = 200;
+
+// The two icons beside the path field. 32 px is the hit area the window's own chrome buttons use, so the
+// pair reads as controls of the same rank as everything else in the app rather than as decorations; 16 px
+// is the glyph that fills it without touching the rim.
+constexpr int kPathToolPx = 32;
+constexpr int kPathGlyphPx = 16;
+
+// The card's own padding. A card is a surface, not a border: the gap between the stroke and the first row
+// is what makes it read as raised, and the gap between two cards is wider than the gap between two rows
+// inside one — the page groups by distance as much as by frame.
+//
+// These four numbers are measured against the window, not chosen by taste: the settings page is 794x514
+// inside the fixed 900x700 canvas, which leaves the scroll area's viewport about 455 px, and the three
+// cards' own height is what decides whether the last row is on screen at the default font or one flick
+// away. At 12/6/6/10 they come out at that height, so the page ends on screen here; the scroll area is why
+// being a few pixels taller elsewhere — a larger font, a language whose sentences are longer than
+// Russian's — is a scrollbar rather than a clipped setting.
+constexpr int kCardHPadPx = 20;
+constexpr int kCardVPadPx = 12;
+// The heading sits exactly as close to its first row as one row sits to the next: a card has one rhythm,
+// and its grouping cue is the 10 px between cards, not a second internal gap.
+constexpr int kCardTitleGapPx = 6;
+constexpr int kCardRowGapPx = 6;
+constexpr int kCardGapPx = 10;
+// The commit row to the last card. Not kCardGapPx: the Save button is not a fifth card.
+constexpr int kCommitGapPx = 6;
+
+// The glyph each of the three ways to fill the field is drawn by. Named here rather than spelled inline:
+// the same strings are what MainWindow::applyTheme() re-bakes the icons from on a theme switch, since a
+// baked pixmap cannot recolour itself.
+const char kFolderGlyph[] = "folder";
+const char kSearchGlyph[] = "search";
+const char kDownloadGlyph[] = "download-cloud";
 } // namespace
 
 SettingsPage::SettingsPage(Settings &settings, QWidget *parent)
@@ -52,6 +89,16 @@ SettingsPage::SettingsPage(Settings &settings, QWidget *parent)
         if (!m_writing)
             loadFromSettings();
     });
+
+    // The language is the one setting on this page that rewrites the page. When the rail's flag button
+    // moves it, MainWindow re-reads its whole tree, and a page that only re-read its values would go on
+    // showing its own labels — and its composed placeholder, which no single catalog key backs — in the
+    // language the user has just left.
+    connect(&LanguageManager::instance(), &LanguageManager::languageChanged, this,
+            [this](const QString &) {
+                refreshPathPlaceholder();
+                retranslateTree(this);
+            });
 }
 
 SettingsPage::~SettingsPage() = default;
@@ -61,57 +108,117 @@ void SettingsPage::build()
     setObjectName(QStringLiteral("settingsPage"));
     setAttribute(Qt::WA_StyledBackground, true);
 
-    m_pathEdit = new QLineEdit(this);
-    m_pathEdit->setPlaceholderText(QStringLiteral("/home/…/zapret/linux ")
-                                   + LanguageManager::tr(QStringLiteral("common.or"))
-                                   + QStringLiteral(" C:\\...\\zapret\\windows"));
+    // The cards are stacked inside a scroll area. Three titled surfaces with their own padding come close
+    // to the height the fixed 900x700 window has left below its header, its footer and its own page
+    // heading — and at a large font setting they exceed it, so a page that silently clipped its last card
+    // would be one row shorter than the user's settings. The journal and the profile list already scroll
+    // for the same reason.
+    //
+    // The commit row stays OUTSIDE the scroll: Save is the one control on this page that must never be
+    // reachable only by scrolling to it, because a user who has just changed three values and cannot see
+    // the button has no reason to know the write is still owed.
+    auto *scroll = new QScrollArea(this);
+    scroll->setObjectName(QStringLiteral("settingsScroll"));
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    auto *stack = new QWidget(scroll);
+    auto *cards = new QVBoxLayout(stack);
+    cards->setContentsMargins(0, 0, 0, 0);
+    // The gap between two cards (10 px) is wider than the gap between two rows inside one (6 px) — the
+    // page groups by distance as well as by frame, and a group the eye has to find the border of is a
+    // group that failed.
+    cards->setSpacing(kCardGapPx);
+    scroll->setWidget(stack);
+
+    const Card general = makeCard(stack, QStringLiteral("settings.group.general"));
+    const Card uiCard = makeCard(stack, QStringLiteral("settings.group.interface"));
+    const Card network = makeCard(stack, QStringLiteral("settings.group.network"));
+    m_generalCard = general.frame;
+    m_interfaceCard = uiCard.frame;
+    m_networkCard = network.frame;
+
+    // ---- the path card -------------------------------------------------------
+    // Where zapret lives, and the only field on the page that has to hold a whole path.
+    m_pathEdit = new QLineEdit(general.frame);
+    refreshPathPlaceholder();
     m_pathEdit->setClearButtonEnabled(true);
 
     // Three ways to fill one field, because three situations call for them: the tree is on this disk and
     // the user knows where, the tree is on this disk and nobody knows where, or there is no tree yet.
-    i18nText(m_browseButton = new QPushButton(this), QStringLiteral("settings.browse"));
-    i18nText(m_detectButton = new QPushButton(this), QStringLiteral("settings.autodetect"));
-    i18nTip(m_detectButton, QStringLiteral("settings.autodetect_tip"));
-    i18nText(m_downloadButton = new QPushButton(this), QStringLiteral("action.download_zapret"));
-    i18nTip(m_downloadButton, QStringLiteral("action.download_zapret_tip"));
+    //
+    // All three used to be wide text buttons, which made this one row louder and taller than every other
+    // row on the page and gave the field a quarter of the width left to it. Now the action that fills the
+    // field with a folder is drawn IN it — a QLineEdit places and clips it, so it costs the text nothing —
+    // and the two that are about the disk rather than about a folder stand beside it as 32 px icons, each
+    // still saying what it does in words for the pointer and for the accessibility tree.
+    m_browseAction = new QAction(general.frame);
+    m_browseAction->setObjectName(QStringLiteral("browseAction"));
+    m_browseAction->setProperty("glyph", QLatin1String(kFolderGlyph));
+    m_browseAction->setProperty("glyphPx", kPathGlyphPx);
+    m_browseAction->setIcon(Theme::themedIcon(QLatin1String(kFolderGlyph), kPathGlyphPx));
+    i18nText(m_browseAction, QStringLiteral("settings.browse"));
+    i18nTip(m_browseAction, QStringLiteral("settings.browse_tip"));
+    m_pathEdit->addAction(m_browseAction, QLineEdit::TrailingPosition);
+
+    m_detectButton = makePathTool(general.frame, QLatin1String(kSearchGlyph),
+                                  QStringLiteral("settings.autodetect"),
+                                  QStringLiteral("settings.autodetect_tip"));
+    m_downloadButton = makePathTool(general.frame, QLatin1String(kDownloadGlyph),
+                                    QStringLiteral("action.download_zapret"),
+                                    QStringLiteral("action.download_zapret_tip"));
 
     auto *pathRow = new QHBoxLayout;
     pathRow->setContentsMargins(0, 0, 0, 0);
-    pathRow->setSpacing(6);
+    pathRow->setSpacing(8);
     pathRow->addWidget(m_pathEdit, 1);
-    pathRow->addWidget(m_browseButton);
     pathRow->addWidget(m_detectButton);
     pathRow->addWidget(m_downloadButton);
 
-    m_pathState = new QLabel(this);
+    general.form->addRow(rowLabel(general.frame, QStringLiteral("settings.path")), pathRow);
+
+    // The verdict on the path, under the field rather than beside it: it is a sentence, and a sentence
+    // squeezed into the remaining 200 px of a row wraps into unreadable confetti.
+    m_pathState = new QLabel(general.frame);
     m_pathState->setWordWrap(true);
+    general.form->addRow(QString(), m_pathState);
 
-    i18nText(m_startLastCheck = new QCheckBox(this), QStringLiteral("settings.start_last"));
-    i18nText(m_trayCheck = new QCheckBox(this), QStringLiteral("settings.tray"));
-    // Motion joins the two switches rather than the themed fields below them because it is the same kind
-    // of answer: one tick that changes what the application does, not what it looks like.
-    i18nText(m_animationsCheck = new QCheckBox(this), QStringLiteral("settings.animations"));
-    i18nTip(m_animationsCheck, QStringLiteral("settings.animations_tip"));
-
-    // The WARP window switch, built like the two above and hidden on a host with nothing to hide. The
-    // Linux package installs a daemon and a CLI and no window at all, and a settings row promising to
-    // close a window that cannot exist is a lie the page would tell on every machine that is not
-    // Windows — hence platformHasWarpGui(), which is the same function the install path asks.
-    i18nText(m_hideWarpCheck = new QCheckBox(this), QStringLiteral("settings.hide_warp"));
-    i18nTip(m_hideWarpCheck, QStringLiteral("settings.hide_warp_tip"));
-    m_hideWarpCheck->setVisible(
-        WarpInstaller::platformHasWarpGui(ZapretSource::hostPlatform()));
+    // ---- what the application does on its own ---------------------------------
+    // Still the general card: these are the settings about the program's own life — what it starts with,
+    // what it hides into, which window it closes — and separating them from the folder they all act on
+    // would have bought a fourth heading at the price of the last row fitting on screen.
+    i18nText(m_startLastCheck = new QCheckBox(general.frame),
+             QStringLiteral("settings.start_last"));
+    i18nText(m_trayCheck = new QCheckBox(general.frame), QStringLiteral("settings.tray"));
 
     // A ticked box that cannot be honoured is worse than an explanation. Sessions without a StatusNotifier
     // host (bare GNOME, a plain Wayland compositor) report no tray at all, so spell out what closing the
     // window will actually do — MainWindow still retries, so the tray may appear later by itself.
-    m_trayNote = new QLabel(this);
+    m_trayNote = new QLabel(general.frame);
     m_trayNote->setObjectName(QStringLiteral("trayNote"));
     i18nText(m_trayNote, QStringLiteral("settings.tray_note"));
     m_trayNote->setWordWrap(true);
     m_trayNote->setVisible(!QSystemTrayIcon::isSystemTrayAvailable());
 
-    m_themeBox = new QComboBox(this);
+    // The WARP window switch, built like the two above and hidden on a host with nothing to hide. The
+    // Linux package installs a daemon and a CLI and no window at all, and a settings row promising to
+    // close a window that cannot exist is a lie the page would tell on every machine that is not
+    // Windows — hence platformHasWarpGui(), which is the same function the install path asks.
+    i18nText(m_hideWarpCheck = new QCheckBox(general.frame), QStringLiteral("settings.hide_warp"));
+    i18nTip(m_hideWarpCheck, QStringLiteral("settings.hide_warp_tip"));
+    m_hideWarpCheck->setVisible(
+        WarpInstaller::platformHasWarpGui(ZapretSource::hostPlatform()));
+
+    // A switch names itself, so it is a label as much as a field — and a label belongs at the card's left
+    // edge, under its heading, not indented into the column where a value it has no label for would go.
+    general.body->addWidget(m_startLastCheck);
+    general.body->addWidget(m_trayCheck);
+    general.body->addWidget(m_trayNote);
+    general.body->addWidget(m_hideWarpCheck);
+
+    // ---- the interface card ---------------------------------------------------
+    m_themeBox = new QComboBox(uiCard.frame);
     m_themeBox->setMaximumWidth(kNarrowFieldPx);
     m_themeBox->addItem(LanguageManager::tr(QStringLiteral("theme.dark")), Theme::nameForMode(Theme::Mode::Dark));
     m_themeBox->addItem(LanguageManager::tr(QStringLiteral("theme.light")), Theme::nameForMode(Theme::Mode::Light));
@@ -119,7 +226,47 @@ void SettingsPage::build()
     i18nItems(m_themeBox, { QStringLiteral("theme.dark"), QStringLiteral("theme.light"),
                             QStringLiteral("theme.system") });
 
-    m_pingSpin = new QSpinBox(this);
+    // The language, in the same shape as the theme above it because it is the same kind of answer: one
+    // choice out of a short list. The entries are deliberately NOT tagged with i18nItems — a language is
+    // named in its own script in every language, which is the one thing about this picker that must not
+    // be translated: the person who cannot read the current UI is exactly the person who has to recognise
+    // their own. See LanguageManager::nativeName().
+    m_languageBox = new QComboBox(uiCard.frame);
+    m_languageBox->setObjectName(QStringLiteral("languageBox"));
+    m_languageBox->setMaximumWidth(kNarrowFieldPx);
+    for (const QString &code : LanguageManager::codes())
+        m_languageBox->addItem(LanguageManager::nativeName(code), code);
+    i18nTip(m_languageBox, QStringLiteral("settings.language_tip"));
+
+    // Motion joins the two pickers rather than the switches above them because the card is about how the
+    // interface behaves toward the eye: what it looks like, what it speaks, and whether it moves at all.
+    i18nText(m_animationsCheck = new QCheckBox(uiCard.frame),
+             QStringLiteral("settings.animations"));
+    i18nTip(m_animationsCheck, QStringLiteral("settings.animations_tip"));
+
+    // The short fields, held to the left. A QFormLayout gives a field the whole width of its column, which
+    // is right for a path and wrong for a three-word choice: the card then reads as two long controls and
+    // a lot of empty form. The stretch beside each one is what keeps it beside its label rather than
+    // across the screen — and it is the same promise the row made when the page was one column.
+    auto *themeField = new QHBoxLayout;
+    themeField->setContentsMargins(0, 0, 0, 0);
+    themeField->addWidget(m_themeBox);
+    themeField->addStretch(1);
+
+    auto *languageField = new QHBoxLayout;
+    languageField->setContentsMargins(0, 0, 0, 0);
+    languageField->addWidget(m_languageBox);
+    languageField->addStretch(1);
+
+    uiCard.form->addRow(rowLabel(uiCard.frame, QStringLiteral("settings.theme")), themeField);
+    uiCard.form->addRow(rowLabel(uiCard.frame, QStringLiteral("settings.language")),
+                         languageField);
+    uiCard.body->addWidget(m_animationsCheck);
+
+    // ---- the network card -----------------------------------------------------
+    // The two cadences. Both are answers to a question about the same services, asked on two different
+    // clocks, so they live in one card rather than at opposite ends of the page.
+    m_pingSpin = new QSpinBox(network.frame);
     m_pingSpin->setMaximumWidth(kNarrowFieldPx);
     // No stepper arrows. They are the platform's own control, drawn by the style rather than by the
     // sheet, and the value they set is a number the user types or nudges once a year — the arrows cost
@@ -134,7 +281,7 @@ void SettingsPage::build()
     // number with a unit. Its range comes from Settings, not from a second pair of literals here — the
     // model clamps what it stores and the window arms a QTimer from that value, so three places would
     // otherwise have to agree on "1..60" by coincidence.
-    m_watchdogSpin = new QSpinBox(this);
+    m_watchdogSpin = new QSpinBox(network.frame);
     m_watchdogSpin->setMaximumWidth(kNarrowFieldPx);
     m_watchdogSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_watchdogSpin->setRange(Settings::kWatchdogMinIntervalMin, Settings::kWatchdogMaxIntervalMin);
@@ -143,22 +290,10 @@ void SettingsPage::build()
     m_watchdogSpin->setSingleStep(1);
     i18nTip(m_watchdogSpin, QStringLiteral("settings.watchdog_tip"));
 
-    // Labels are built here rather than passed as strings to addRow so each one can carry the key it
-    // came from; a QFormLayout's own label has no handle to tag.
-    auto *pathRowLabel = i18nText(new QLabel(this), QStringLiteral("settings.path"));
-    auto *themeRowLabel = i18nText(new QLabel(this), QStringLiteral("settings.theme"));
-    auto *pingRowLabel = i18nText(new QLabel(this), QStringLiteral("settings.ping"));
-    auto *watchdogRowLabel = i18nText(new QLabel(this), QStringLiteral("settings.watchdog"));
-
-    // The two short fields, held to the left. A QFormLayout gives a field the whole width of its column,
-    // which is right for a path and wrong for a three-word choice: the page then reads as two long
-    // controls and a lot of empty form. The stretch beside each one is what keeps it beside its label
-    // rather than across the screen.
-    auto *themeField = new QHBoxLayout;
-    themeField->setContentsMargins(0, 0, 0, 0);
-    themeField->addWidget(m_themeBox);
-    themeField->addStretch(1);
-
+    // The short fields, held to the left. A QFormLayout gives a field the whole width of its column, which
+    // is right for a path and wrong for a two-word measurement: the card then reads as two long controls
+    // and a lot of empty form. The stretch beside each one is what keeps it beside its label rather than
+    // across the screen.
     auto *pingField = new QHBoxLayout;
     pingField->setContentsMargins(0, 0, 0, 0);
     pingField->addWidget(m_pingSpin);
@@ -169,20 +304,15 @@ void SettingsPage::build()
     watchdogField->addWidget(m_watchdogSpin);
     watchdogField->addStretch(1);
 
-    auto *form = new QFormLayout;
-    form->setSpacing(10);
-    form->addRow(pathRowLabel, pathRow);
-    form->addRow(QString(), m_pathState);
-    form->addRow(QString(), m_startLastCheck);
-    form->addRow(QString(), m_trayCheck);
-    form->addRow(QString(), m_trayNote);
-    form->addRow(QString(), m_animationsCheck);
-    form->addRow(QString(), m_hideWarpCheck);
-    form->addRow(themeRowLabel, themeField);
-    form->addRow(pingRowLabel, pingField);
+    network.form->addRow(rowLabel(network.frame, QStringLiteral("settings.ping")), pingField);
     // Right under the ping interval, because that is what it is: a second cadence, measured in minutes
     // rather than seconds, for the same question about the same services.
-    form->addRow(watchdogRowLabel, watchdogField);
+    network.form->addRow(rowLabel(network.frame, QStringLiteral("settings.watchdog")), watchdogField);
+
+    cards->addWidget(m_generalCard);
+    cards->addWidget(m_interfaceCard);
+    cards->addWidget(m_networkCard);
+    cards->addStretch(1);
 
     // The commit row. The dialog's OK/Cancel pair is gone: a page has no frame to dismiss, so leaving it
     // is the cancel, and the only thing that has to be explicit is the write. The acknowledgement sits to
@@ -210,17 +340,124 @@ void SettingsPage::build()
     connect(m_savedTimer, &QTimer::timeout, this, [this] { m_savedNote->clear(); });
 
     auto *column = new QVBoxLayout(this);
-    column->setContentsMargins(28, 22, 28, 22);
-    column->setSpacing(16);
-    column->addLayout(form);
-    column->addStretch(1);
+    column->setContentsMargins(28, 10, 28, 10);
+    // The commit row sits closer to the cards than the cards sit to each other, because it is not another
+    // card — it is what closes them. The number also buys the last few pixels the three cards need to
+    // finish above the fold at the default font.
+    column->setSpacing(kCommitGapPx);
+    column->addWidget(scroll, 1);
     column->addLayout(commit);
 
     connect(m_save, &QPushButton::clicked, this, &SettingsPage::apply);
-    connect(m_browseButton, &QPushButton::clicked, this, &SettingsPage::browse);
-    connect(m_detectButton, &QPushButton::clicked, this, &SettingsPage::autoDetect);
-    connect(m_downloadButton, &QPushButton::clicked, this, &SettingsPage::downloadZapret);
+    // The folder glyph is an action, so it is pressed through the action rather than through a button —
+    // and the field also fires it on Enter-ish synthetic triggers, which is the same handler and the same
+    // dialog, so there is one path to a folder and not two.
+    connect(m_browseAction, &QAction::triggered, this, &SettingsPage::browse);
+    connect(m_detectButton, &QToolButton::clicked, this, &SettingsPage::autoDetect);
+    connect(m_downloadButton, &QToolButton::clicked, this, &SettingsPage::downloadZapret);
     connect(m_pathEdit, &QLineEdit::textChanged, this, &SettingsPage::revalidatePath);
+}
+
+// ---- the card furniture ------------------------------------------------------
+//
+// Three small builders rather than three long inline blocks, because a card's shape is decided once and
+// then repeated three times: the same stroke, the same padding, the same heading, the same two columns.
+// Written out three times it would be three chances to drift, and drifting is exactly how a page of
+// "cards" ends up looking like three boxes somebody drew in a hurry.
+
+SettingsPage::Card SettingsPage::makeCard(QWidget *host, const QString &titleKey)
+{
+    Card card;
+    card.frame = new QFrame(host);
+    card.frame->setObjectName(QStringLiteral("settingsCard"));
+
+    auto *box = new QVBoxLayout(card.frame);
+    box->setContentsMargins(kCardHPadPx, kCardVPadPx, kCardHPadPx, kCardVPadPx);
+    // One rhythm inside the card: heading to first row is the same distance as row to row. What separates
+    // a card from its neighbour is the gap outside it, not a second internal spacing.
+    box->setSpacing(kCardTitleGapPx);
+    card.body = box;
+
+    auto *title = new QLabel(card.frame);
+    title->setObjectName(QStringLiteral("settingsCardTitle"));
+    i18nText(title, titleKey);
+    box->addWidget(title);
+
+    auto *form = new QFormLayout;
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setHorizontalSpacing(14);
+    form->setVerticalSpacing(kCardRowGapPx);
+    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    box->addLayout(form);
+    card.form = form;
+
+    return card;
+}
+
+QLabel *SettingsPage::rowLabel(QFrame *card, const QString &key)
+{
+    auto *label = new QLabel(card);
+    label->setObjectName(QStringLiteral("settingsRowLabel"));
+    label->setWordWrap(true);
+    // Pinned rather than floored, and the difference is the whole point: a QFormLayout takes as much label
+    // column as its widest label asks for, so three forms left to themselves would start the field column
+    // at three different pixels — "Путь к zapret" short, "Интервал проверки обхода" long, and the page
+    // ragged. A fixed width makes every card share one left edge for its fields.
+    label->setMinimumWidth(kRowLabelPx);
+    label->setMaximumWidth(kRowLabelPx);
+    return i18nText(label, key);
+}
+
+QToolButton *SettingsPage::makePathTool(QFrame *card, const QString &glyph, const QString &nameKey,
+                                        const QString &tipKey)
+{
+    auto *b = new QToolButton(card);
+    b->setObjectName(QStringLiteral("pathToolButton"));
+    // The two properties every other baked glyph in the window carries. applyTheme() re-bakes the icon
+    // from them after a theme switch, because the colour is painted into the pixmap at load time and a
+    // stylesheet rule cannot reach a pixmap the sheet never owned.
+    b->setProperty("glyph", glyph);
+    b->setProperty("glyphPx", kPathGlyphPx);
+    b->setIcon(Theme::themedIcon(glyph, kPathGlyphPx));
+    b->setIconSize(QSize(kPathGlyphPx, kPathGlyphPx));
+    b->setFixedSize(kPathToolPx, kPathToolPx);
+    b->setCursor(Qt::PointingHandCursor);
+    b->setFocusPolicy(Qt::TabFocus);
+    // A control with no words on it still has to say what it does — twice, because the two audiences are
+    // different: the tooltip answers a pointer that hovers, and the accessible name is the only thing a
+    // screen reader has for a button whose entire face is a glyph.
+    i18nAcc(b, nameKey);
+    i18nTip(b, tipKey);
+    return b;
+}
+
+void SettingsPage::refreshPathPlaceholder()
+{
+    // Two examples and the word between them, because the field accepts a tree for either platform and a
+    // user on Windows reading only the first half would go looking for a linux/ folder. The word is the
+    // only translated piece, which is why this is composed here rather than being one catalog key.
+    m_pathEdit->setPlaceholderText(QStringLiteral("/home/…/zapret/linux ")
+                                   + LanguageManager::tr(QStringLiteral("common.or"))
+                                   + QStringLiteral(" C:\\...\\zapret\\windows"));
+}
+
+void SettingsPage::commitLanguage(const QString &code)
+{
+    // An unsupported code is refused by the catalog too, so storing it would be writing down a language
+    // the interface cannot display — and the rail's flag menu would come back showing the old one.
+    if (code.isEmpty() || !LanguageManager::isSupported(code))
+        return;
+
+    if (code != m_settings.language())
+        m_settings.setLanguage(code);
+
+    // The store is not the screen. main.cpp installs the catalog before the first widget exists and the
+    // rail's flag button moves it on press; nothing re-reads the key on its own. A page that only wrote
+    // it would therefore change nothing until the next launch — including the labels of the very card the
+    // user had just used to change it.
+    if (LanguageManager::instance().currentCode() != code)
+        LanguageManager::instance().setCode(code);
 }
 
 void SettingsPage::loadFromSettings()
@@ -239,14 +476,21 @@ void SettingsPage::loadFromSettings()
     const int index = m_themeBox->findData(theme);
     m_themeBox->setCurrentIndex(index >= 0 ? index : 0);
 
+    // The same shape as the theme above it, and the same fallback: a store holding a code this build has
+    // no catalog for (an ini edited by hand, or a value written by a future build that added a language)
+    // resolves to the first entry rather than to an empty selection — the picker must always be showing
+    // the language the interface is actually written in.
+    const int languageIndex = m_languageBox->findData(m_settings.language());
+    m_languageBox->setCurrentIndex(languageIndex >= 0 ? languageIndex : 0);
+
     revalidatePath();
 }
 
 void SettingsPage::apply()
 {
-    // One guard around six writes: Settings answers every write with changed(), and the reload slot
+    // One guard around nine writes: Settings answers every write with changed(), and the reload slot
     // connected in the constructor would otherwise re-read the form underneath the commit — harmless
-    // for these six values, but it would drop the note this call is about to put up.
+    // for these values, but it would drop the note this call is about to put up.
     m_writing = true;
     m_settings.setZapretPath(m_pathEdit->text().trimmed());
     m_settings.setStartLastOnLaunch(m_startLastCheck->isChecked());
@@ -261,8 +505,14 @@ void SettingsPage::apply()
     m_settings.setPingIntervalSec(m_pingSpin->value());
     m_settings.setWatchdogIntervalMin(m_watchdogSpin->value());
     m_settings.setTheme(m_themeBox->currentData().toString());
+    // Inside the guard because it writes the store, and outside the reload it would trigger: the language
+    // is the one value here that rewrites the page's own labels, and re-reading the form in the middle of
+    // that would be the form answering itself.
+    commitLanguage(m_languageBox->currentData().toString());
     m_writing = false;
 
+    // Set after the language has moved, so the acknowledgement is said in the language the user just
+    // asked for rather than the one they were leaving.
     m_savedNote->setText(LanguageManager::tr(QStringLiteral("settings.saved")));
     m_savedTimer->start(kSavedNoteMs);
     emit saved();
