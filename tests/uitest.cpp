@@ -1856,13 +1856,26 @@ static void testSettingsPageCards(QApplication &app)
                   && download->parentWidget() == field->parentWidget(),
           "field and both icons are one row, not a row each");
     if (general && field && detect && download) {
-        const int fieldCentre = field->mapTo(general, QPoint(0, field->height() / 2)).y();
-        check(detect->mapTo(general, QPoint(0, detect->height() / 2)).y() == fieldCentre
-                      && download->mapTo(general, QPoint(0, download->height() / 2)).y() == fieldCentre,
-              "…centred on the field's line, so the row reads as one control with two appendages");
-        check(detect->mapTo(general, QPoint(0, 0)).x()
-                      >= field->mapTo(general, QPoint(0, field->width())).x(),
-              "…and to the right of it, where the field ends");
+        // The row's own geometry, in the card's coordinates — every widget in it is a direct child of the
+        // card, so y() and x() compare without mapping. The numbers travel with the verdict, because a
+        // check that only says "not centred" cannot be read from a CI log: it is the values that tell an
+        // unaligned row (off by half the difference of the two heights) from a rounding artefact.
+        const int fieldMid = field->y() + field->height() / 2;
+        const int detectMid = detect->y() + detect->height() / 2;
+        const int downloadMid = download->y() + download->height() / 2;
+        // One pixel of slack, and the reason is arithmetic rather than indulgence: an even control centred
+        // in an odd row lands half a pixel out, and which way that rounds is the layout's business. A row
+        // that is not centred is off by half the height difference — 6 px for a 44 px field beside a
+        // 32 px button — which this still catches.
+        check(qAbs(detectMid - fieldMid) <= 1 && qAbs(downloadMid - fieldMid) <= 1,
+              QStringLiteral("…centred on the field's line, so the row reads as one control with two "
+                             "appendages (field y=%1 h=%2 mid=%3 | search mid=%4 | cloud mid=%5)")
+                  .arg(field->y()).arg(field->height()).arg(fieldMid)
+                  .arg(detectMid).arg(downloadMid));
+        check(detect->x() >= field->x() + field->width() && download->x() > detect->x(),
+              QStringLiteral("…and to the right of the field, in the order search then cloud "
+                             "(field ends %1, search at %2, cloud at %3)")
+                  .arg(field->x() + field->width()).arg(detect->x()).arg(download->x()));
     }
 
     // What the redesign removed. Three wide text buttons used to share this row's width with the field,
@@ -1928,34 +1941,40 @@ static void testSettingsPageCards(QApplication &app)
     check(pageBg.isValid() && cardBg.isValid(), "the sheet says what the page and its cards paint");
     check(pageBg != cardBg, "a card is a different surface from the page it floats on");
     const QImage img = page.grab().toImage().convertToFormat(QImage::Format_ARGB32);
-    const QPoint inside = general ? general->mapTo(&page, QPoint(20, 6)) : QPoint(-1, -1);
-    check(img.rect().contains(inside) && rgbClose(img.pixelColor(inside), cardBg, 8),
-          QStringLiteral("the card paints the sheet's surface where it is empty (%1 at (%2,%3), "
-                         "wanted %4)")
-              .arg(img.rect().contains(inside) ? img.pixelColor(inside).name(QColor::HexRgb)
-                                               : QStringLiteral("<off-image>"))
-              .arg(inside.x()).arg(inside.y())
+    // Sampled from the card's OWN image, not from a coordinate inside the page: the page grab depends on
+    // the scroll position, the page margins and a layout that has settled, none of which have anything to
+    // do with the question "does a card paint its surface colour". The card's own pixmap asks exactly that.
+    const QImage cardImg = general ? general->grab().toImage().convertToFormat(QImage::Format_ARGB32)
+                                   : QImage();
+    const QPoint padSpot(20, 6);   // inside the card's padding, above its first row
+    check(cardImg.rect().contains(padSpot) && rgbClose(cardImg.pixelColor(padSpot), cardBg, 8),
+          QStringLiteral("the card paints the sheet's surface where it is empty (%1 at (%2,%3), wanted %4)")
+              .arg(cardImg.rect().contains(padSpot) ? cardImg.pixelColor(padSpot).name(QColor::HexRgb)
+                                                   : QStringLiteral("<off-image>"))
+              .arg(padSpot.x()).arg(padSpot.y())
               .arg(cardBg.isValid() ? cardBg.name(QColor::HexRgb) : QStringLiteral("<none>")));
     check(rgbClose(img.pixelColor(QPoint(4, 4)), pageBg, 8),
           "…and the page behind the cards paints its own, so the gap between cards is a gap");
 
     // The stroke is the other half of a card, and a stylesheet border is not decoration drawn OVER the
     // widget: it moves the contents in by its own width. So the leftmost pixel of the card's own column
-    // must be the sheet's border colour, and the fill must begin one pixel inside it.
+    // must be the sheet's border colour, and a few pixels further in must be the card's own fill.
     const QColor stroke = sheetRuleHex(sheet, QStringLiteral("QFrame#settingsCard"),
                                        QStringLiteral("border"));
-    const QPoint edge = general ? general->mapTo(&page, QPoint(0, general->height() / 2))
-                                : QPoint(-1, -1);
-    const QPoint justInside = general
-                                  ? general->mapTo(&page, QPoint(1, general->height() / 2))
-                                  : QPoint(-1, -1);
-    check(stroke.isValid() && img.rect().contains(edge) && rgbClose(img.pixelColor(edge), stroke, 24),
+    const QPoint edge(0, cardImg.isNull() ? -1 : cardImg.height() / 2);
+    check(stroke.isValid() && cardImg.rect().contains(edge)
+                  && rgbClose(cardImg.pixelColor(edge), stroke, 24),
           QStringLiteral("…and the card is stroked: %1 at its left edge, wanted %2")
-              .arg(img.rect().contains(edge) ? img.pixelColor(edge).name(QColor::HexRgb)
-                                             : QStringLiteral("<off-image>"))
+              .arg(cardImg.rect().contains(edge) ? cardImg.pixelColor(edge).name(QColor::HexRgb)
+                                                 : QStringLiteral("<off-image>"))
               .arg(stroke.isValid() ? stroke.name(QColor::HexRgb) : QStringLiteral("<none>")));
-    check(rgbClose(img.pixelColor(justInside), cardBg, 8),
-          "…with the fill beginning one pixel inside that stroke");
+    // Four pixels in rather than one: the sheet asks for a 1 px stroke, but a stroke is drawn in device
+    // pixels and a scaled environment scales it, so sampling the pixel right next to the edge would be
+    // reading the border and calling it a missing fill. Four is still far inside the card's padding and
+    // far from its first row.
+    const QPoint fillSpot(4, cardImg.isNull() ? -1 : cardImg.height() / 2);
+    check(cardImg.rect().contains(fillSpot) && rgbClose(cardImg.pixelColor(fillSpot), cardBg, 8),
+          "…with the card's fill taking over just inside that stroke");
 
     // Nothing may sit on top of anything else inside a card. Every row of a card is a direct child of it,
     // so their geometries are in one coordinate system and an overlap is a layout that stopped laying
@@ -2009,19 +2028,19 @@ static void testSettingsPageCards(QApplication &app)
                                             QStringLiteral("background-color"));
     check(lightPage.isValid() && lightCard.isValid() && lightPage != lightCard,
           "the light sheet gives its cards a surface of their own too");
-    const QImage lightImg = page.grab().toImage().convertToFormat(QImage::Format_ARGB32);
-    const QPoint lightInside = general ? general->mapTo(&page, QPoint(20, 6)) : QPoint(-1, -1);
-    check(lightImg.rect().contains(lightInside)
-                  && rgbClose(lightImg.pixelColor(lightInside), lightCard, 8),
+    const QImage lightCardImg = general ? general->grab().toImage().convertToFormat(QImage::Format_ARGB32)
+                                        : QImage();
+    check(lightCardImg.rect().contains(padSpot)
+                  && rgbClose(lightCardImg.pixelColor(padSpot), lightCard, 8),
           QStringLiteral("…and paints it (%1 at (%2,%3), wanted %4)")
-              .arg(lightImg.rect().contains(lightInside)
-                       ? lightImg.pixelColor(lightInside).name(QColor::HexRgb)
+              .arg(lightCardImg.rect().contains(padSpot)
+                       ? lightCardImg.pixelColor(padSpot).name(QColor::HexRgb)
                        : QStringLiteral("<off-image>"))
-              .arg(lightInside.x()).arg(lightInside.y())
+              .arg(padSpot.x()).arg(padSpot.y())
               .arg(lightCard.isValid() ? lightCard.name(QColor::HexRgb)
                                        : QStringLiteral("<none>")));
-    check(general && general->mapTo(&page, QPoint(20, 6)).y() > 0
-                  && rgbClose(lightImg.pixelColor(QPoint(4, 4)), lightPage, 8),
+    check(rgbClose(page.grab().toImage().convertToFormat(QImage::Format_ARGB32).pixelColor(QPoint(4, 4)),
+                   lightPage, 8),
           "…with the page still its own colour behind the cards");
 
     // Everything after this section — and the application itself — is drawn on the dark sheet.

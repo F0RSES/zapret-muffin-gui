@@ -142,6 +142,12 @@ void SettingsPage::build()
     // ---- the path card -------------------------------------------------------
     // Where zapret lives, and the only field on the page that has to hold a whole path.
     m_pathEdit = new QLineEdit(general.frame);
+    // The field is at least as tall as the icons beside it. Without this the row's height is whatever the
+    // font happens to need, and a machine whose fallback face is shorter than 32 px gets a squat field
+    // with two buttons hanging above and below its centre — the same line, two different heights, which is
+    // what "one control with two appendages" promises not to look like. It still grows past this when a
+    // bigger font asks for more, and the icons stay centred on it (see the alignment below).
+    m_pathEdit->setMinimumHeight(kPathToolPx);
     refreshPathPlaceholder();
     m_pathEdit->setClearButtonEnabled(true);
 
@@ -173,8 +179,12 @@ void SettingsPage::build()
     pathRow->setContentsMargins(0, 0, 0, 0);
     pathRow->setSpacing(8);
     pathRow->addWidget(m_pathEdit, 1);
-    pathRow->addWidget(m_detectButton);
-    pathRow->addWidget(m_downloadButton);
+    // The alignment is spelled out rather than left to the layout. A fixed-size widget in a taller row is
+    // centred by Qt today, but that is QWidgetItem's arithmetic and not a promise: a row whose height is
+    // set by a font this file cannot see would otherwise place the icons by whichever default the platform
+    // picks, and a field with two buttons dangling off its vertical centre stops reading as one control.
+    pathRow->addWidget(m_detectButton, 0, Qt::AlignVCenter);
+    pathRow->addWidget(m_downloadButton, 0, Qt::AlignVCenter);
 
     general.form->addRow(rowLabel(general.frame, QStringLiteral("settings.path")), pathRow);
 
