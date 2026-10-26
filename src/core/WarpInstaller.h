@@ -74,6 +74,21 @@ public:
     bool isBusy() const { return m_stage != Stage::Idle; }
     Stage stage() const { return m_stage; }
 
+    // Whether this operation is a repair rather than a first install. Set by the window from
+    // WarpManager::installLooksBroken(), because that is the only way to know: a caller who watched a
+    // client exist and refuse to answer has different debris to deal with than one standing on a
+    // machine that has never heard of Cloudflare. Off by default, which is what every first install
+    // means and what every existing test asserts.
+    //
+    // What it changes, and what it does not: on Linux the generated script gains a preamble that lets
+    // dpkg finish a half-configured package and purges the config files of one removed without them
+    // (see linuxScriptBody). On Windows nothing does — msiexec /i pointed at the product already
+    // registered is Windows Installer's own repair path, so the same command is the right command.
+    // What is *not* changed is the package, the repository line or the key URL: a repair of the
+    // client is not a licence to rewrite the machine's apt configuration somewhere else.
+    void setRepair(bool repair);
+    bool repair() const { return m_repair; }
+
     // The whole install, asynchronously. False with an explanation only when nothing could even be
     // started (an install already running; no root and nobody to ask for one). Every later outcome — a
     // refused password, an MSI that returned 1603, a client that did not appear afterwards — arrives
@@ -103,6 +118,12 @@ public:
     // of `apt-get install` leaves a dpkg to repair, and four prompts costing four passwords would be
     // the worse outcome anyway.
     static QString linuxScriptBody(const QString &codename);
+
+    // The same script with the repair preamble in it — dpkg --configure -a, then the purge of a package
+    // that was removed without its configuration files. Only the preamble differs; everything from the
+    // key onward is byte-identical to the first install, because a repair is not a licence to change
+    // which package gets installed. See setRepair() for who decides.
+    static QString linuxRepairScriptBody(const QString &codename);
 
     // A suite name apt will accept: non-empty, lowercase alphanumerics with dot, dash and underscore,
     // and no newline or shell metacharacter — the value goes into a script a root shell will read.
@@ -247,6 +268,9 @@ signals:
     void installationFinished(bool success, QString error);
 
 private:
+    // The generator both script spellings come from; see linuxScriptBody() for why they share one.
+    static QString composeScript(const QString &codename, const QStringList &preamble);
+
     void setStage(Stage stage);
     void beginLinux();                  // compose the script, then ask for root
     void beginWindows();                // fetch the MSI, then install it
@@ -290,6 +314,9 @@ private:
     // The single-window policy, as the window handed it over. Defaults to on, matching Settings, so an
     // object nobody configured behaves like the application that ships it.
     bool m_hideWarpGui = true;
+    // The repair policy, likewise handed over. Defaults to off: an object nobody told otherwise runs
+    // the same install it ran before this flag existed.
+    bool m_repair = false;
 };
 
 } // namespace zapret

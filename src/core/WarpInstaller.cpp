@@ -140,6 +140,11 @@ void WarpInstaller::setHideWarpGui(bool on)
     m_hideWarpGui = on;
 }
 
+void WarpInstaller::setRepair(bool repair)
+{
+    m_repair = repair;
+}
+
 // ---- the repository, as Cloudflare publishes it ----
 
 QString WarpInstaller::publicKeyUrl() { return QLatin1String(kPublicKeyUrl); }
@@ -178,7 +183,11 @@ bool WarpInstaller::isUsableCodename(const QString &codename)
     return true;
 }
 
-QString WarpInstaller::linuxScriptBody(const QString &codename)
+// The script's generator. Both public spellings come through here, and the only difference between a
+// first install and a repair is the handful of lines spliced in after the variables and before the
+// tool check: after the variables because the preamble reads `$PACKAGE`, before the tool check because
+// it must not be held hostage by a missing curl it does not need.
+QString WarpInstaller::composeScript(const QString &codename, const QStringList &preamble)
 {
     // The generated script. Its only substitution is `codename`, and the caller has to pass
     // isUsableCodename() first — which is why the two are separate public functions: reading this text
@@ -200,7 +209,9 @@ QString WarpInstaller::linuxScriptBody(const QString &codename)
           << QStringLiteral("SOURCES='%1'").arg(sourcesListPath())
           << QStringLiteral("KEY_URL='%1'").arg(publicKeyUrl())
           << QStringLiteral("PACKAGE='%1'").arg(packageName())
-          << QString()
+          << QString();
+    lines << preamble;
+    lines
           // The three tools the install cannot do without. Naming the missing one is the difference
           // between a report the user can act on and a shell's bare "command not found" — curl in
           // particular is absent from minimal container images and from a Debian netinst.
@@ -272,6 +283,44 @@ QString WarpInstaller::linuxScriptBody(const QString &codename)
           << QString();
     return lines.join(QLatin1Char('\n'));
 }
+
+QString WarpInstaller::linuxScriptBody(const QString &codename)
+{
+    return composeScript(codename, {});
+}
+
+QString WarpInstaller::linuxRepairScriptBody(const QString &codename)
+{
+    // The repair preamble, and the whole of what setRepair() changes on Linux.
+    //
+    // Two states of debris are worth telling apart from a clean absence, and both would otherwise
+    // cost the install: a package unpacked but never configured, which an apt with a half-finished
+    // transaction in its database will refuse to touch, and a package removed without --purge, whose
+    // leftover config files the new install then reads back — including, quite possibly, the settings
+    // that broke the last attempt. `dpkg --configure -a` finishes the first; --purge of an "rc" package
+    // clears the second.
+    //
+    // Both are guarded rather than assumed. dpkg may not exist on a host whose apt got this far
+    // through some other route, and `|| true` is deliberate on the two lines that only *improve* the
+    // state: a repair that cannot finish somebody else's interrupted transaction should still get to
+    // try its own install, which is the difference between a user with a working tunnel and a user
+    // reading "apt failed (100)" with no idea that the fix was three directories away.
+    static const QStringList preamble{
+        QStringLiteral("# A previous attempt is on this machine. Clearing what it left behind, before"),
+        QStringLiteral("# anything is asked of apt."),
+        QStringLiteral("if command -v dpkg >/dev/null 2>&1; then"),
+        QStringLiteral("    dpkg --configure -a || true"),
+        QStringLiteral("    if dpkg -l \"$PACKAGE\" 2>/dev/null | grep -q '^rc'; then"),
+        QStringLiteral("        echo \"WARP repair: purging the configuration files that the removed "
+                       "$PACKAGE left behind\""),
+        QStringLiteral("        dpkg --purge \"$PACKAGE\" || true"),
+        QStringLiteral("    fi"),
+        QStringLiteral("fi"),
+        QString(),
+    };
+    return composeScript(codename, preamble);
+}
+
 QString WarpInstaller::parseCodename(const QString &osReleaseText)
 {
     // /etc/os-release is KEY=value lines with optional quoting, and nothing here sources it: running an
@@ -591,7 +640,11 @@ void WarpInstaller::beginLinux()
                                              "password and runs apt, and cannot be cancelled once it "
                                              "starts."));
     // The script is the command's stdin, never a file on the authorised path — see composeLinuxInstall.
-    runCommand(program, args, QStringLiteral("apt-get"), linuxScriptBody(codename).toUtf8());
+    // Which of the two bodies is chosen is the caller's decision, taken from what WarpManager saw on
+    // this machine before asking for anything: a repair preamble for a machine with debris, plain
+    // install for a machine with nothing.
+    runCommand(program, args, QStringLiteral("apt-get"),
+               (m_repair ? linuxRepairScriptBody(codename) : linuxScriptBody(codename)).toUtf8());
 }
 
 void WarpInstaller::beginWindows()

@@ -1,11 +1,14 @@
 #pragma once
 
+#include "Strategy.h"
+
 #include <QByteArray>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 
 #include <functional>
+#include <QList>
 
 class QProcess;
 class QTimer;
@@ -22,7 +25,12 @@ namespace zapret {
 // daemon's — both are the sort of thing that quietly breaks the power button's state machine.
 //
 // The manager therefore owns only:
-//   * availability — is warp-cli on PATH?
+//   * availability — is there a warp-cli this process can run?
+//   * installation — is the client on this machine even when nothing runnable was found: its own
+//     version answer, the package databases (dpkg, rpm, snap, flatpak), the Windows service and the
+//     Windows registry. This is the question that has to be answered *before* an install is offered,
+//     because an install over a client the machine already has is at best a waste and at worst the
+//     removal of somebody's tunnel.
 //   * the current state, learned from `warp-cli --accept-tos status`
 //   * one in-flight verb (connect / disconnect / status), issued asynchronously
 //
@@ -106,16 +114,61 @@ public:
     virtual bool isAvailable() const { return m_available; }
     static bool isAvailableFromPath(const QString &resolvedPath);
 
-    // Whether the WARP client is on this machine — the question a caller asks before offering to
-    // install it, and the same fact availability answers. Two names for one flag on purpose, not two
-    // probes: "can I drive the tunnel?" and "is there a tunnel to drive?" have exactly one source of
-    // truth (a warp-cli we can find), and a second lookup that could disagree with the first would
-    // be a toggle that offers to install software the machine already has.
+    // What a client we managed to run said about itself. The three answers are the whole point of
+    // running it: a binary that exits cleanly is here and usable, one that dies or reports it cannot
+    // load is a broken install, and anything else is a reading that does not license either verdict.
     //
-    // A mock that overrides these two must give them the same answer, for the same reason: they are
-    // one flag read under two names, and a control that says "there is a client" to one caller and
-    // "there is none" to another is the disagreement the two names exist to avoid.
-    virtual bool isInstalled() const { return m_available; }
+    // Unreadable exists because a non-zero exit is not automatically damage. warp-cli's own wording
+    // for a flag it does not know ("unrecognized option") comes with exit 1 from a perfectly healthy
+    // binary, and calling that broken would take a working tunnel away from a user on the strength of
+    // an argument-spelling difference. Unknown readings therefore leave the machine as found — the
+    // same rule Registration::Unknown applies to an unreadable enrolment.
+    enum class Probe
+    {
+        Usable,       // it ran and answered: this is a client to drive
+        Broken,       // it died, or said it could not load: an install to repair, not to drive
+        Unreadable    // an answer that names neither: leave the verdict as it stood
+    };
+    Q_ENUM(Probe)
+
+    // One package database's question about the client: which tool to ask, with which argv, and what
+    // a line naming the client has to contain. Data rather than code so the whole list can be read at
+    // once, pinned by a test, and answered without a runner that happens to own apt.
+    struct InstallationProbe
+    {
+        QString source;       // how the answer gets named in the journal: "dpkg", "snap", "service"
+        QString program;      // the tool to run; a tool this host does not have is skipped, not guessed
+        QStringList args;     // the question, already split — no shell composes any of this
+        QStringList markers;  // a line that names the client contains one of these, case-insensitive
+    };
+
+    // Whether the WARP client is on this machine, which is the question a caller has to ask before
+    // offering to install it — and, deliberately, a broader question than "can I drive the tunnel?".
+    // Three things answer yes:
+    //
+    //   * a warp-cli this process can run (which is also isAvailable()),
+    //   * a package database that says the client is installed — snap, flatpak, an rpm box whose PATH
+    //     the vendor never touched, a Windows machine whose registry and service both know a client
+    //     no candidate path named,
+    //   * an answer that has not arrived yet. A machine the manager is still asking is a machine it
+    //     must not call empty: the premature offer is the exact failure this lookup exists to prevent.
+    //
+    // The relation between the two names is therefore a subset, not an identity: drivable implies
+    // installed, and installed does not imply drivable — the packaged-but-unrunnable machine is the
+    // reason the second question exists at all. A mock that overrides both keeps that subset, or it
+    // is a toggle offering to install a client it claims it can already drive.
+    virtual bool isInstalled() const { return m_available || m_packaged || m_probing; }
+
+    // Whether something is here that is not working: a client that ran and reported damage, or a
+    // package database that names the client as removed-but-config-files-present. The difference this
+    // exists to make visible is between "nothing to install yet" and "a previous attempt left debris",
+    // because only the second one deserves an offer that says it will clean up first.
+    virtual bool installLooksBroken() const { return m_broken; }
+
+    // Which source answered yes to isInstalled() — "dpkg", "snap", "registry", … — or empty when the
+    // answer came from a runnable warp-cli or there is no client here. A caller writing "WARP is
+    // already installed, using it" needs to say where "it" is, or the line reads as a guess.
+    virtual QString installedVia() const { return m_packagedVia; }
 
     // The Program Files root this process was started with, or empty on every other platform. Read
     // from the environment rather than hardcoded, exactly as ZapretPaths::systemInstallDir() does:
@@ -135,9 +188,56 @@ public:
     // machine empty and offer to install the client it already has.
     static QStringList installCandidatePaths(const QString &programFilesRoot);
 
+    // The same question for a client the vendored installer did not put there. A snap has its own
+    // bin directory that no PATH-editing package touches, a flatpak exports its commands elsewhere
+    // again, and a per-user Windows install lives under the profile rather than under Program Files.
+    // Split from installCandidatePaths() because that one is pinned against WarpInstaller's own
+    // directory by a test — the two lists are owned by different code and must not drift together.
+    static QStringList extraCandidatePaths(const QString &homePath);
+
     // PATH's answer first (already resolved by the caller), then the candidates that are real files.
     // The first hit is the program every verb runs, so an off-PATH install is still drivable.
     static QString resolveExecutable(const QString &pathHit, const QStringList &candidates);
+
+    // The one verb that is not a request about the tunnel: what the client says its own version is.
+    // Spelled without `--accept-tos`, unlike every verb below, because printing a version needs no
+    // daemon and accepts no terms — and because a flag this tool might not know in some build is the
+    // reason classifyVersionAnswer() distinguishes "damaged" from "did not like being asked".
+    static QStringList versionArgs();
+
+    // Read a client's own answer about itself. `crashed` means it died rather than exited — including
+    // death by our own timeout, which is the same fact to a GUI: nothing is going to come of it.
+    static Probe classifyVersionAnswer(const QString &output, int exitCode, bool crashed);
+
+    // Every database this platform keeps its packages in, in the order they are asked. The list is
+    // the whole policy: an unknown platform asks nothing, a tool missing from the host is skipped when
+    // the round runs, and the first database that says "installed" ends the round.
+    static QList<InstallationProbe> installationProbes(Strategy::Platform platform);
+
+    // Whether one database's answer says the client is installed. Exit code is evidence and not a
+    // veto, exactly as in parseRegistration(): `rpm -q` and `snap list` both answer a package they do
+    // not have with a sentence *and* a non-zero code, and dpkg prints a table headed by two status
+    // characters whose first column is the only thing that separates "installed" from "removed but
+    // still holding its config files".
+    static bool probeAnswerNamesInstall(const InstallationProbe &probe, const QString &output,
+                                        int exitCode, bool crashed);
+
+    // Whether the same answer describes debris instead: a package removed with its configuration left
+    // behind. Only dpkg reports that state distinctly ("rc" in the status column), and it is the
+    // Linux half of what installLooksBroken() is for.
+    static bool probeAnswerNamesLeftovers(const InstallationProbe &probe, const QString &output,
+                                          int exitCode, bool crashed);
+
+    // The Windows registry keys that name the client, in the order they are tried: the vendor's own
+    // key first, its 32-bit mirror next (the MSI is 32-bit and a 32-bit view is where its values
+    // land), and the uninstall entries Windows Installer writes for any product last. Paths rather
+    // than a yes/no so the spelling is checkable from a Linux runner.
+    static QStringList registryKeys();
+
+    // Whether a value read out of those keys proves an install. A version string is the clean answer;
+    // the bare existence of values under the vendor's key counts too, because an MSI that got as far
+    // as writing any of them has copied the client onto the disk.
+    static bool registryNamesInstall(const QString &displayVersion, bool keyHasValues);
 
     // ---- the argv each verb runs ---------------------------------------------
     //
@@ -273,8 +373,12 @@ public:
     // method exists to prevent, and no static parser can see that mistake.
     virtual bool ensureRegistered(QString *error = nullptr);
 
-    // Re-probe availability. Called on construction; a caller who just installed WARP while the
-    // window was open can ask for the same effect without a full restart.
+    // Re-probe availability: find the program, then ask it whether it is able to answer, and — only if
+    // nothing runnable was found — ask this machine's package databases whether the client is there
+    // anyway. Called on construction; a caller who just installed WARP while the window was open can
+    // ask for the same effect without a full restart. Nothing in it blocks: the two follow-ups are
+    // asynchronous, so a constructor that runs this on a machine with no client forks no more than
+    // one short command per database the host actually has.
     virtual void rescanAvailability();
 
     // Cadence-driven polling. Off by default; MainWindow turns it on only while a mode is
@@ -297,6 +401,15 @@ signals:
     // Whether the device is enrolled now. See ensureRegistered() for what each answer means and for
     // the guarantee that exactly one of these closes every sequence the caller was told it started.
     void registrationFinished(bool ok);
+    // Whether this machine has a WARP client at all, and where the answer came from. Emitted when a
+    // round of package probes ends — with `installed` true and `via` naming the database that said
+    // yes, or false and empty. `via` is empty for a drivable client too: that is the case nobody has
+    // to be told about, because the tunnel starts working.
+    //
+    // Separate from availabilityChanged() on purpose. That one answers "can the half be pressed", and
+    // a client that exists but cannot be run changes only this one; a caller holding a deferred offer
+    // needs the second edge, not a re-run of the first.
+    void installationChanged(bool installed, QString via);
     // Mirror of IZapretBackend's channel — the log line format the window already understands.
     // level: 0=info, 1=warn, 2=error
     void logMessage(const QString &line, int level);
@@ -326,6 +439,30 @@ private:
     void finishRegistration(bool ok, const QString &why);
     // Starts an enrolment that was asked for while some other verb held the slot, if one is waiting.
     void runQueuedRegistration();
+
+    // ---- the two follow-ups rescanAvailability() starts ----
+    //
+    // Both run on their own QProcess, never on the verb slot: a status poll that arrived while the
+    // host was being asked its package databases would otherwise be refused by a probe nobody asked
+    // for, and a poll dropped on that account is a tunnel that looks unchanged forever.
+    void verifyCandidate();
+    void onVersionAnswered(const QString &out, int exitCode, bool crashed);
+    void startInstallationProbe();
+    void runNextProbe();
+    void onProbeFinished(const QString &out, int exitCode, bool crashed);
+    // Ends a round with the answer the databases gave. Idempotent: a round already over is not ended
+    // twice, and a killed probe still lands here, because "no answer" is the answer "absent" to.
+    // Ending the round. `via` is taken BY VALUE on purpose: the only caller that has a name to pass hands
+    // in m_currentProbe.source, and this function clears m_currentProbe before it reads it. A const
+    // reference here therefore names an already-reset, empty string — the verdict keeps, the name of the
+    // database that earned it disappears, and the journal says "found via " with nothing after it.
+    void finishProbe(bool packaged, QString via);
+    void stopInstallationProbe();
+    void setAvailable(bool available);
+    // The registry half of a round: read in-process rather than forked out, because QSettings opens a
+    // registry key without a helper program and every non-Windows host has no such key to read. False
+    // off Windows, so the callers there do not need to know which platform compiled them.
+    static bool registryReportsInstall();
 
     State m_state = State::Unavailable;
     bool m_available = false;
@@ -359,6 +496,35 @@ private:
     // starts as soon as that verb lands, because enrolment is the one thing that must not simply be
     // dropped: a connect issued without it is a connect that never comes up.
     bool m_regQueued = false;
+
+    // ---- the installation half ----
+    //
+    // Whether a package database, the Windows registry or a service said the client is on this
+    // machine even though nothing runnable was found. Cached for the same reason m_available is: an
+    // offer to install is decided in a click handler, and a click handler cannot wait for apt.
+    bool m_packaged = false;
+    // Which source answered yes — "dpkg", "snap", "registry" — empty when nothing did. Carried beside
+    // the bool because "already installed" without "by what" is not a sentence anybody can act on.
+    QString m_packagedVia;
+    // True from the moment a round starts until it answers. This is what makes isInstalled() answer
+    // yes while the host is being asked, which is the difference between offering an install and
+    // offering an install over the top of one.
+    bool m_probing = false;
+    // A client that was found and then reported damage, or the config-file debris of a removed one.
+    // Distinct from !m_available: the two want different offers, one for software that is not there
+    // and one for software that is there and does not work.
+    bool m_broken = false;
+    // The version answer's own words, kept for the log line the demotion writes; the classification is
+    // a judgement, the sentence the user reads should quote the tool.
+    QString m_brokenDetail;
+
+    QList<InstallationProbe> m_probeQueue;    // the databases not asked yet in this round
+    InstallationProbe m_currentProbe;         // the one whose answer is in flight
+    QProcess *m_probeProcess = nullptr;       // non-null only while one probe command runs
+    // The version question's own process, kept apart from the verb slot for the reason in the comment
+    // on verifyCandidate(): the verdict it produces is about the machine, and a poll must not be able
+    // to answer it or be refused by it.
+    QProcess *m_versionProcess = nullptr;
 };
 
 } // namespace zapret

@@ -5104,6 +5104,298 @@ int main(int argc, char **argv)
         }
     }
 
+    // [WarpManager: what is installed] — the detection that has to happen before an install is offered.
+    //
+    // Everything here is a value: the shape of the version question, what each answer of it means, the
+    // list of databases asked per platform, and what each of their replies says about the package.
+    // Nothing is asked of this machine, which is the point — a developer's host that happens to own a
+    // snap and an rpm would otherwise make half of these assertions about the developer.
+    out << "\n[WarpManager: what is installed]\n";
+    {
+        using Probe = WarpManager::Probe;
+        using InstallationProbe = WarpManager::InstallationProbe;
+
+        // ---- the version question ----
+        check(WarpManager::versionArgs() == QStringList{QStringLiteral("--version")},
+              "the liveness question is `--version`, one argument and nothing else");
+        check(!WarpManager::versionArgs().contains(QStringLiteral("--accept-tos")),
+              "…and deliberately not a verb: a version needs no daemon and accepts no terms, so the "
+              "flag every other call carries would only add a way for a healthy client to be refused");
+
+        check(WarpManager::classifyVersionAnswer(QStringLiteral("warp-cli 2026.8.2115.0"), 0, false)
+                  == Probe::Usable,
+              "a client that prints its version and exits cleanly is usable");
+        check(WarpManager::classifyVersionAnswer(QString(), 0, false) == Probe::Usable,
+              "an exit of zero is enough on its own — the text's shape has changed between releases "
+              "and is not what this verdict is about");
+        check(WarpManager::classifyVersionAnswer(QStringLiteral("warp-cli 1.0"), 0, true)
+                  == Probe::Broken,
+              "a client killed while answering — by our timeout or by anything else — is not one to "
+              "hand a tunnel request to");
+
+        // The damage vocabulary, quoted the way the loaders actually say it. Each of these is a
+        // non-zero exit *plus* a sentence that blames the install rather than the caller.
+        check(WarpManager::classifyVersionAnswer(
+                  QStringLiteral("warp-cli: error while loading shared libraries: libwcp.so: cannot "
+                                 "open shared object file: No such file or directory"),
+                  127, false)
+                  == Probe::Broken,
+              "the half-removed package, whose binary outlived its libraries, is damage");
+        check(WarpManager::classifyVersionAnswer(
+                  QStringLiteral("ERROR WHILE LOADING SHARED LIBRARIES"), 1, false) == Probe::Broken,
+              "and the reading is case-insensitive, because the loader's words arrive in whatever case "
+              "the locale they were built in decided");
+        check(WarpManager::classifyVersionAnswer(
+                  QStringLiteral("The application has failed to start because its side-by-side "
+                                 "configuration is incorrect."),
+                  1, false) == Probe::Broken,
+              "Windows' own manifest complaint is the same shape of damage");
+        check(WarpManager::classifyVersionAnswer(
+                  QStringLiteral("\"C:\\\\Program Files\\\\Cloudflare\\\\Cloudflare WARP\\\\warp-cli.exe\" "
+                                 "is not a valid Win32 application"),
+                  1, false) == Probe::Broken,
+              "…and so is an executable that is not the architecture this OS can run");
+
+        // The answers that license no verdict at all — and Unreadable is the case that keeps a working
+        // tunnel working. Each of these is a client that demonstrably ran.
+        check(WarpManager::classifyVersionAnswer(
+                  QStringLiteral("warp-cli: unrecognized option '--version'"), 1, false)
+                  == Probe::Unreadable,
+              "a binary that objects to how it was asked has proven it can be asked — it is not broken");
+        check(WarpManager::classifyVersionAnswer(QStringLiteral("Usage: warp-cli [OPTIONS]"), 1, false)
+                  == Probe::Unreadable,
+              "the same answer spelled as a usage line");
+        check(WarpManager::classifyVersionAnswer(QString(), 3, false) == Probe::Unreadable,
+              "silence with a non-zero exit is not evidence of damage — the damage cases all say so");
+        check(WarpManager::classifyVersionAnswer(QStringLiteral("Failed to connect to daemon"), 1,
+                                                false) == Probe::Unreadable,
+              "a client that cannot reach its daemon is a client, and \"broken\" here would take the "
+              "tunnel away on a day the daemon is simply not running");
+
+        // ---- which databases get asked, in which order ----
+        const QList<InstallationProbe> linuxProbes =
+            WarpManager::installationProbes(Strategy::Platform::Linux);
+        QStringList linuxSources;
+        for (const InstallationProbe &probe : linuxProbes)
+            linuxSources << probe.source;
+        check(linuxSources == (QStringList{QStringLiteral("dpkg"), QStringLiteral("rpm"),
+                                           QStringLiteral("snap"), QStringLiteral("flatpak")}),
+              "Linux asks the system package managers first and the self-contained distributors after");
+        for (const InstallationProbe &probe : linuxProbes) {
+            check(!probe.program.isEmpty() && !probe.args.isEmpty() && !probe.markers.isEmpty(),
+                  QStringLiteral("every probe names a tool, a question and the words that answer it: %1")
+                      .arg(probe.source));
+            check(!probe.program.contains(QLatin1Char('/')),
+                  QStringLiteral("and the tool is named the way PATH names it, not by a path this "
+                                 "function would have to guess: %1").arg(probe.program));
+        }
+        check(linuxProbes.at(0).args == (QStringList{QStringLiteral("-l"),
+                                                    QStringLiteral("cloudflare-warp")}),
+              "dpkg is asked about one package by name, not asked to list the machine");
+        check(linuxProbes.at(1).args == (QStringList{QStringLiteral("-q"),
+                                                    QStringLiteral("cloudflare-warp")}),
+              "rpm the same way, with its own verb for the same question");
+        check(linuxProbes.at(2).args == (QStringList{QStringLiteral("list"),
+                                                    QStringLiteral("cloudflare-warp")}),
+              "snap is asked for the one snap, so an unrelated snap's name cannot be read as ours");
+        check(linuxProbes.at(3).args.contains(QStringLiteral("--columns=id,name")),
+              "flatpak can only be asked for a list, so the columns it prints are pinned — the id is "
+              "the half that is stable across translations of the name");
+        check(linuxProbes.at(3).markers.contains(QStringLiteral("com.cloudflare.Warp")),
+              "and the answer is matched on the app id, not on a display name that ships translated");
+
+        const QList<InstallationProbe> winProbes =
+            WarpManager::installationProbes(Strategy::Platform::Windows);
+        check(winProbes.size() == 2, "Windows asks its service control manager, twice, by both names");
+        for (const InstallationProbe &probe : winProbes) {
+            check(probe.source == QLatin1String("service"),
+                  "both Windows probes report themselves as the service answer");
+            check(probe.program == QLatin1String("sc")
+                      && probe.args.first() == QLatin1String("query"),
+                  "and both are `sc query` — a lookup, not a start, which is the whole reason it is "
+                  "safe to run from a GUI that owns nothing on this machine");
+        }
+        check(winProbes.at(0).args.last() == QLatin1String("warp-svc")
+                  && winProbes.at(1).args.last() == QLatin1String("Cloudflare WARP"),
+              "the service's own name and its display name, because `sc` accepts either and the "
+              "package has been seen installed under both");
+        check(WarpManager::installationProbes(Strategy::Platform::Unknown).isEmpty(),
+              "a platform this file cannot name is asked nothing at all");
+
+        // ---- what each answer says ----
+        const InstallationProbe dpkg = linuxProbes.at(0);
+        const InstallationProbe rpm = linuxProbes.at(1);
+        const InstallationProbe snap = linuxProbes.at(2);
+        const InstallationProbe flatpak = linuxProbes.at(3);
+        const QString dpkgTable = QStringLiteral(
+            "Desired=Unknown/Install/Remove/Purge/Hold\n"
+            "| Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend\n"
+            "|/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)\n"
+            "||/ Name               Version      Architecture Description\n"
+            "+++-==================-=============-============-=================\n"
+            "ii  cloudflare-warp    2026.8.2115  amd64        Cloudflare WARP Client");
+        check(WarpManager::probeAnswerNamesInstall(dpkg, dpkgTable, 0, false),
+              "dpkg's table with an \"ii\" line naming the package is an installed client");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  dpkg, QStringLiteral("dpkg-query: no packages found matching cloudflare-warp"), 1,
+                  false),
+              "the sentence an absent package gets is *about* the package and names it in full — only "
+              "the status column separates that from an install");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  dpkg, dpkgTable.section(QLatin1Char('\n'), 0, 4)
+                            + QStringLiteral("\nun  cloudflare-warp    1  amd64  Cloudflare WARP"),
+                  1, false),
+              "\"un\" — unknown and not installed — is not an install, whatever the exit code says");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  dpkg, dpkgTable.section(QLatin1Char('\n'), 0, 4)
+                            + QStringLiteral("\niU  cloudflare-warp    1  amd64  Cloudflare WARP"),
+                  0, false),
+              "nor is \"iU\": unpacked and unconfigured is debris for the repair script, not a client "
+              "this machine can be told it already has");
+        const QString dpkgRemoved = QStringLiteral(
+            "||/ Name               Version      Architecture Description\n"
+            "+++-==================-=============-============-=================\n"
+            "rc  cloudflare-warp    2026.8.2115  amd64        Cloudflare WARP Client");
+        check(!WarpManager::probeAnswerNamesInstall(dpkg, dpkgRemoved, 0, false),
+              "and \"rc\" is not an install either");
+        check(WarpManager::probeAnswerNamesLeftovers(dpkg, dpkgRemoved, 0, false),
+              "but it is exactly the leftovers a repair is offered for: binaries gone, config files left");
+        check(!WarpManager::probeAnswerNamesLeftovers(dpkg, dpkgTable, 0, false),
+              "an installed package has nothing to clean up");
+        check(!WarpManager::probeAnswerNamesLeftovers(rpm, dpkgRemoved, 0, false),
+              "the same text from another database answers nothing — \"rc\" is dpkg's notation");
+        check(!WarpManager::probeAnswerNamesLeftovers(dpkg, dpkgRemoved, 1, false),
+              "and a tool that failed on its way to printing it said nothing");
+
+        check(WarpManager::probeAnswerNamesInstall(
+                  rpm, QStringLiteral("cloudflare-warp-2026.8.2115.0-1.x86_64"), 0, false),
+              "rpm answers an installed package with its NEVRA and exit zero");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  rpm, QStringLiteral("package cloudflare-warp is not installed"), 1, false),
+              "and an absent one with a sentence naming it and a non-zero code — both halves are required");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  rpm, QStringLiteral("package cloudflare-warp is not installed"), 0, false),
+              "and a zero exit that prints the absence sentence out loud is still treated as "
+              "the absence it states, because a wrapper or a stray `|| true` does happen");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  snap, QStringLiteral("error: could not find snap \"cloudflare-warp\""), 1, false),
+              "snap's absence is its own error text with its own non-zero code");
+        check(WarpManager::probeAnswerNamesInstall(
+                  snap, QStringLiteral("Name               Version  Rev   Tracking     Publisher\n"
+                                       "cloudflare-warp    2026.8.   45    latest/stable  cloudflare*"),
+                  0, false),
+              "and its presence is a table row naming the snap");
+        check(WarpManager::probeAnswerNamesInstall(
+                  flatpak, QStringLiteral("com.cloudflare.Warp\tCloudflare WARP"), 0, false),
+              "flatpak answers with the app id this probe matches on");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  flatpak, QStringLiteral("Id\tName"), 0, false),
+              "an empty flatpak list exits zero and prints only a header — the header names nothing");
+        check(!WarpManager::probeAnswerNamesInstall(dpkg, dpkgTable, 0, true),
+              "a database that was killed while answering has no answer in it");
+
+        const QList<InstallationProbe> services = winProbes;
+        check(WarpManager::probeAnswerNamesInstall(
+                  services.at(0),
+                  QStringLiteral("SERVICE_NAME: warp-svc\r\n        TYPE : 10  WIN32_OWN_PROCESS\r\n"
+                                 "        STATE : 4  RUNNING"),
+                  0, false),
+              "a running service is the client, and it is the answer `sc` gives in that shape");
+        check(WarpManager::probeAnswerNamesInstall(
+                  services.at(0),
+                  QStringLiteral("SERVICE_NAME: warp-svc\r\n        STATE : 1  STOPPED"), 0, false),
+              "a stopped one counts too — this question is about the machine owning the client, not "
+              "about whether it is currently up");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  services.at(0),
+                  QStringLiteral("[SC] OpenService FAILED 1060:\r\n\r\nThe specified service does "
+                                 "not exist as an installed service."),
+                  1060, false),
+              "and the absent case is a non-zero exit whose number is the error's own");
+        check(!WarpManager::probeAnswerNamesInstall(
+                  services.at(1), QStringLiteral("QuerySummaryService: something else entirely"), 0,
+                  false),
+              "an exit zero that names no state line answers nothing, however confident its output");
+
+        // ---- the registry half ----
+        const QStringList keys = WarpManager::registryKeys();
+        check(keys.size() == 2, "two registry keys are consulted");
+        check(keys.at(0)
+                  == QStringLiteral("HKEY_LOCAL_MACHINE\\SOFTWARE\\Cloudflare\\Cloudflare WARP"),
+              "the vendor's own key first, spelled the way the registry spells it");
+        check(keys.at(1).contains(QStringLiteral("WOW6432Node")),
+              "then its 32-bit mirror, because the Windows installer is a 32-bit process and that is "
+              "where its values land");
+        for (const QString &key : keys)
+            check(key.startsWith(QStringLiteral("HKEY_LOCAL_MACHINE")),
+                  QStringLiteral("and neither key is under a user hive — a per-machine install is "
+                                 "claimed in the machine's own tree: %1").arg(key));
+        check(WarpManager::registryNamesInstall(QStringLiteral("2026.8.2115.0"), false),
+              "a DisplayVersion is an install");
+        check(WarpManager::registryNamesInstall(QString(), true),
+              "so are values without one: an MSI that wrote any of them copied the client first");
+        check(!WarpManager::registryNamesInstall(QString(), false),
+              "and an empty read of an empty key is the nothing that it is");
+        check(!WarpManager::registryNamesInstall(QStringLiteral("   "), false),
+              "whitespace is not a version number");
+        // …and the other half of that boundary, which is the case the two halves of the rule meet on: a
+        // key holding nothing but a blank DisplayVersion is still a key an MSI wrote into, so the values
+        // decide it. (A check here used to ask for the reverse while passing the same two arguments as
+        // the line above — an empty version and a non-empty key cannot be both a yes and a no.)
+        check(WarpManager::registryNamesInstall(QStringLiteral("   "), true),
+              "…but a blank version under a key that does hold values is still the install the MSI wrote");
+
+        // ---- the candidate lists ----
+        check(WarpManager::installCandidatePaths(QStringLiteral("/tmp/PF"))
+                  == (QStringList{QStringLiteral("/tmp/PF/Cloudflare/Cloudflare WARP/warp-cli.exe")}),
+              "the vendor's directory is still the only thing installCandidatePaths() names — it is "
+              "pinned against WarpInstaller's own spelling of the same path");
+        const QStringList extra =
+            WarpManager::extraCandidatePaths(QStringLiteral("/home/tester"));
+        check(extra.contains(QStringLiteral("/usr/local/bin/warp-cli")),
+              "a hand-unpacked client in the local bin directory is looked for");
+        check(extra.contains(QStringLiteral("/snap/bin/warp-cli")),
+              "so is a snap's own command directory, which a service manager's PATH never mentions");
+        check(extra.contains(QStringLiteral("/var/lib/flatpak/exports/bin/com.cloudflare.Warp")),
+              "and the system flatpak export");
+        check(extra.contains(QStringLiteral("/home/tester/.local/share/flatpak/exports/bin/"
+                                            "com.cloudflare.Warp")),
+              "and the user's own flatpak export, composed under the home that was handed in");
+        check(extra.contains(QStringLiteral("/home/tester/AppData/Local/Cloudflare/Cloudflare "
+                                           "WARP/warp-cli.exe")),
+              "and a per-user Windows install, for the host where WARP went in for one account");
+        check(WarpManager::extraCandidatePaths(QString()).size() == 3,
+              "with no home named, only the machine-wide locations remain — no path is composed "
+              "against an empty string");
+        for (const QString &path : extra)
+            check(path.startsWith(QLatin1Char('/')),
+                  QStringLiteral("and every candidate is absolute, so none of them resolves against a "
+                                 "working directory: %1").arg(path));
+
+        // The resolve order across both lists: PATH wins over a candidate, and the first candidate
+        // that is a real file wins over the later ones — which is what makes an off-PATH install
+        // drivable rather than merely visible.
+        check(WarpManager::resolveExecutable(QStringLiteral("/usr/bin/warp-cli"),
+                                             {QStringLiteral("/snap/bin/warp-cli")})
+                  == QStringLiteral("/usr/bin/warp-cli"),
+              "what the user's PATH names beats anything this function guesses");
+        check(WarpManager::resolveExecutable(QString(), {QStringLiteral("/no/such/warp-cli")})
+                  .isEmpty(),
+              "a candidate that is not a file is not an answer");
+
+        // The subset the whole design rests on: for any manager, a client it can drive is never
+        // reported absent. Read off this host as it is, whatever this host happens to own.
+        {
+            WarpManager m;
+            pumpFor(1500);
+            check(!m.isAvailable() || m.isInstalled(),
+                  "a drivable client is never \"not installed\" — isAvailable() implies isInstalled()");
+            check(!(m.installLooksBroken() && m.isAvailable()),
+                  "and a client reported broken is never reported drivable in the same breath — the "
+                  "two answers would let a window offer a repair and a connect at once");
+        }
+    }
+
     // [WarpManager: real enrolment] — the sequence run against a stand-in warp-cli.
     //
     // Everything in the section above is pure functions, and pure functions cannot prove what this
@@ -5331,6 +5623,237 @@ int main(int argc, char **argv)
     }
 #endif
 
+    // [WarpManager: the installation round] — the questions above, asked of a host made of scripts.
+    //
+    // What the pure half cannot show is the sequencing: that a client found on PATH is then asked
+    // whether it answers, that "no" from a database is followed by the next database rather than by
+    // an offer, that the first "yes" ends the round, that a tool the host does not have is skipped
+    // without being guessed at, and — the property the whole feature exists for — that the answer
+    // "nothing installed here" only arrives after every question has been asked.
+    //
+    // PATH is replaced with a directory holding only the fixture scripts, so which databases exist is
+    // the scenario's choice and not the runner's. The section is guarded rather than assumed: if this
+    // machine has a client at an absolute location the candidate lists name, a "nothing here" fixture
+    // would be asserting against a real install, and the honest answer to that is to say so and move on.
+    out << "\n[WarpManager: the installation round]\n";
+#if defined(Q_OS_UNIX)
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "installation fixture directory created");
+        const QString bin = tmp.path() + QStringLiteral("/bin");
+        QDir().mkpath(bin);
+        const QString oldPath = qEnvironmentVariable("PATH");
+        qputenv("PATH", bin.toLocal8Bit());
+
+        // The absolute locations this class looks in besides PATH, on this host, right now.
+        const QString elsewhere = WarpManager::resolveExecutable(
+            QString(), WarpManager::installCandidatePaths(QString())
+                           + WarpManager::extraCandidatePaths(QDir::homePath()));
+        if (!elsewhere.isEmpty()) {
+            qputenv("PATH", oldPath.toLocal8Bit());
+            out << "  SKIP  a WARP client exists at " << elsewhere
+                << " — the fixture cannot pretend this machine has none\n";
+        } else {
+            check(true, "nothing in the candidate lists, so the fixture owns the whole answer");
+            const QString probeCalls = bin + QStringLiteral("/probe-calls.log");
+
+            // One stand-in per database: it records that it was asked, prints the answer the scenario
+            // handed in, and exits the code it named. Nothing here shells out to cat, grep or printf(1)
+            // — PATH inside this fixture is a directory holding only these scripts, so an external tool
+            // would not be found, and a helper that failed silently while answering "nothing installed"
+            // is exactly the kind of fixture that teaches a test to pass for the wrong reason. Everything
+            // is a shell builtin: echo, printf, exit.
+            auto shellQuote = [](const QString &text) {
+                // replace() mutates in Qt 6 — the class has no const overload that hands back a copy — so
+                // the escaping is done to a local copy and the caller's string stays as it was.
+                QString escaped = text;
+                escaped.replace(QLatin1Char('\''), QLatin1String("'\\''"));
+                return QStringLiteral("'") + escaped + QLatin1Char('\'');
+            };
+            auto makeProbeTool = [&bin, &probeCalls, &shellQuote](const QString &name,
+                                                                  const QString &text, int code) {
+                const QString body =
+                    QStringLiteral("echo \"%1 $*\" >> '%2'\n")
+                        .arg(name, probeCalls)
+                    + QStringLiteral("printf '%s' %1\n").arg(shellQuote(text))
+                    + QStringLiteral("exit %1\n").arg(code);
+                return makeScript(bin + QLatin1Char('/') + name, body);
+            };
+            auto removeProbeTool = [&bin](const QString &name) {
+                QFile::remove(bin + QLatin1Char('/') + name);
+            };
+
+            auto asked = [&probeCalls]() {
+                QStringList names;
+                QFile f(probeCalls);
+                if (!f.open(QIODevice::ReadOnly))
+                    return names;
+                const QStringList lines =
+                    QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                for (const QString &line : lines)
+                    names << line.section(QLatin1Char(' '), 0, 0);
+                names.removeDuplicates();
+                return names;
+            };
+            auto clearCalls = [&probeCalls]() { QFile::remove(probeCalls); };
+
+            // A stand-in client whose --version answer the scenario chooses, and whose every other
+            // verb answers the way a live client's status probe would.
+            auto makeClient = [&bin](const QString &versionText, int versionCode) {
+                const QString body = QStringLiteral(
+                    "case \"$*\" in\n"
+                    "*--version*)\n"
+                    "  printf '%s\\n' '%1'\n"
+                    "  exit %2\n"
+                    "  ;;\n"
+                    "esac\n"
+                    "echo 'Disconnected'\n"
+                    "exit 0\n").arg(versionText).arg(versionCode);
+                return makeScript(bin + QStringLiteral("/warp-cli"), body);
+            };
+            auto wipeClient = [&bin]() { QFile::remove(bin + QStringLiteral("/warp-cli")); };
+
+            // The four answers a database can give, spelled as the tools spell them — column widths
+            // and header lines included, because the parser reads this text and not a summary of it.
+            const QString dpkgYes = QStringLiteral(
+                "Desired=Unknown/Install/Remove/Purge/Hold\n"
+                "||/ Name            Version      Architecture Description\n"
+                "+++-===============-=============-============-=================\n"
+                "ii  cloudflare-warp 2026.8.2115  amd64        Cloudflare WARP Client");
+            const QString dpkgNo =
+                QStringLiteral("dpkg-query: no packages found matching cloudflare-warp");
+            const QString dpkgDebris = QStringLiteral(
+                "||/ Name            Version      Architecture Description\n"
+                "rc  cloudflare-warp 2026.8.2115  amd64        Cloudflare WARP Client");
+            const QString snapYes = QStringLiteral(
+                "Name            Version  Rev  Tracking       Publisher\n"
+                "cloudflare-warp 2026.8.  45   latest/stable  cloudflare*");
+
+            // ---- a client that answers: the round never happens ----
+            {
+                makeProbeTool(QStringLiteral("dpkg"), dpkgYes, 0);
+                check(!makeClient(QStringLiteral("warp-cli 2026.8.2115.0"), 0).isEmpty(),
+                      "a stand-in client was written");
+                clearCalls();
+                WarpManager m;
+                pumpFor(1200);
+                check(m.isAvailable(), "a client that prints its version is drivable");
+                check(m.isInstalled(), "…and therefore installed; the two are one subset, not a coin flip");
+                check(!m.installLooksBroken(), "…and not broken");
+                check(asked().isEmpty(),
+                      "and no package database was consulted: the round that gates an offer has "
+                      "nothing to say about a machine already proven to run the client");
+                wipeClient();
+                removeProbeTool(QStringLiteral("dpkg"));
+            }
+
+            // ---- a client that does not answer: demoted, then the databases get their turn ----
+            {
+                makeProbeTool(QStringLiteral("dpkg"), dpkgYes, 0);
+                check(!makeClient(QStringLiteral("warp-cli: error while loading shared libraries: "
+                                                  "libwcp.so: cannot open shared object file"),
+                                  127)
+                          .isEmpty(),
+                      "a stand-in client that cannot be run was written");
+                clearCalls();
+                WarpManager m;
+                pumpFor(1500);
+                check(!m.isAvailable(),
+                      "a binary whose libraries are gone is not offered to the state machine");
+                check(m.installLooksBroken(), "…and the reason survives as a repair, not as an absence");
+                check(m.isInstalled(), "…while the package database that names it keeps it installed");
+                check(m.installedVia() == QLatin1String("dpkg"),
+                      "and the answer says where it came from");
+                check(asked() == QStringList{QStringLiteral("dpkg")},
+                      "the round started only once the client was proved unusable");
+                wipeClient();
+                removeProbeTool(QStringLiteral("dpkg"));
+            }
+
+            // ---- an objecting client: no verdict, so no change ----
+            {
+                check(!makeClient(QStringLiteral("warp-cli: unrecognized option '--version'"), 1)
+                          .isEmpty(),
+                      "a client that refuses the question was written");
+                clearCalls();
+                WarpManager m;
+                pumpFor(1200);
+                check(m.isAvailable(),
+                      "an answer about how it was asked is not an answer about being broken, so the "
+                      "tunnel stays available");
+                check(!m.installLooksBroken(), "…and no repair is offered on the strength of it");
+                check(asked().isEmpty(), "…nor are the databases asked about a client still believed good");
+                wipeClient();
+            }
+
+            // ---- no client: every database on this host is asked, in order, until one says yes ----
+            {
+                makeProbeTool(QStringLiteral("dpkg"), dpkgNo, 1);
+                makeProbeTool(QStringLiteral("snap"), snapYes, 0);
+                clearCalls();
+                WarpManager m;
+                pumpFor(2000);
+                check(!m.isAvailable(), "with no warp-cli here, there is nothing to drive");
+                check(m.isInstalled(), "but the machine is not called empty on dpkg's word alone");
+                check(m.installedVia() == QLatin1String("snap"),
+                      "and the name of the database that said otherwise is the answer");
+                check(asked() == (QStringList{QStringLiteral("dpkg"), QStringLiteral("snap")}),
+                      "dpkg was asked first and snap after it, and nothing after the first yes — rpm "
+                      "and flatpak are in the list and were never run");
+                removeProbeTool(QStringLiteral("dpkg"));
+                removeProbeTool(QStringLiteral("snap"));
+            }
+
+            // ---- a host that owns none of these tools ----
+            {
+                clearCalls();
+                WarpManager m;
+                pumpFor(800);
+                check(!m.isAvailable(), "no client, and no database to ask about one");
+                check(!m.isInstalled(),
+                      "and the absent answer is allowed once every question that exists has been "
+                      "asked, which here is none of them");
+                check(m.installedVia().isEmpty(), "and it says nothing about where a client is");
+                check(asked().isEmpty(),
+                      "a database this host does not have was never run, and never guessed at");
+            }
+
+            // ---- the debris case, from dpkg's third status ----
+            {
+                makeProbeTool(QStringLiteral("dpkg"), dpkgDebris, 0);
+                clearCalls();
+                WarpManager m;
+                pumpFor(1500);
+                check(!m.isAvailable(), "a removed package leaves nothing to drive");
+                check(!m.isInstalled(), "and is not an install — the binaries are gone");
+                check(m.installLooksBroken(),
+                      "but it is the leftovers a first install's question does not describe, which "
+                      "is what turns the next offer into a repair");
+                removeProbeTool(QStringLiteral("dpkg"));
+            }
+
+            // ---- the offer waits for the round, and only for the round ----
+            {
+                makeProbeTool(QStringLiteral("dpkg"), dpkgYes, 0);
+                clearCalls();
+                WarpManager m;
+                check(m.isInstalled(),
+                      "mid-round the machine is never reported empty, which is the reading a "
+                      "premature offer would be made from");
+                pumpFor(1500);
+                check(m.isInstalled(), "and after the round, the answer it gave stands");
+                check(m.installedVia() == QLatin1String("dpkg"),
+                      "from the same source, not from the absence that preceded it");
+                removeProbeTool(QStringLiteral("dpkg"));
+            }
+
+            qputenv("PATH", oldPath.toLocal8Bit());
+            check(qEnvironmentVariable("PATH") == oldPath,
+                  "PATH is restored, so no later section resolves a program through this fixture");
+        }
+    }
+#endif
+
     // [WarpInstaller] — putting the Cloudflare WARP client on a machine that has none.
     //
     // The privileged half of this class cannot run in a suite: it execs pkexec, and a test that ran it
@@ -5508,6 +6031,52 @@ int main(int argc, char **argv)
                   "the same number of lines for a different suite");
             check(other != script && other.contains(QStringLiteral("CODENAME='bookworm'")),
                   "and the only difference is the suite");
+        }
+
+        // ---- the repair's script ----
+        //
+        // A second body rather than a second installer, so the only thing a repair can change is the
+        // lines that clear debris. Asserted as a diff against the first install's text: anything that
+        // drifted into the repository, the key or the apt command itself would be a repair quietly
+        // becoming a different install.
+        {
+            const QString plain = WarpInstaller::linuxScriptBody(QStringLiteral("noble"));
+            const QString repair = WarpInstaller::linuxRepairScriptBody(QStringLiteral("noble"));
+            check(repair != plain, "the repair script is not the same text as the first install's");
+            check(repair.contains(QStringLiteral("dpkg --configure -a || true")),
+                  "it finishes a transaction dpkg was interrupted in, which is the state that makes "
+                  "apt refuse to install anything at all");
+            check(repair.contains(QStringLiteral("dpkg --purge \"$PACKAGE\" || true")),
+                  "and purges a removed-but-configured package, using the variable and not a name "
+                  "typed in twice");
+            check(repair.contains(QStringLiteral("grep -q '^rc'")),
+                  "…guarded by the status that means those leftovers, so an installed package is never "
+                  "purged by a repair");
+            check(repair.contains(QStringLiteral("command -v dpkg")),
+                  "and the whole preamble is skipped on a host with no dpkg, rather than failing there");
+            check(repair.indexOf(QStringLiteral("dpkg --configure -a"))
+                      < repair.indexOf(QStringLiteral("for tool in curl gpg apt-get")),
+                  "the repair runs before the tool check, so a missing curl cannot hide the repair "
+                  "the repair was asked for");
+            check(plain.count(QLatin1Char('\n')) + 10 == repair.count(QLatin1Char('\n')),
+                  "the difference is one ten-line preamble and nothing else");
+            // What the two scripts share, asserted as text and in two halves, because the splice point sits
+            // between them: the variables come first, then the repair's own preamble, then the shared body.
+            // (This check used to ask whether the repair ended with the plain script's text from CODENAME=
+            // onward — a tail that contains the very spot the preamble is spliced into, so no repair could
+            // ever end with it. The claim was right; the anchor was one region too early.)
+            const int varsAt = plain.indexOf(QStringLiteral("CODENAME="));
+            const int bodyAt = plain.indexOf(QStringLiteral("for tool in"));
+            check(varsAt >= 0 && bodyAt > varsAt, "the plain script has the two regions to compare");
+            const QString variables = plain.mid(varsAt, bodyAt - varsAt);
+            check(!variables.isEmpty() && repair.contains(variables),
+                  "the repair writes the same variables — same key, same repository, same package");
+            check(bodyAt >= 0 && repair.endsWith(plain.mid(bodyAt)),
+                  "and every line from the tool check onward is byte-identical — same tools, same "
+                  "key fetch, same apt command and the same fallback");
+            check(WarpInstaller::linuxRepairScriptBody(QStringLiteral("bookworm"))
+                      .contains(QStringLiteral("CODENAME='bookworm'")),
+                  "the suite still substitutes in the repair body");
         }
 
         // ---- reading this machine's release ----
