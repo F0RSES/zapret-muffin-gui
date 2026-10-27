@@ -33,7 +33,6 @@
 #include <QEvent>
 #include <QFile>
 #include <QFrame>
-#include <QGraphicsDropShadowEffect>
 #include <QGraphicsEffect>
 #include <QGridLayout>
 #include <QGuiApplication>
@@ -44,6 +43,9 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPainterPath>
 #include <QProgressBar>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -59,6 +61,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QtMath>   // qCeil, for the shadow's pass count
 
 namespace zapret {
 
@@ -315,6 +318,22 @@ MainWindow::MainWindow(WarpManager *warp, QWidget *parent)
     m_log->appendLine(LanguageManager::tr(QStringLiteral("log.startup"))
                           .arg(QApplication::applicationVersion(), m_manager->backendName()),
                       LogPanel::Info);
+    // Which windowing layer this is being drawn on, and how much of the window is still being composited
+    // by an effect. Filed at startup because this is the one report the application cannot reproduce from
+    // the inside: a ghost of the window left on the desktop after a restore reads identically in the log
+    // whether it came from a cached effect pixmap or from the compositor, and the two are fixed in
+    // different places. The count is the discriminator — with no effect attached, there is no pixmap of the
+    // window's content left in this process for the desktop to be showing.
+    int attachedEffects = 0;
+    const QList<QWidget *> widgets = findChildren<QWidget *>();
+    for (QWidget *w : widgets) {
+        if (w->graphicsEffect() != nullptr)
+            ++attachedEffects;
+    }
+    m_log->appendLine(LanguageManager::tr(QStringLiteral("log.graphics"))
+                          .arg(QGuiApplication::platformName())
+                          .arg(attachedEffects),
+                      LogPanel::Info);
     if (m_manager->strategyCount() > 0) {
         m_log->appendLine(LanguageManager::tr(QStringLiteral("log.found_in"))
                               .arg(m_manager->strategyCount())
@@ -422,24 +441,17 @@ void MainWindow::buildCentral()
     frameBox->addWidget(buildMainArea(), 1);
     canvasBox->addWidget(m_windowFrame);
 
-    // The shadow, on the canvas and not on the card. A drop shadow is drawn from the alpha of the widget it
-    // is attached to and lands OUTSIDE the shape that cast it — in the band — so the widget carrying it has
-    // to be the one that owns the band. The canvas is that widget: its rect is the window's whole surface,
-    // which is why kWindowFrameMarginPx is measured as the shadow's reach. Attach the same effect to the
-    // card instead and the shadow has nowhere to go: the card's rect stops at the card.
+    // No effect is attached, and that absence is the point. A QGraphicsDropShadowEffect can only do what
+    // it does by rendering the widget it is attached to into a pixmap and filtering that, so attaching it
+    // here — to the widget whose rect is the whole surface — meant the window's entire content lived in a
+    // cached bitmap that every later paint was drawn from. On a frameless WA_TranslucentBackground top
+    // level that is the shape of a stale frame: minimize and restore, and the previous frame's copy of a
+    // control is left on the desktop beside the window, unclickable because it is not a widget.
     //
-    // It stays attached for the life of the window, which is the one part of this Motion would argue with.
-    // An attached effect routes every later paint of that widget through the raster compositor, so Motion
-    // detaches its fades as soon as a page has finished arriving; a shadow cannot be detached, because it
-    // IS the window's look rather than a transition through it. The cost is bounded by what this window
-    // actually repaints: the blur runs over the canvas's alpha when something inside it changes, which means
-    // page swaps, the power button's breath and the ping badges — not a 3D scene at sixty frames.
-    auto *shadow = new QGraphicsDropShadowEffect(canvas);
-    shadow->setBlurRadius(kWindowShadowBlurPx);
-    shadow->setColor(QColor(0, 0, 0, kWindowShadowAlpha));
-    shadow->setOffset(0, kWindowShadowOffsetYpx);
-    canvas->setGraphicsEffect(shadow);
-
+    // The shadow is the window's own to paint now (paintEvent → drawWindowShadow), from the card's
+    // geometry, on every pass, with nothing remembered in between. The band stays the shadow's room for the
+    // reason it always was — kWindowFrameMarginPx is measured as its reach — but the room no longer needs an
+    // owner widget, because nothing outside the silhouette's own path is composited any more.
     setCentralWidget(canvas);
 }
 
@@ -2518,6 +2530,94 @@ void MainWindow::updateStatusUi()
 // yet — see showStoppingFeedback() — and a second copy of this mapping is how a chip and a button start
 // telling two stories about one run. The tray icon is deliberately NOT drawn here: it reads the
 // manager's live state and has no part in what the window itself shows.
+qreal MainWindow::windowShadowReachPx()
+{
+    // The same room a Gaussian was visibly done with by the time it got there — half the blur radius the
+    // effect was given, plus the offset, which lengthens the fall downward and never shortens it upward.
+    // The band is derived from this number (kWindowFrameMarginPx), so the shadow ends one pixel inside the
+    // surface's own edge and the outermost ring of the window is a tail rather than a body.
+    return kWindowShadowBlurPx / 2.0 + kWindowShadowOffsetYpx;
+}
+
+int MainWindow::windowShadowAlphaAt(qreal distanceOutsideStroke)
+{
+    // Inside the silhouette's own drop — the strip the offset pushes past the card's edge — the shadow is at
+    // full strength, which is what the effect's offset meant and what the tests below read as the peak.
+    if (distanceOutsideStroke <= 0.0)
+        return kWindowShadowAlpha;
+    const qreal reach = windowShadowReachPx();
+    if (distanceOutsideStroke >= reach)
+        return 0;
+    // A cubic fall-off, not a linear one: what a user sees at the far end of a shadow is not its brightness
+    // but where the brightness stops, and a curve that flattens near the shape and dies before the surface
+    // edge is the difference between "this window is above your desktop" and a grey smudge around it.
+    const qreal t = 1.0 - distanceOutsideStroke / reach;
+    qreal raised = 1.0;
+    for (int i = 0; i < kWindowShadowFalloffExponent; ++i)
+        raised *= t;
+    return qRound(kWindowShadowAlpha * raised);
+}
+
+int MainWindow::windowShadowPassCount()
+{
+    // One pixel-wide pass per step of the reach, so every band pixel receives the curve's value at its own
+    // distance rather than a step of it. The shadow cannot end differently from the number that says where
+    // it ends, because there is one of them.
+    return qCeil(windowShadowReachPx());
+}
+
+void MainWindow::paintEvent(QPaintEvent *event)
+{
+    // The sheet paints this window's background transparent — the attribute would otherwise be a sharp
+    // rectangle behind a rounded card — so whatever is drawn here is drawn onto an empty surface, under
+    // every child. The card is opaque and lands on top of the part of the shadow that falls inside it;
+    // the band is what the canvas deliberately does not paint, and that is where this shows.
+    QMainWindow::paintEvent(event);
+    QPainter painter(this);
+    drawWindowShadow(painter);
+}
+
+void MainWindow::drawWindowShadow(QPainter &painter)
+{
+    const int m = kWindowFrameMarginPx;
+    const QRectF card(m, m, width() - 2.0 * m, height() - 2.0 * m);
+    if (card.width() <= 0.0 || card.height() <= 0.0)
+        return;   // nothing to cast a shadow from: a window mid-teardown, or one that has not been laid out
+
+    const qreal radius = kWindowFrameRadiusPx;
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    // No clip of the card is needed, and none is attempted: QPainter's path clipping cannot subtract. The
+    // passes below do paint a little inside the silhouette, and that is harmless by construction — the card
+    // is an opaque child painted after its parent, so anything under it is not on screen. What must not
+    // happen is a pixel in the band carrying an alpha the curve does not name for its distance, and that is
+    // what the pass count and this loop together guarantee.
+
+    // The shape the drop falls from is the card shifted by the offset — which is all an offset shadow has
+    // ever meant, and the reason there is more of it below the window than above.
+    const QRectF source = card.translated(0, kWindowShadowOffsetYpx);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, windowShadowAlphaAt(0.0)));
+    QPainterPath body;
+    body.addRoundedRect(source, radius, radius);
+    painter.drawPath(body);
+
+    painter.setBrush(Qt::NoBrush);
+    const int passes = windowShadowPassCount();
+    for (int i = 1; i <= passes; ++i) {
+        const qreal distance = i - 0.5;   // the centre of a one-pixel ring, which is the distance its
+                                          // pixels are at, which is the argument the curve is read with
+        const int alpha = windowShadowAlphaAt(distance);
+        if (alpha <= 0)
+            continue;
+        painter.setPen(QPen(QColor(0, 0, 0, alpha), 1.0));
+        painter.drawRoundedRect(source.adjusted(-distance, -distance, distance, distance),
+                                radius + distance, radius + distance);
+    }
+    painter.restore();
+}
+
 void MainWindow::renderStatus(IZapretBackend::State state)
 {
     // Zapret owns the look on this path — if the toggle was flipped to WARP the updateStatusUi()
@@ -4098,12 +4198,15 @@ void MainWindow::changeEvent(QEvent *event)
 void MainWindow::refreshWindowSurface()
 {
     // The cached sources first, and invalidated rather than detached. QGraphicsEffect::update() drops the
-    // pixmap the effect was rendering from and schedules a re-render of the widget as it is now; taking the
-    // effect off would clear the same cache, and Motion does exactly that — but a fade Motion installed is
-    // a transition with an end, while the canvas's shadow IS the window's look. A restore that detached it
-    // would restore a window with no shadow, and re-attaching a fresh one per restore is a flicker plus
-    // everything the old effect owned. Hence the whole subtree is walked: the shadow is one of the effects
-    // a restore can find stale, and a breathing control's is the other.
+    // pixmap an effect was rendering from and schedules a re-render of the widget as it is now; taking it
+    // off would clear the same cache, and Motion does exactly that — but a fade Motion installed is a
+    // transition with an end, while a chip's glow and a Busy control's breath are the window's look for as
+    // long as they are on screen, and detaching one of those is a widget repainted without its own styling.
+    //
+    // The window's shadow is deliberately not in this list: it was the reason the walk existed, and it is
+    // painted from geometry now, so there is nothing of the whole window cached to go stale. What is left
+    // here is the smaller cache — a breathing button, a glowing chip — each of which can only carry its own
+    // widget's pixels.
     const QList<QWidget *> children = findChildren<QWidget *>();
     for (QWidget *child : children) {
         if (QGraphicsEffect *effect = child->graphicsEffect())

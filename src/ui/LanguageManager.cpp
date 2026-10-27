@@ -1022,6 +1022,17 @@ const QVector<Row> &catalog()
             "Muffin %1 iniciado (backend: %2)", "Muffin %1 gestartet (Backend: %2)",
             "Muffin %1 已启动（后端：%2）", "Muffin %1 démarré (backend : %2)",
             "Muffin %1 शुरू हुआ (बैकएंड: %2)"),
+        // Where the window is being drawn and what is still being composited inside it. The report this
+        // answers is a ghost of the window left on the desktop after a restore, which cannot be reproduced
+        // from inside the application: the log has to say which layer it was drawn on, and whether any
+        // effect is holding a pixmap of the content at all.
+        ROW("log.graphics", "Графический слой: %1 · эффектов отрисовки в окне: %2",
+            "Graphics platform: %1 · drawing effects attached in this window: %2",
+            "Plataforma gráfica: %1 · efectos de dibujo activos en esta ventana: %2",
+            "Grafikplattform: %1 · aktive Zeichen-Effekte in diesem Fenster: %2",
+            "图形平台：%1 · 此窗口内启用的绘图效果：%2",
+            "Plateforme graphique : %1 · effets de dessin actifs dans cette fenêtre : %2",
+            "ग्राफ़िक प्लेटफ़ॉर्म: %1 · इस विंडो में सक्रिय ड्रॉइंग प्रभाव: %2"),
         ROW("log.found_in", "Найдено стратегий: %1 в %2", "%1 strategies found in %2",
             "%1 estrategias encontradas en %2", "%1 Strategien in %2 gefunden",
             "在 %2 中找到 %1 个策略", "%1 stratégies trouvées dans %2", "%2 में %1 रणनीतियाँ मिलीं"),

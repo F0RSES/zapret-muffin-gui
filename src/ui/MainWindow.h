@@ -451,6 +451,29 @@ public:
     static constexpr int kWindowShadowOffsetYpx = 4;
     static constexpr int kWindowShadowAlpha = 100;
 
+    // The fall-off the shadow is painted with, as a curve over distance outside the card's stroke.
+    //
+    // It replaces a QGraphicsDropShadowEffect, and the reason is a property of how that effect works rather
+    // than a taste: a graphics effect renders the widget it is attached to into a pixmap and filters that,
+    // so for as long as it is attached, the window's ENTIRE content — the power button included — lives in a
+    // cached bitmap that later paints are drawn from. On a frameless WA_TranslucentBackground top level that
+    // cache is the shape of a stale frame: minimize, restore, and the previous frame's copy of a widget can
+    // be left standing beside the window, unclickable, because it is not a widget at all. A curve over the
+    // card's geometry needs no cache. Nothing about the window's content is remembered between paints, and
+    // the blur cost per repaint — which ran on every page swap, every breath of a busy button and every ping
+    // badge — is gone with it.
+    //
+    // The reach is the room the band below was widened for and the peak is the alpha the effect was given,
+    // so this is the same window rather than a redesigned one: measured at a pixel's distance from the
+    // stroke, it is what that pixel is painted, and testWindowFrame() reads these two functions rather than
+    // trusting a screenshot.
+    static constexpr int kWindowShadowFalloffExponent = 3;
+    static qreal windowShadowReachPx();
+    static int windowShadowAlphaAt(qreal distanceOutsideStroke);
+    // One pass per pixel of the reach, so the painter and the curve above cannot disagree about where the
+    // shadow ends.
+    static int windowShadowPassCount();
+
     // The transparent band between the card and the surface's own edge. It has two jobs and the second one
     // is the bigger: it keeps the 1 px stroke off the window's last pixel (a stroke that begins on the last
     // pixel is a stroke cut in half — the frameless equivalent of the square corners
@@ -573,9 +596,16 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    // The window paints one thing, and it is the only thing no child can paint for it: the shadow the card
+    // casts into the transparent band. Everything else on screen belongs to a widget that draws itself.
+    void paintEvent(QPaintEvent *event) override;
     // Minimize, restore, maximize — the one moment this window repaints all of itself rather than the part
     // of itself that a window manager said was exposed. See refreshWindowSurface().
     void changeEvent(QEvent *event) override;
+    // The shadow's own act: walk the curve outward from the card's stroke. Split out of paintEvent() so
+    // the geometry lives in one place next to the numbers it is made of, and so a future change to the
+    // silhouette has one file region to fail in rather than two.
+    void drawWindowShadow(QPainter &painter);
     // The window is frameless (see the constructor), so its own header is the only thing to grab: a press
     // there drags the whole window. A press anywhere else falls through to the usual widget behaviour.
     void mousePressEvent(QMouseEvent *event) override;
@@ -585,15 +615,17 @@ protected:
     // What a window-state change owes the surface: every graphics effect this window is carrying told to
     // drop its cached source, then a repaint of the whole surface rather than of the exposed region.
     //
-    // Why anything is owed. This window is frameless and WA_TranslucentBackground, so the pixels no widget
-    // paints are the desktop showing through, and its canvas carries a QGraphicsDropShadowEffect for the
-    // life of the window — which means the canvas is drawn through an offscreen pixmap the compositor
-    // keeps between paints. A control that is still working is drawn the same way: a Busy power button
-    // breathes on a QGraphicsOpacityEffect whose animation has no end, so it is rendered through such a
-    // pixmap for as long as the tunnel is coming up. A minimize/restore is exactly the moment a cache like
-    // that can outlive the frame it was taken from, and what is left on the screen then is the previous
-    // frame's copy of a widget, sitting where the previous frame had put it — the report this answers was
-    // a second power button floating beside the real one, unclickable, after a restore.
+    // Why anything is owed. Every attached QGraphicsEffect renders its widget into a pixmap that later
+    // paints are drawn from, so a minimize/restore is the moment such a cache can outlive the frame it was
+    // taken from — what is left on the screen then is the previous frame's copy of a widget, sitting where
+    // the previous frame had put it. That is the whole of the report this answers: a second power button
+    // floating beside the real one, unclickable because it is not a widget.
+    //
+    // The window's own shadow used to be the largest instance — it hung off the widget whose rect is the
+    // whole surface, so it cached the window with the button inside it — and it is painted from geometry
+    // now, which is why there is nothing left of that size to go stale. What this walk still reaches is the
+    // smaller cache: a Busy control breathing under an opacity effect with no end, a row's glow chip. Each
+    // can carry only its own widget's pixels, but a stale one is still a ghost on the desktop.
     //
     // Virtual for the reason the watchdog's seams are: the claim worth testing is that a state change asks
     // for this and that nothing else does, and neither half is observable from outside a window that a

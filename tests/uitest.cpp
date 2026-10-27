@@ -74,6 +74,7 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImage>
+#include <QPainter>
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
@@ -5838,20 +5839,21 @@ static void testWindowFrame()
 
     // ---- a window-state change owes the surface a full refresh ----
     //
-    // The window is frameless and translucent, and its canvas carries a drop shadow for the life of the
-    // window — so the canvas is drawn through a pixmap the compositor keeps between paints, exactly as a
-    // Busy power button is (Motion's breath is an opacity effect with no end). A minimize/restore is the
-    // moment such a cache can outlive the frame it was taken from, and what is left on screen is the
-    // previous frame's copy of a widget where the previous frame put it: the reported ghost was a second
-    // power button, unclickable, beside the real one.
+    // The window is frameless and translucent. It used to carry a QGraphicsDropShadowEffect on its canvas,
+    // which meant the whole surface — the power button included — was being drawn out of a pixmap the
+    // compositor kept between paints; that cache is the shape of a stale frame after a minimize/restore,
+    // and the reported ghost was a second, unclickable power button standing beside the real one. The shadow
+    // is painted from geometry now, so there is no such cache for the window's own content. What the refresh
+    // still has to reach is the effects that remain — Motion's breath on a Busy control, a chip's glow —
+    // and what it must not do is disturb the shadow, which is no longer an object it could invalidate.
     {
         SurfaceProbe probe;
         probe.show();
         QTest::qWait(60);
         QWidget *canvas = probe.findChild<QWidget *>(QStringLiteral("rootCanvas"));
-        auto *shadowBefore =
-            canvas ? qobject_cast<QGraphicsDropShadowEffect *>(canvas->graphicsEffect()) : nullptr;
-        check(shadowBefore != nullptr, "the window under test is the one carrying the shadow");
+        check(canvas != nullptr && canvas->graphicsEffect() == nullptr,
+              "the canvas owns no graphics effect at all — the shadow is painted by the window, so there is "
+              "no cached copy of the window's content for a restore to leave on the desktop");
 
         // Read against the count the probe arrived at rather than against zero: showing a window can hand
         // it a state change of its own, and the claim is about the events this scenario sends.
@@ -5859,9 +5861,8 @@ static void testWindowFrame()
         QEvent stateChange(QEvent::WindowStateChange);
         QCoreApplication::sendEvent(&probe, &stateChange);
         check(probe.refreshes == before + 1,
-              "a window-state change asks for the whole surface to be refreshed, because that is the one "
-              "moment a translucent window and the effects it carries can be left holding a frame nobody "
-              "is going to repaint");
+              "a window-state change still asks for the whole surface to be refreshed, because the effects "
+              "that remain are still caches, and a restore is still when one can be stale");
 
         QEvent activation(QEvent::ActivationChange);
         QCoreApplication::sendEvent(&probe, &activation);
@@ -5871,15 +5872,19 @@ static void testWindowFrame()
               "…and nothing else asks: an activation and a font change are not a surface whose geometry "
               "just moved, and repainting the whole window for either would be a full refresh per event");
 
-        auto *shadowAfter =
-            canvas ? qobject_cast<QGraphicsDropShadowEffect *>(canvas->graphicsEffect()) : nullptr;
-        check(shadowAfter == shadowBefore
-                      && shadowAfter->blurRadius() == MainWindow::kWindowShadowBlurPx
-                      && shadowAfter->offset() == QPointF(0, MainWindow::kWindowShadowOffsetYpx),
-              "the refresh invalidates the shadow's cached source instead of taking the effect off — a "
-              "restore that detached it would restore a window with no shadow, and re-attaching a fresh "
-              "one per restore is a flicker plus everything the old effect owned");
-        check(probe.centralWidget() == canvas && canvas != nullptr,
+        // The shadow, read as pixels rather than as an object. A refresh that repainted the surface without
+        // it would look identical in every assertion above and would take the window's whole silhouette
+        // claim away on the user's next minimize.
+        const QImage after = probe.grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        const int m = MainWindow::kWindowFrameMarginPx;
+        const QPoint justOutside(m - 1, after.height() / 2);      // one pixel out from the card's stroke
+        const QColor ink = after.pixelColor(justOutside);
+        check(qAlpha(after.pixel(justOutside)) >= 40
+                      && ink.red() <= 8 && ink.green() <= 8 && ink.blue() <= 8,
+              QStringLiteral("…and after the refresh the band one pixel off the stroke still carries the "
+                             "shadow the curve names for that distance (%1 of black)")
+                  .arg(qAlpha(after.pixel(justOutside))));
+        check(probe.centralWidget() == canvas,
               "…and the canvas it repaints is still the window's own, not a replacement");
         probe.hide();
     }
@@ -5903,27 +5908,69 @@ static void testWindowFrame()
         check(shell->parentWidget() == canvas,
               "…between that canvas and everything else, which is the one thing the new layer changes");
 
-        // ---- the shadow, as an object ----
+        // ---- the shadow, as a declaration ----
         //
-        // Attached to the canvas, with the parameters the constants name. The pixels below can show that a
-        // shadow happened; only this can show that it is the shadow this file declares, and that it hangs off
-        // the one widget whose rect includes the band it has to fall through.
-        auto *shadow = qobject_cast<QGraphicsDropShadowEffect *>(canvas->graphicsEffect());
-        check(shadow != nullptr, "the window's canvas carries a drop shadow");
-        check(shadow && shadow->blurRadius() == MainWindow::kWindowShadowBlurPx,
-              QStringLiteral("…blurred by %1 px").arg(MainWindow::kWindowShadowBlurPx));
-        check(shadow && shadow->offset() == QPointF(0, MainWindow::kWindowShadowOffsetYpx),
-              QStringLiteral("…pushed %1 px down, so the window reads as lit from above")
-                  .arg(MainWindow::kWindowShadowOffsetYpx));
-        check(shadow && shadow->color().alpha() == MainWindow::kWindowShadowAlpha
-                      && shadow->color().red() == 0 && shadow->color().green() == 0
-                      && shadow->color().blue() == 0,
-              QStringLiteral("…in %1 of plain black rather than a colour of its own")
-                  .arg(MainWindow::kWindowShadowAlpha));
-        // Not on the card, and not on the window: a drop shadow paints outside the shape it came from, and
-        // the card's rect stops at the card. An effect moved there would be a shadow with nowhere to go.
-        check(shell->graphicsEffect() == nullptr, "…and the card itself owns no effect to clip it");
-        check(window.graphicsEffect() == nullptr, "…nor does the window, which is not the band's owner");
+        // There is no object left to read these numbers off, and that absence is the fix: a
+        // QGraphicsDropShadowEffect can only blur what it has first rendered, so while one was attached to
+        // the canvas — the widget whose rect is the whole surface — the window's own content was parked in a
+        // pixmap that later paints were drawn from. The parameters therefore live in the curve the painter
+        // walks, and this is where the file's own claim about them is checked: that it is the shadow the
+        // constants name, and that it ends where the band says it must.
+        check(canvas->graphicsEffect() == nullptr,
+              "the canvas carries no effect: its rect is the whole surface, and a shadow rendered from that "
+              "would cache the window's content along with its own edges");
+        check(shell->graphicsEffect() == nullptr && window.graphicsEffect() == nullptr,
+              "…and neither does the card nor the window, so nothing in the layer chain is holding a "
+              "pixmap of anything");
+        check(MainWindow::windowShadowReachPx()
+                      == MainWindow::kWindowShadowBlurPx / 2.0 + MainWindow::kWindowShadowOffsetYpx,
+              "the reach is the room the band was widened for, so the shadow cannot end past the surface");
+        check(MainWindow::windowShadowAlphaAt(0.0) == MainWindow::kWindowShadowAlpha
+                      && MainWindow::windowShadowAlphaAt(-1.0) == MainWindow::kWindowShadowAlpha,
+              "the peak is the alpha the effect was given, and held across the strip the offset drops past "
+              "the card's own edge");
+        check(MainWindow::windowShadowAlphaAt(MainWindow::windowShadowReachPx()) == 0,
+              "…and the curve is spent by the reach the band guarantees, rather than being cut there");
+        // "Never increases" is the shape; "strictly falls while anything is left to see" is the point. A
+        // cubic run out to integers goes flat at 1 and 0 long before the reach, and a check that demanded
+        // a strict fall there would be a check about rounding rather than about the shadow.
+        bool monotone = true;
+        bool fallsWhileVisible = true;
+        for (qreal d = 0.5; d < MainWindow::windowShadowReachPx(); d += 1.0) {
+            const int here = MainWindow::windowShadowAlphaAt(d);
+            const int next = MainWindow::windowShadowAlphaAt(d + 1.0);
+            if (next > here)
+                monotone = false;
+            if (here >= 2 && next >= here)
+                fallsWhileVisible = false;
+        }
+        check(monotone && fallsWhileVisible,
+              "the fall-off falls at every step of it while anything is left to see: a shadow that steps "
+              "instead of fading is the artefact the band exists to make invisible");
+        // The peak sits below the threshold every shape test below reads band pixels at, which is what lets
+        // one render carry both claims: a shadow cannot be mistaken for an app pixel by a >128 count.
+        check(MainWindow::kWindowShadowAlpha <= 128,
+              "the shadow's strongest pixel is dimmer than the opacity a corner test counts as painted, so "
+              "the silhouette and the shadow can be read from the same picture");
+        check(MainWindow::windowShadowPassCount() >= int(MainWindow::windowShadowReachPx()),
+              "one pass per pixel of the reach, which is what makes the painted band the declared one");
+        // How much of the window is still composited by an effect, and which layers. The claim the ghost
+        // turns on is about the layers whose rect IS the surface — window, canvas, card — because only one
+        // of those could be holding a pixmap of the whole window, and of the button inside it. What remains
+        // are glows on small widgets inside the card, which can at worst cache a row of the list; counted
+        // and said, so a report can be read against a number rather than against a promise.
+        int attached = 0;
+        const QList<QWidget *> tree = window.findChildren<QWidget *>() << &window;
+        for (QWidget *w : tree) {
+            if (w->graphicsEffect() != nullptr)
+                ++attached;
+        }
+        check(window.graphicsEffect() == nullptr && canvas->graphicsEffect() == nullptr
+                      && shell->graphicsEffect() == nullptr,
+              QStringLiteral("no effect is attached to any layer that spans the surface, so nothing in this "
+                             "process is holding a cached picture of the window a restore could leave "
+                             "behind (%1 smaller effects remain, none of them surface-sized)")
+                  .arg(attached));
         // The claim Task 3 makes is that findChild() still reaches everything, because it walks the tree
         // rather than naming a parent. Four kinds of thing the suite leans on: the page stack, a rail
         // glyph, the footer at the bottom of the column, and a page built several levels below the shell.
@@ -6015,32 +6062,29 @@ static void testWindowFrame()
             return qAbs(x.red() - y.red()) <= tol && qAbs(x.green() - y.green()) <= tol
                    && qAbs(x.blue() - y.blue()) <= tol;
         };
-        // Two renders of the same window, told apart only by whether the shadow is switched on. Disabling a
-        // QGraphicsEffect makes Qt draw the source as though nothing were attached, which is the whole of
-        // what the shape tests need — and re-enabling it afterwards leaves the window as the user would see
-        // it, so no reading below can be the one that forgot to put the shadow back.
-        auto grabWindow = [&](bool withShadow) {
-            QGraphicsEffect *fx = canvas->graphicsEffect();
-            if (fx)
-                fx->setEnabled(withShadow);
-            const QImage img = window.grab().toImage().convertToFormat(QImage::Format_ARGB32);
-            if (fx)
-                fx->setEnabled(true);
-            return img;
+        // One picture, not two. The band used to be readable as emptiness because the shadow could be
+        // switched off, and there is nothing left to switch off — that absence is the change. So the
+        // silhouette and its shadow are read from the render the user sees, and the claim that keeps its
+        // teeth is told apart by colour instead: a hand-painted shadow is black, and a child corner that
+        // forgot to round carries the app's own surface. The counts below that decide "arc or square" stay
+        // sound on the shared picture for the reason the numbers above pin — the shadow's peak is dimmer
+        // than the alpha those counts call painted.
+        auto appInk = [](const QImage &img, const QPoint &p) {
+            if (!img.rect().contains(p) || qAlpha(img.pixel(p)) == 0)
+                return false;                       // nothing there, or nothing but the desktop
+            const QColor c = img.pixelColor(p);
+            return c.red() > 8 || c.green() > 8 || c.blue() > 8;   // black under any alpha is a shadow
         };
 
         for (const bool dark : {true, false}) {
             const QString theme = dark ? QStringLiteral("dark") : QStringLiteral("light");
             Theme::apply(app, dark);
             QTest::qWait(30);
-            const QImage shot = grabWindow(false);    // the silhouette, uncast
-            const QImage cast = grabWindow(true);     // …and the same window wearing its shadow
-            check(shot.hasAlphaChannel() && shot.width() == w && shot.height() == h
-                          && cast.width() == w && cast.height() == h,
+            const QImage view = window.grab().toImage().convertToFormat(QImage::Format_ARGB32);
+            check(view.hasAlphaChannel() && view.width() == w && view.height() == h,
                   QStringLiteral("%1: the window renders %2x%3 with an alpha channel for corners to hide in")
-                      .arg(theme).arg(shot.width()).arg(shot.height()));
-            if (!shot.hasAlphaChannel() || shot.width() != w || shot.height() != h
-                || cast.width() != w || cast.height() != h)
+                      .arg(theme).arg(view.width()).arg(view.height()));
+            if (!view.hasAlphaChannel() || view.width() != w || view.height() != h)
                 continue;
 
             const QString sheet = app.styleSheet();
@@ -6058,16 +6102,18 @@ static void testWindowFrame()
                           .arg(theme, QLatin1String(c.surface)));
 
                 // Nothing of the app may be at the window's very corner pixel…
-                check(qAlpha(shot.pixel(at(c, 0, 0))) == 0,
+                check(qAlpha(view.pixel(at(c, 0, 0))) == 0,
                       QStringLiteral("%1: the window's %2 corner pixel is empty, not %3")
                           .arg(theme, QLatin1String(c.name))
-                          .arg(shot.pixelColor(at(c, 0, 0)).name(QColor::HexRgb)));
+                          .arg(view.pixelColor(at(c, 0, 0)).name(QColor::HexRgb)));
                 // …nor one step further in along the diagonal, which is exactly where a square child
-                // corner — an unrounded rail, band or footer — would still be reaching.
+                // corner — an unrounded rail, band or footer — would still be reaching. The shadow is in the
+                // band here too now that one render carries both claims, so what is tested is the thing that
+                // still separates them: the child would put the app's own colour there, and a shadow is black.
                 const QPoint out = at(c, diagOut, diagOut);
-                check(qAlpha(shot.pixel(out)) == 0,
-                      QStringLiteral("%1: nothing is painted at (%3,%4) of the %2 corner, so the corner is "
-                                     "an arc and not a child that forgot to round")
+                check(!appInk(view, out),
+                      QStringLiteral("%1: nothing but the shadow lies at (%3,%4) of the %2 corner, so the "
+                                     "corner is an arc and not a child that forgot to round")
                           .arg(theme, QLatin1String(c.name)).arg(out.x()).arg(out.y()));
                 // And the corner is filled with its own surface, not a hole in the shell: proof the clean
                 // diagonal is a shape rather than a window that stopped drawing. Four pixels short of the
@@ -6075,10 +6121,10 @@ static void testWindowFrame()
                 // and of the antialiased edge alike — counted from the corner of the CARD, since the band
                 // between the card and the surface is a window's worth of pixels that must not be measured.
                 const QPoint inside = at(c, m + r - 4, m + r - 4);
-                check(rgbWithin(shot.pixelColor(inside), wantFill, 12),
+                check(rgbWithin(view.pixelColor(inside), wantFill, 12),
                       QStringLiteral("%1: the %2 corner is painted by %3 (%4 at (%5,%6), wanted %7)")
                           .arg(theme, QLatin1String(c.name), QLatin1String(c.surface))
-                          .arg(shot.pixelColor(inside).name(QColor::HexRgb))
+                          .arg(view.pixelColor(inside).name(QColor::HexRgb))
                           .arg(inside.x()).arg(inside.y())
                           .arg(wantFill.name(QColor::HexRgb)));
 
@@ -6090,7 +6136,7 @@ static void testWindowFrame()
                 // with it instead of leaving it counting an empty margin twice over.
                 for (int ly = m; ly < m + r; ++ly) {
                     for (int lx = m; lx < m + r; ++lx) {
-                        if (qAlpha(shot.pixel(at(c, lx, ly))) > 128)
+                        if (qAlpha(view.pixel(at(c, lx, ly))) > 128)
                             ++painted;
                         if (arcPaints(lx, ly))
                             ++expected;
@@ -6117,26 +6163,28 @@ static void testWindowFrame()
                 const QPoint on(e.dx < 0 ? m : (e.dx > 0 ? w - 1 - m : w / 2),
                                 e.dy < 0 ? m : (e.dy > 0 ? h - 1 - m : h / 2));
                 const QPoint out(on.x() + e.dx, on.y() + e.dy);
-                check(shot.rect().contains(out) && qAlpha(shot.pixel(out)) == 0,
-                      QStringLiteral("%1: the %2 edge is transparent for the whole %3 px band, so the "
+                // The band one pixel out from the stroke: shadow yes, app no — the same separation the
+                // corners are read by, and the reading that still proves the inset, because the stroke
+                // itself is the next pixel in and is measured at `on` below.
+                check(!appInk(view, out),
+                      QStringLiteral("%1: the %2 edge's %3 px band carries nothing but the shadow, so the "
                                      "window really is inset from its own surface")
                           .arg(theme, QLatin1String(e.name)).arg(m));
-                check(qAlpha(shot.pixel(on)) > 200 && rgbWithin(shot.pixelColor(on), stroke, 16),
+                check(qAlpha(view.pixel(on)) > 200 && rgbWithin(view.pixelColor(on), stroke, 16),
                       QStringLiteral("%1: the %2 edge draws the shell's stroke at (%3,%4) — %5, wanted %6")
                           .arg(theme, QLatin1String(e.name)).arg(on.x()).arg(on.y())
-                          .arg(shot.pixelColor(on).name(QColor::HexRgb))
+                          .arg(view.pixelColor(on).name(QColor::HexRgb))
                           .arg(stroke.isValid() ? stroke.name(QColor::HexRgb)
                                                 : QStringLiteral("<none>")));
             }
 
             // ---- the shadow in that band ----
             //
-            // The band is empty in `shot` by construction, and the claim of this block is that it stops being
-            // empty in `cast`. Three readings, in the order anyone notices them: that there is shadow at all,
-            // that it falls off instead of ending in a step, and that it is spent before it reaches the
-            // surface's own edge. The last is what the band's width exists for, and the first to fail if the
-            // blur grows or the margin shrinks without the other being asked.
-            auto bandAlpha = [&](const QPoint &p) { return qAlpha(cast.pixel(p)); };
+            // Three readings, in the order anyone notices them: that there is shadow at all, that it falls
+            // off instead of ending in a step, and that it is spent before it reaches the surface's own edge.
+            // The last is what the band's width exists for, and the first to fail if the curve grows or the
+            // margin shrinks without the other being asked.
+            auto bandAlpha = [&](const QPoint &p) { return qAlpha(view.pixel(p)); };
             int maxNear = 0;
             for (const Edge &e : edges) {
                 // The same mid-edge column the band is measured on, walked outward from the stroke. Half a
@@ -6150,6 +6198,17 @@ static void testWindowFrame()
                 check(bandAlpha(near) >= 16,
                       QStringLiteral("%1: the %2 edge casts into the band — %3 of alpha one pixel outside "
                                      "the stroke").arg(theme, QLatin1String(e.name)).arg(bandAlpha(near)));
+                // …and on the two edges the offset runs along, read against the declared curve rather than
+                // against a threshold. The pixel one out from the stroke is painted by the pass whose centre
+                // sits half a pixel out, so a gap here means the painter and the curve have drifted apart —
+                // the one way this feature can go wrong while every individual number still looks right.
+                if (e.dx != 0) {
+                    const int want = MainWindow::windowShadowAlphaAt(0.5);
+                    check(qAbs(bandAlpha(near) - want) <= 12,
+                          QStringLiteral("%1: the %2 band is the declared curve, not an impression of one — "
+                                         "%3 measured where the curve says %4")
+                              .arg(theme, QLatin1String(e.name)).arg(bandAlpha(near)).arg(want));
+                }
                 check(bandAlpha(near) <= MainWindow::kWindowShadowAlpha,
                       QStringLiteral("%1: …and never more opaque than the %2 of black the shadow was given "
                                      "(%3 here on the %4 edge)")
@@ -6159,7 +6218,7 @@ static void testWindowFrame()
                       QStringLiteral("%1: the %2 shadow fades rather than steps (%3 at the stroke, %4 half a "
                                      "radius out)")
                           .arg(theme, QLatin1String(e.name)).arg(bandAlpha(near)).arg(bandAlpha(far)));
-                const QColor ink = cast.pixelColor(near);
+                const QColor ink = view.pixelColor(near);
                 check(ink.red() <= 8 && ink.green() <= 8 && ink.blue() <= 8,
                       QStringLiteral("%1: the %2 shadow is black, not a colour of the app's own (%3)")
                           .arg(theme, QLatin1String(e.name)).arg(ink.name(QColor::HexArgb)));
@@ -6207,13 +6266,18 @@ static void testWindowFrame()
             if (rail) {
                 const QPoint railCentre =
                     rail->mapTo(&window, QPoint(rail->width() / 2, rail->height() / 2));
-                check(cast.rect().contains(railCentre) && qAlpha(cast.pixel(railCentre)) == 255,
+                check(view.rect().contains(railCentre) && qAlpha(view.pixel(railCentre)) == 255,
                       QStringLiteral("%1: the middle of the rail is still fully opaque under the shadow")
                           .arg(theme));
-                check(rgbWithin(shot.pixelColor(railCentre), cast.pixelColor(railCentre), 2),
-                      QStringLiteral("%1: …and the shadow has not tinted it (%2 with, %3 without)")
-                          .arg(theme).arg(cast.pixelColor(railCentre).name(QColor::HexRgb))
-                          .arg(shot.pixelColor(railCentre).name(QColor::HexRgb)));
+                // …and the colour of it, against the sheet rather than against a second render: the pair
+                // of pictures this used to compare no longer exists, and what the claim was always about
+                // is whether the shadow laid itself over the app's own pixels.
+                const QColor railWant = sheetRuleColor(sheet, QStringLiteral("QFrame#sidebar"),
+                                                       QStringLiteral("background-color"));
+                check(railWant.isValid() && rgbWithin(view.pixelColor(railCentre), railWant, 3),
+                      QStringLiteral("%1: …and the shadow has not tinted it (%2 painted, the sheet says %3)")
+                          .arg(theme).arg(view.pixelColor(railCentre).name(QColor::HexRgb))
+                          .arg(railWant.name(QColor::HexRgb)));
             }
 
             // ---- the chrome controls, inside the silhouette ----
@@ -6226,7 +6290,7 @@ static void testWindowFrame()
                 const QRect g(btn->mapTo(&window, QPoint(0, 0)), btn->size());
                 bool allPainted = true;
                 for (const QPoint &p : {g.topLeft(), g.topRight(), g.bottomLeft(), g.bottomRight()}) {
-                    if (!shot.rect().contains(p) || qAlpha(shot.pixel(p)) == 0)
+                    if (!view.rect().contains(p) || qAlpha(view.pixel(p)) == 0)
                         allPainted = false;
                 }
                 check(allPainted,
@@ -6235,13 +6299,10 @@ static void testWindowFrame()
                           .arg(theme, btn->property("role").toString()));
             }
 
-            // The shell as the user sees it, kept for the eye to check the arc it cannot measure — and the
-            // same window without its shadow beside it, because the difference between the two is the one
-            // part of this feature a screenshot cannot be argued about.
-            shot.save(dark ? QStringLiteral("/tmp/shell-dark.png")
+            // The shell as the user sees it, kept for the eye to check the arc it cannot measure. There is
+            // no second picture beside it any more: the shadow is part of this one, which is the change.
+            view.save(dark ? QStringLiteral("/tmp/shell-dark.png")
                            : QStringLiteral("/tmp/shell-light.png"));
-            cast.save(dark ? QStringLiteral("/tmp/shadow-dark.png")
-                           : QStringLiteral("/tmp/shadow-light.png"));
         }
 
         // ---- the drag, across the new layer ----
