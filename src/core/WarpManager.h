@@ -151,7 +151,11 @@ public:
     // a caller that runs warp-cli itself has to run the SAME one: on a Windows host that got the client
     // from the MSI it exists only in Program Files, and a second lookup by bare name would find nothing
     // and report a client missing that this manager is successfully driving.
-    QString resolvedProgram() const { return m_program; }
+    //
+    // Virtual with the rest of the instance surface, and for the same reason: a suite that hands a window
+    // a control cannot manufacture a warp-cli on a machine that has none, and "which path did the rescan
+    // find" is exactly the answer a caller puts in front of a user.
+    virtual QString resolvedProgram() const { return m_program; }
 
     // What a client we managed to run said about itself. The three answers are the whole point of
     // running it: a binary that exits cleanly is here and usable, one that dies or reports it cannot
@@ -566,6 +570,13 @@ public:
     // one short command per database the host actually has.
     virtual void rescanAvailability();
 
+    // The cheap half of that rescan: resolve the program again and update availability, with no
+    // package-database round and no version probe behind it. Split out because there are callers that
+    // need the answer and must not pay for the round — a guard on the way into a verb, which runs on
+    // every refused call — and because a rescan that clears the installation half is the wrong tool for
+    // "did warp-cli appear while we were not looking". Returns whether a client is drivable now.
+    bool refreshProgramPath();
+
     // Cadence-driven polling. Off by default; MainWindow turns it on only while a mode is
     // active, because a status probe on a machine with no warp-cli is a wasted fork every tick.
     // Virtual because it arms a timer, and a mock that let the base arm one would have a poll
@@ -621,6 +632,16 @@ private:
                    RawHandler raw = nullptr);
     void onVerbFinished();
     void setState(State s);
+    // The guard every verb uses on the way in.
+    //
+    // A cached YES is kept: a client that was drivable a moment ago still is, and re-resolving on every
+    // poll buys nothing. A cached NO is re-asked, because "not installed" is exactly the answer that
+    // goes stale — the thing that makes it stale is an install, and an install is something this class
+    // neither runs nor can see. Without the re-ask the first verb after a successful install is refused
+    // with "warp-cli is not installed on this machine", a sentence about the machine as it was before
+    // the user's own package manager ran, which is the failure the setup wizard was built to walk
+    // through and then hit on its own second step.
+    bool availableNow() { return m_available || refreshProgramPath(); }
 
 
     // The steps of ensureRegistered(), each one started from the previous one's answer.

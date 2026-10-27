@@ -448,7 +448,32 @@ void WarpSetupDialog::stepAnswered(bool ok, const QString &detail)
         failStep(detail);
         return;
     }
+    // The step that just finished may have changed what this machine has, and the manager learned
+    // everything it knows about the host when it was constructed — before that happened.
+    if (m_index >= 0 && m_index < m_steps.size()
+        && m_steps.at(m_index).kind == WarpManager::SetupKind::Install)
+        rescanAfterInstall();
     advance();
+}
+
+void WarpSetupDialog::rescanAfterInstall()
+{
+    // Asked here, at the one moment in the chain where the answer is guaranteed to have changed, and
+    // said out loud either way. Without this the next step is refused with "warp-cli is not installed on
+    // this machine" — a true sentence about the machine as it was before the user's own package manager
+    // ran, and the last thing anybody wants to read directly under a step that says the install worked.
+    appendLog(LanguageManager::tr(QStringLiteral("warp.setup.rescan")));
+    m_manager.rescanAvailability();
+    const QString found = m_manager.resolvedProgram();
+    if (found.isEmpty()) {
+        // Red, and before the step that is about to fail rather than instead of it: the package reported
+        // success and nothing drivable came of it, which is a diagnosis the next step's own error cannot
+        // give. The chain still runs — a client that only a package database can see is not this
+        // dialog's call to make — but the user is not left to infer why.
+        appendError(LanguageManager::tr(QStringLiteral("warp.setup.rescan_missing")));
+        return;
+    }
+    appendLog(LanguageManager::tr(QStringLiteral("warp.setup.rescan_found")).arg(found));
 }
 
 void WarpSetupDialog::advance()

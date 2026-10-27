@@ -123,6 +123,11 @@ private:
     // from runStep() because a step can need two commands and only the step knows when it is finished.
     bool runStepCommand(const WarpManager::SetupStep &step);
     void advance();
+    // Ask the host again what it has, immediately after the step that changed the answer, and say what
+    // came back. Its own method because the two halves — the rescan and the sentence about it — belong
+    // together, and because a caller that rescans silently is how the next step ends up refused for a
+    // reason nobody can see.
+    void rescanAfterInstall();
     void failStep(const QString &detail);
     void finish(bool ok);
     // The log's two voices. A command's own output is quoted as it arrived; a failure is coloured, which

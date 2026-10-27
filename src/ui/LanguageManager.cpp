@@ -642,6 +642,36 @@ const QVector<Row> &catalog()
             "Die WARP-Einrichtung wurde abgebrochen bei: %1", "WARP 设置已在此步骤取消：%1",
             "La configuration de WARP a été annulée pendant : %1",
             "WARP सेटअप इस चरण में रद्द किया गया: %1"),
+        // ---- the rescan between the install and everything that depends on it ----
+        //
+        // Three lines, and the reason they exist is a specific failure: the install step succeeds, and
+        // the next one is refused with "warp-cli is not installed on this machine" — a true sentence
+        // about the machine as it was before the package manager ran. Saying the check happened, and
+        // what it found, is what turns that from a contradiction into a diagnosis.
+        ROW("warp.setup.rescan", "Проверка установки WARP…", "Checking the WARP installation…",
+            "Comprobando la instalación de WARP…", "WARP-Installation wird geprüft…",
+            "正在检查 WARP 安装…", "Vérification de l'installation de WARP…",
+            "WARP इंस्टॉलेशन जाँचा जा रहा है…"),
+        ROW("warp.setup.rescan_found", "Проверка установки WARP… Найден: %1",
+            "Checking the WARP installation… Found: %1",
+            "Comprobando la instalación de WARP… Encontrado: %1",
+            "WARP-Installation geprüft — gefunden: %1", "检查 WARP 安装…已找到：%1",
+            "Vérification de l'installation de WARP… Trouvé : %1",
+            "WARP इंस्टॉलेशन जाँचा गया… मिला: %1"),
+        ROW("warp.setup.rescan_missing",
+            "Пакет сообщил об успехе, но warp-cli не найден ни в PATH, ни в известных каталогах — "
+            "следующий шаг, скорее всего, будет отклонён",
+            "The package reported success, but warp-cli was found neither on PATH nor in the directories "
+            "it is known to use — the next step will most likely be refused",
+            "El paquete informó de éxito, pero warp-cli no se encuentra ni en PATH ni en los directorios "
+            "conocidos: es probable que el siguiente paso sea rechazado",
+            "Das Paket meldete Erfolg, aber warp-cli wurde weder im PATH noch in den bekannten "
+            "Verzeichnissen gefunden — der nächste Schritt wird wahrscheinlich abgelehnt",
+            "软件包报告成功，但在 PATH 和已知目录中都找不到 warp-cli——下一步很可能会被拒绝",
+            "Le paquet a signalé un succès, mais warp-cli est introuvable dans le PATH comme dans les "
+            "répertoires connus — l'étape suivante sera probablement refusée",
+            "पैकेज ने सफलता बताई, पर warp-cli न PATH में मिला न ज्ञात निर्देशिकाओं में — अगला चरण "
+            "संभवतः अस्वीकृत होगा"),
 
 
         // ---- the history and statistics page ----

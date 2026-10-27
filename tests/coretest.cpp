@@ -5604,6 +5604,10 @@ int main(int argc, char **argv)
               "pinned against WarpInstaller's own spelling of the same path");
         const QStringList extra =
             WarpManager::extraCandidatePaths(QStringLiteral("/home/tester"));
+        check(extra.contains(QStringLiteral("/usr/bin/warp-cli")),
+              "the distro package's own directory is looked for by name, because a PATH read before "
+              "the package was installed never names it — without this entry a client apt just put "
+              "down stays invisible until the application is restarted");
         check(extra.contains(QStringLiteral("/usr/local/bin/warp-cli")),
               "a hand-unpacked client in the local bin directory is looked for");
         check(extra.contains(QStringLiteral("/snap/bin/warp-cli")),
@@ -5616,7 +5620,7 @@ int main(int argc, char **argv)
         check(extra.contains(QStringLiteral("/home/tester/AppData/Local/Cloudflare/Cloudflare "
                                            "WARP/warp-cli.exe")),
               "and a per-user Windows install, for the host where WARP went in for one account");
-        check(WarpManager::extraCandidatePaths(QString()).size() == 3,
+        check(WarpManager::extraCandidatePaths(QString()).size() == 4,
               "with no home named, only the machine-wide locations remain — no path is composed "
               "against an empty string");
         for (const QString &path : extra)
@@ -5634,6 +5638,25 @@ int main(int argc, char **argv)
         check(WarpManager::resolveExecutable(QString(), {QStringLiteral("/no/such/warp-cli")})
                   .isEmpty(),
               "a candidate that is not a file is not an answer");
+
+        // …and the reason that answer is not a *remembered* one. The whole post-install rescan rests on
+        // this: the same question asked before the package landed and after it has to come back
+        // differently, which is only true of a lookup that stats the disk each time. A temporary
+        // directory rather than a fixture PATH, so the claim still runs on a machine that has a real
+        // client installed — the two hosts a CI runner and a developer's box between them are.
+        {
+            QTemporaryDir dir;
+            check(dir.isValid(), "candidate directory created");
+            const QString candidate = dir.path() + QStringLiteral("/warp-cli");
+            const QStringList candidates{candidate};
+            check(WarpManager::resolveExecutable(QString(), candidates).isEmpty(),
+                  "a candidate that is not on the disk yet is not an answer");
+            check(!makeScript(candidate, QStringLiteral("exit 0\n")).isEmpty(),
+                  "the stand-in client was written where the candidate list names it");
+            check(WarpManager::resolveExecutable(QString(), candidates) == candidate,
+                  "…and the same question asked again now names it — the first answer was not kept, "
+                  "which is what lets a rescan see an install that happened after it");
+        }
 
         // The subset the whole design rests on: for any manager, a client it can drive is never
         // reported absent. Read off this host as it is, whatever this host happens to own.

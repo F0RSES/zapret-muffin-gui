@@ -312,6 +312,12 @@ QStringList WarpManager::extraCandidatePaths(const QString &homePath)
     // have a client that PATH has never been told about, which is the failure this whole lookup
     // exists to close.
     QStringList paths{
+        // The Linux package's own directory. It is on PATH for a login shell, and this is the list for
+        // the processes that are not one: an app started by a session manager, a flatpak or an AppImage
+        // with a minimal environment, and — the case that actually bit — a process whose PATH was read
+        // before the package that put warp-cli there was installed. Without this entry a freshly
+        // installed client stays invisible until the application is restarted.
+        QStringLiteral("/usr/bin/warp-cli"),
         // A hand-unpacked tarball, or an install done by a different tool than this one.
         QStringLiteral("/usr/local/bin/warp-cli"),
         // snap keeps its commands under /snap/bin — on PATH for a login shell through
@@ -820,6 +826,31 @@ WarpManager::~WarpManager()
     }
 }
 
+bool WarpManager::refreshProgramPath()
+{
+    // PATH first, then the directories the client's own packages write to. The second half is not
+    // decoration: the Windows MSI never edits PATH, a distro package lands in /usr/bin that a service
+    // manager's environment may never have named, a snap's command lives under /snap/bin, and a
+    // user-scoped flatpak export is on nobody's PATH at all — so a machine that has the client installed
+    // answers a PATH-only probe with nothing, and the interface offers to install software that is
+    // already there.
+    QStringList candidates = installCandidatePaths(programFilesRoot());
+    candidates += extraCandidatePaths(QDir::homePath());
+    const QString resolved = resolveExecutable(QStandardPaths::findExecutable(warpCliProgram()),
+                                              candidates);
+    const bool was = m_available;
+    m_program = resolved;
+    setAvailable(isAvailableFromPath(resolved));
+    if (!was && m_available) {
+        // The one transition worth a journal line of its own: an answer this object had already given
+        // turned out to be stale, and everything that follows — a verb refused or allowed, an install
+        // offered or not — is read against it.
+        emit logMessage(QStringLiteral("WarpManager: warp-cli was not there a moment ago and is now — "
+                                        "found at %1").arg(resolved), 0);
+    }
+    return m_available;
+}
+
 void WarpManager::rescanAvailability()
 {
     // A rescan makes any earlier answer stale, and a round still running would answer about the
@@ -830,17 +861,7 @@ void WarpManager::rescanAvailability()
     m_packaged = false;
     m_packagedVia.clear();
 
-    // PATH first, then the directories the client's own packages write to. The second half is not
-    // decoration: the Windows MSI never edits PATH, a snap's command lives under /snap/bin, and a
-    // user-scoped flatpak export is on nobody's PATH at all — so a machine that has the client
-    // installed answers a PATH-only probe with nothing, and the interface offers to install software
-    // that is already there.
-    QStringList candidates = installCandidatePaths(programFilesRoot());
-    candidates += extraCandidatePaths(QDir::homePath());
-    const QString resolved = resolveExecutable(QStandardPaths::findExecutable(warpCliProgram()),
-                                              candidates);
-    m_program = resolved;
-    setAvailable(isAvailableFromPath(resolved));
+    refreshProgramPath();
 
     if (!m_available) {
         // Nothing runnable. That is not yet the same as nothing installed, so ask the host before any
@@ -1100,7 +1121,10 @@ bool WarpManager::refresh(QString *error)
 
 bool WarpManager::ensureRegistered(QString *error)
 {
-    if (!m_available) {
+    // availableNow() rather than m_available: a cached "no client here" is the one answer this class
+    // must not keep, because the thing that makes it wrong is an install this class does not run. See
+    // availableNow() in the header.
+    if (!availableNow()) {
         if (error)
             *error = QStringLiteral("WarpManager: warp-cli is not installed on this machine.");
         return false;
@@ -1295,7 +1319,7 @@ bool WarpManager::prepareEnvironment(QString *error)
         emit preparationFinished(true);
         return true;
     }
-    if (!m_available) {
+    if (!availableNow()) {
         if (error)
             *error = QStringLiteral("WarpManager: warp-cli is not installed on this machine.");
         return false;
@@ -1485,7 +1509,7 @@ void WarpManager::onConnectDeadline()
 bool WarpManager::startVerb(const QStringList &args, State onAccepted, bool wasConnectAttempt,
                             QString *error, const QByteArray &stdinData, RawHandler raw)
 {
-    if (!m_available) {
+    if (!availableNow()) {
         if (error)
             *error = QStringLiteral("WarpManager: warp-cli is not installed on this machine.");
         return false;

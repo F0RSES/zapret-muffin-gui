@@ -4239,6 +4239,10 @@ public:
 
     int ensureCalls = 0;
     int prepareCalls = 0;
+    int rescans = 0;
+    // What a rescan "finds". Empty by default, which is the honest answer for a control that has never
+    // resolved anything; a scenario that watches the sentence the wizard prints sets it.
+    QString programPath;
     int startCalls = 0;
     int stopCalls = 0;
     int refreshCalls = 0;
@@ -4257,6 +4261,16 @@ public:
     bool isInstalled() const override { return available; }
     bool isPollingEnabled() const override { return polling; }
     Registration registrationState() const override { return registration; }
+    QString resolvedProgram() const override { return programPath; }
+
+    // Recorded like the verbs, because what the wizard's second step depends on is not that a rescan
+    // happened but that it happened BEFORE the enrolment was asked for.
+    void rescanAvailability() override
+    {
+        ++rescans;
+        if (log)
+            log->record(QStringLiteral("rescanAvailability"));
+    }
 
     bool ensureRegistered(QString *error) override
     {
@@ -4322,9 +4336,6 @@ public:
     // Takes the flag and nothing else. The base's implementation arms a status timer, and a control
     // that let it would have a poll firing out from under the scenario that was counting calls.
     void setPollingEnabled(bool on) override { polling = on; }
-
-    // Nothing to re-probe: PATH is not what this control is answering about.
-    void rescanAvailability() override {}
 
     // The two answers the real object gives from the asynchronous show -> delete -> new sequence,
     // handed out by hand. A scenario decides when the enrolment has settled; nothing here waits.
@@ -4801,6 +4812,9 @@ public:
     QStringList commands;      // one entry per launched command, as "program arg arg"
     int installBegun = 0;
     int registerBegun = 0;
+    // Shared with the control, so one log carries the order the chain actually ran in — which is the
+    // whole claim when the question is "was the host re-asked before the enrolment".
+    ActLog *acts = nullptr;
 
 protected:
     bool launchCommand(const WarpManager::SetupCommand &command, QString *error) override
@@ -4813,12 +4827,16 @@ protected:
     {
         Q_UNUSED(error);
         ++installBegun;
+        if (acts)
+            acts->record(QStringLiteral("install"));
         return true;
     }
     bool beginRegistrationStep(QString *error) override
     {
         Q_UNUSED(error);
         ++registerBegun;
+        if (acts)
+            acts->record(QStringLiteral("register"));
         return true;
     }
 };
@@ -4961,6 +4979,65 @@ static void testWarpSetupDialog()
               "with a Close to press and no Start left to press again");
         dialog.hide();
     }
+    // ---- the host is asked again between the install and everything that depends on it ----
+    //
+    // The reported failure, reproduced as an ordering claim: the install step succeeds, and the manager
+    // still holds the "no client here" it cached when it was constructed — before apt ran. The enrolment
+    // asked of that cache is refused with "warp-cli is not installed on this machine", directly under a
+    // step that says the install worked. What fixes it is not a cleverer cache but the rescan happening
+    // at the one moment the answer is guaranteed to have changed, and the order below is that claim.
+    {
+        ActLog acts;
+        manager.log = &acts;
+        manager.programPath = QStringLiteral("/usr/bin/warp-cli");
+        // This control is shared with every scenario above, and the one that walked a whole successful
+        // chain has already taken it through an install step — so the claim here is about the rescans
+        // THIS scenario causes, read against the count it started at rather than against a zero that
+        // belonged to a different dialog.
+        const int rescansBefore = manager.rescans;
+        ProbeSetupDialog dialog(manager);
+        dialog.acts = &acts;
+        dialog.show();
+
+        dialog.startSetup();
+        check(manager.rescans == rescansBefore,
+              "starting the chain re-asks the host nothing yet — the install has not happened");
+        dialog.stepAnswered(true, QString());   // the install step reports success
+
+        check(manager.rescans == rescansBefore + 1,
+              "a successful install is followed by a rescan of the host, because everything after this "
+              "step is a verb against a client that did not exist a moment ago");
+        check(acts.acts == (QStringList{QStringLiteral("install"),
+                                        QStringLiteral("rescanAvailability"),
+                                        QStringLiteral("register")}),
+              "…and the rescan lands between the install and the enrolment, which is the only place it "
+              "does any good");
+        const QString pane = dialog.logView()->toPlainText();
+        check(pane.contains(LanguageManager::tr(QStringLiteral("warp.setup.rescan"))),
+              "the pane says the check happened, so a refusal on the next step cannot read as a "
+              "contradiction of the one before it");
+        check(pane.contains(QStringLiteral("/usr/bin/warp-cli"))
+                      && pane.contains(LanguageManager::tr(QStringLiteral("warp.setup.rescan_found"))
+                                           .arg(QStringLiteral("/usr/bin/warp-cli"))),
+              "…and names what it found, in the sentence the catalog spells for it");
+
+        // The other half of the same rescan: a package that reported success and left nothing drivable
+        // is a diagnosis the next step's own error cannot give, so it is said here, in red, first.
+        manager.programPath.clear();
+        ProbeSetupDialog empty(manager);
+        empty.show();
+        empty.startSetup();
+        empty.stepAnswered(true, QString());
+        check(empty.logView()->toPlainText()
+                      .contains(LanguageManager::tr(QStringLiteral("warp.setup.rescan_missing"))),
+              "and when the rescan finds nothing, the pane says that the package lied rather than "
+              "letting the next step fail for reasons of its own");
+        empty.hide();
+        manager.programPath = QStringLiteral("/usr/bin/warp-cli");
+        manager.log = nullptr;
+        dialog.hide();
+    }
+
     // ---- a step that fails, and the retry of it ----
     {
         ProbeSetupDialog dialog(manager);
