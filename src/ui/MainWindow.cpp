@@ -1318,8 +1318,14 @@ void MainWindow::onCombinedPowerClicked()
         // The request is recorded before the launch is handed over, because the launch is
         // asynchronous: what the wait has to survive is the gap between the two.
         m_warpStartPending = true;
+        // Drawn the moment the request exists rather than when the backend reports Starting. The ring is
+        // the only thing on screen that says "one press owes two subsystems", so a button left Idle for
+        // the first moments of a launch is a button that gets pressed again — which is the report this
+        // answers.
+        updateStatusUi();
         if (!startBypass()) {
             m_warpStartPending = false;   // nothing was launched, so nothing is owed a tunnel
+            updateStatusUi();
             return;
         }
         scheduleWarpStartAfterBypass();
@@ -1372,10 +1378,17 @@ void MainWindow::onWarpStartDelayElapsed()
         if (owedButWithheld && m_log)
             m_log->appendLine(LanguageManager::tr(QStringLiteral("mode.warp_withheld")),
                               LogPanel::Warn);
+        // The ring has been saying "a tunnel is owed" for the length of the wait, and this is the path
+        // where nothing after it raises a flag that would redraw: withheld means the chain ended here.
+        updateStatusUi();
         return;
     }
 
     m_warpStartPending = false;
+    // Redrawn at the hand-over rather than left to connectWarp(), which raises its own flag only when
+    // the enrolment could be asked for at all: a refusal there would otherwise leave the ring breathing
+    // over a wait that is over and a request that was never made.
+    updateStatusUi();
     if (m_log)
         m_log->appendLine(LanguageManager::tr(QStringLiteral("mode.warp_after_zapret")),
                           LogPanel::Info);
@@ -1411,6 +1424,10 @@ void MainWindow::connectWarp()
         return;
     }
     m_warpEnrollPending = true;
+    // The enrolment is a round trip to Cloudflare that takes seconds, and no manager state moves during
+    // it: the tunnel stays Disconnected from the moment the wait ends until the connect is issued. Left
+    // to the signals, the ring would be repainted by nothing at all for that whole stretch.
+    updateStatusUi();
 }
 
 // The connect itself, issued once the device is known to be enrolled. Kept as its own seam because
@@ -1452,6 +1469,13 @@ void MainWindow::onWarpRegistrationFinished(bool ok)
     if (!m_warpEnrollPending)
         return;   // an answer to a request this window did not make
     m_warpEnrollPending = false;
+    // Redrawn the moment the answer lands, on every way out of this function. Two of the three owe
+    // nothing further — a half the user turned dark while the check was running, and an enrolment that
+    // failed — and on both the ring would otherwise keep breathing over a chain that has ended, which is
+    // a button that says "still working" about a request that was refused. On the failure path the look
+    // it returns to is zapret's own, green over a bypass that is up: the half that did come up keeps
+    // saying so, and the journal carries what the other one cost.
+    updateStatusUi();
 
     if (!m_selection.warp)
         return;
@@ -1496,6 +1520,13 @@ void MainWindow::prepareWarpEnvironment()
         startWarpTunnel();
         return;
     }
+    // Accepted, and the longest stretch of the chain begins: a protocol verb, a sysctl read, and a
+    // service restart that can sit behind a polkit prompt for as long as nobody is at the keyboard.
+    // Redrawn here rather than left to the next signal to arrive, because the flags are what keep the
+    // ring saying "a tunnel is owed" across all of it — and a host with nothing to prepare has already
+    // answered synchronously by this line, in which case this is a redraw of the look the connect just
+    // earned rather than a second opinion about it.
+    updateStatusUi();
 }
 
 // Which part of the preparation the user is waiting on, said where they are looking. The footer carries
@@ -1526,6 +1557,11 @@ void MainWindow::onWarpPreparationFinished(bool ok)
     if (!m_warpPrepPending)
         return;   // an answer to a request this window is no longer making
     m_warpPrepPending = false;
+    // Redrawn before the two decisions below rather than after them, because the exit that owes nothing
+    // further is the one where the tunnel half was turned dark during a root prompt: a chain ended with
+    // the ring still breathing. The other exit redraws again inside startWarpTunnel(), which costs one
+    // pass over a handful of properties and saves every exit here from needing its own.
+    updateStatusUi();
 
     // The same re-check onWarpRegistrationFinished() makes, for the same reason: the restart and its
     // root prompt take long enough that the user can have turned the tunnel half dark while watching
@@ -2268,7 +2304,7 @@ bool MainWindow::mayConnectWarpAfterDelay(ModeSelection selection, bool startSti
 // Both branches read the same per-state tables the single-subsystem renderers do, so a combined view
 // and a lone view never disagree about what one state means.
 MainWindow::CombinedLook MainWindow::combinedLook(IZapretBackend::State zapret,
-                                                  WarpManager::State tunnel)
+                                                  WarpManager::State tunnel, bool chainPending)
 {
     CombinedLook look;
     if (isTunnelHeld(tunnel)) {
@@ -2282,11 +2318,25 @@ MainWindow::CombinedLook MainWindow::combinedLook(IZapretBackend::State zapret,
         return look;
     }
     look.palette = PowerButton::Palette::Zapret;
-    look.mode = powerMode(zapret);
+    // A chain that is still owed outranks zapret's own verdict, and this is the line the whole third
+    // parameter exists for. Everything the tunnel is waiting on — the settle delay, a round trip to
+    // Cloudflare, a pkexec prompt nobody has answered yet — happens while the daemon reports
+    // Disconnected, and Disconnected over a bypass that is up used to map straight onto Active: a green
+    // ring that says "finished" for the several seconds in which the second half of one press had not
+    // happened yet. Busy is the look the window has for "something is in flight, a press will not help
+    // it", and it is the honest one here. The palette stays zapret's on purpose: the tunnel owns the
+    // blue from the moment it is held, and colouring a wait blue would claim a daemon that has not been
+    // asked for anything yet.
+    look.mode = chainPending ? PowerButton::Mode::Busy : powerMode(zapret);
     look.chipText = connectionText(zapret);
     look.chipKind = statusKind(zapret);
-    look.pulsing = zapret == IZapretBackend::State::Running
+    look.pulsing = chainPending
+                   || zapret == IZapretBackend::State::Running
                    || zapret == IZapretBackend::State::Stopping;
+    // Still pressable, and deliberately so: a ring that says "working" is not a ring that may not be
+    // pressed, and the press a user makes during the wait is one the table already answers (WarpOnly —
+    // the bypass is up, so finish the connect). Taking the control away would be the app refusing a
+    // request it is already honouring, and would leave a stop unreachable for the length of a wait.
     look.enabled = canStartFrom(zapret) || canStopFrom(zapret);
     return look;
 }
@@ -2444,16 +2494,18 @@ void MainWindow::renderStatus(IZapretBackend::State state)
 void MainWindow::renderCombinedStatus()
 {
     renderCombinedLook(m_manager->state(),
-                       m_warp ? m_warp->state() : WarpManager::State::Unavailable);
+                       m_warp ? m_warp->state() : WarpManager::State::Unavailable,
+                       warpChainPending());
 }
 
 // …the same drawing with the states handed in. One table (combinedLook) decides all five things a state
 // owns — the ring's palette, its mode, its breath, whether a press would be honoured, and the chip's
 // word — so painting a teardown before either manager reports it (showStoppingFeedback) is a call with
 // different arguments, not a second copy of the mapping.
-void MainWindow::renderCombinedLook(IZapretBackend::State zapret, WarpManager::State tunnel)
+void MainWindow::renderCombinedLook(IZapretBackend::State zapret, WarpManager::State tunnel,
+                                    bool chainPending)
 {
-    const CombinedLook look = combinedLook(zapret, tunnel);
+    const CombinedLook look = combinedLook(zapret, tunnel, chainPending);
 
     if (m_power)
         m_power->setPalette(look.palette);
@@ -2547,8 +2599,10 @@ void MainWindow::stopHeldForSelectionChange(ModeSelection from, ModeSelection to
             if (m_warp->stop(&err)) {
                 // The tunnel's real state will not move until warp-cli exits, so paint the
                 // disconnecting look straight away from the combined table — the button must not read
-                // as idle while the daemon catches up.
-                renderCombinedLook(m_manager->state(), WarpManager::State::Disconnecting);
+                // as idle while the daemon catches up. No chain is owed by a half being turned dark,
+                // which is what the last argument says.
+                renderCombinedLook(m_manager->state(), WarpManager::State::Disconnecting,
+                                   /*chainPending=*/false);
                 if (m_power && m_power->isVisible())
                     m_power->repaint();
             } else {
@@ -2930,7 +2984,8 @@ void MainWindow::showStoppingFeedback()
     // exactly as it is reported now — the same table the live redraw reads, never a second mapping.
     if (m_selection.warp)
         renderCombinedLook(IZapretBackend::State::Stopping,
-                           m_warp ? m_warp->state() : WarpManager::State::Unavailable);
+                           m_warp ? m_warp->state() : WarpManager::State::Unavailable,
+                           /*chainPending=*/false);
     else
         renderStatus(IZapretBackend::State::Stopping);
 
@@ -3173,6 +3228,17 @@ void MainWindow::onStopRequested()
     // running — the second "terminating nfqws" ten seconds after the first.
     if (!canStopFrom(m_manager->state()))
         return;
+
+    // A stop withdraws the tunnel a combined press was owed. The wait would otherwise stay armed for the
+    // rest of its three seconds — holding the ring in the "a chain is owed" look over a teardown, and
+    // then firing into a bypass that is going down. mayConnectWarpAfterDelay() refuses that connect on
+    // its own, so nothing here is about correctness: it is about not spending those seconds looking like
+    // a request that is still alive.
+    if (m_warpStartPending) {
+        m_warpStartPending = false;
+        if (m_warpStartTimer)
+            m_warpStartTimer->stop();
+    }
 
     // Before the stop, not after it: the teardown blocks this thread, so a look applied afterwards is a
     // look the user sees only when the waiting is already over.

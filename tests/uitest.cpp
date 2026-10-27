@@ -1452,6 +1452,56 @@ static void testCombinedPower()
               "the pill cannot light a tunnel half the guard would connect under");
     }
 
+    // ---- the look a chain that is still owed wears ----
+    //
+    // The flags that hold a tunnel request are the only thing that knows the second half of one press has
+    // not happened yet: no manager state moves during the settle wait, during a round trip to Cloudflare,
+    // or during a pkexec prompt nobody has answered. Read from the two states alone, that whole stretch
+    // maps onto "the bypass is up and the tunnel is down" — the look of a press that finished, and the
+    // reason the report said the button turned green and then waited to be pressed again.
+    {
+        const auto owedRunning =
+            MainWindow::combinedLook(B::Running, W::Disconnected, /*chainPending=*/true);
+        const auto doneRunning =
+            MainWindow::combinedLook(B::Running, W::Disconnected, /*chainPending=*/false);
+        check(owedRunning.mode == PowerButton::Mode::Busy,
+              "a bypass that is up while a tunnel is still owed wears the working ring, not the finished "
+              "one — these two rows used to be the same row, and that was the bug");
+        check(doneRunning.mode == PowerButton::Mode::Active,
+              "…and the same pair of states with nothing owed is the finished green it has always been, "
+              "so the flag is what changed and not the mapping");
+        check(owedRunning.pulsing && owedRunning.enabled,
+              "the owed look still breathes and still takes a press: a ring that says \"working\" is not "
+              "a ring that may not be pressed, and the press it would get is the one the table above "
+              "already answers as WarpOnly");
+        check(owedRunning.palette == PowerButton::Palette::Zapret,
+              "…in zapret's purple, because the tunnel owns the blue from the moment it is held and not "
+              "before — colouring a wait blue would claim a daemon that has been asked for nothing");
+
+        // Every state the bypass can be in, with a tunnel still owed. The answer is the working ring in
+        // all five, because what is owed does not depend on which of them a launch happens to be in.
+        for (B b : backendStates) {
+            const auto owed = MainWindow::combinedLook(b, W::Disconnected, true);
+            check(owed.mode == PowerButton::Mode::Busy,
+                  QStringLiteral("a chain still owed wears Busy over %1 as well")
+                      .arg(QString::fromUtf8(backendName(b))));
+        }
+        // A tunnel that IS held decides the look on its own, owed or not: once the daemon has been asked,
+        // its state is the fresher fact, and powerMode() of Connecting is already the working ring.
+        for (const bool pending : {false, true}) {
+            const auto held = MainWindow::combinedLook(B::Running, W::Connecting, pending);
+            check(held.palette == PowerButton::Palette::Warp
+                          && held.mode == PowerButton::Mode::Busy,
+                  QStringLiteral("a connecting tunnel owns the ring whatever the flags say (owed=%1)")
+                      .arg(pending ? QStringLiteral("yes") : QStringLiteral("no")));
+        }
+        check(MainWindow::combinedLook(B::Running, W::Connected, true).mode
+                      == PowerButton::Mode::Active,
+              "…and a tunnel that came up reads as up even with a stale flag raised, because a state the "
+              "daemon reported beats a request the window is holding — the alternative is a ring that "
+              "breathes over a live tunnel forever");
+    }
+
 }
 
 // --------------------------------------------------------------- ProfileCard ----
@@ -4417,6 +4467,10 @@ public:
 
     ActLog *log = nullptr;
     int bypassStarts = 0;
+    // Counted rather than recorded in the act log, because the log's exact sequences are other
+    // scenarios' claims and connectWarp() is the act those sequences already spell as the enrolment it
+    // delegates to. What this counter adds is the name the report used: one press, both halves.
+    int connectCalls = 0;
     int confirmations = 0;
     int installsOffered = 0;
     int setupsOpened = 0;
@@ -4436,6 +4490,12 @@ protected:
     }
 
     bool bypassIsUpOrRising() const override { return bypassHeld; }
+
+    void connectWarp() override
+    {
+        ++connectCalls;
+        MainWindow::connectWarp();   // the base is the thing under test; only the ask is counted here
+    }
 
     bool confirmStopAndSwitch(ModeSelection, ModeSelection) override
     {
@@ -4567,12 +4627,26 @@ static void testWarpEnrolmentWiring()
                                          QStringLiteral("ensureRegistered")}),
               "bypass first, then the enrolment check — the order the press table encodes, read off "
               "the acts rather than asserted of the table");
+        // The claim the report asked about, in the words it used: one click, both halves. Nothing here
+        // waits for a second press, and the second half is not merely scheduled — it has already been
+        // asked for by the time the click's own settle timer has fired.
+        check(f.window->bypassStarts == 1 && f.window->connectCalls == 1,
+              "ONE press reached both halves of the chain: the bypass launch and the tunnel's connect "
+              "path, with no second click asked of the user");
+        check(f.window->warpChainPending(),
+              "…and the window still knows a tunnel is owed while the enrolment is outstanding");
+        check(f.window->powerButton()->mode() == PowerButton::Mode::Busy,
+              "which is what the ring says: a press that owes two subsystems looks like work in flight "
+              "for as long as either of them is, rather than turning finished the moment the bypass is up");
     }
 
     // ---- an answer that says no earns no connect ----
     {
         EnrolmentFixture f(store);
         f.press();
+        check(f.window->powerButton()->mode() == PowerButton::Mode::Busy,
+              "while the enrolment is outstanding the ring says a chain is in flight — the only thing on "
+              "screen that does, since no manager state moves for the length of that round trip");
         // Counted from after the press, because the press writes a journal line of its own when the
         // wait lands: charging that to the answer would be measuring two claims as though they were one.
         const int linesBefore = f.window->logPanel()->storedLineCount();
@@ -4585,6 +4659,13 @@ static void testWarpEnrolmentWiring()
                          .contains(LanguageManager::tr(QStringLiteral("warp.enroll_failed"))),
               "…and the journal says what the failure cost, which is the half a raw CLI error never "
               "carries");
+        check(!f.window->warpChainPending(),
+              "the answer also closes the request, so nothing is owed any more");
+        check(f.window->powerButton()->mode() != PowerButton::Mode::Busy,
+              "…and the ring stops saying otherwise: a button left breathing over a chain that ended is "
+              "the same lie told in the other direction. The look it returns to is zapret's own — the "
+              "half that did come up keeps saying so, and the table pins that as Active over a live "
+              "bypass rather than as a second shade of failure");
 
         // The request is closed out by the answer that refused it, so nothing further is owed.
         f.warp->answerFinished(true);

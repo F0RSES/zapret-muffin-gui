@@ -235,7 +235,17 @@ public:
     // Which layer is live decides the ring's colour: the tunnel's blue while the tunnel is up or on
     // its way up, zapret's purple otherwise — so the ring says which of the two halves is actually
     // doing something, rather than claiming both are because both were picked.
-    static CombinedLook combinedLook(IZapretBackend::State zapret, WarpManager::State tunnel);
+    //
+    // `chainPending` is the third input, and unlike the other two it is a fact about the window rather
+    // than about either manager: a combined press has asked for a tunnel that no state can report yet,
+    // because the settle wait is still armed, the enrolment is still with Cloudflare, or the machine is
+    // still being made ready behind a root prompt. All three leave the tunnel Disconnected, and
+    // Disconnected over a bypass that is up maps to a green ring — a button that reads as finished three
+    // seconds before it asks for a tunnel, which is a button the user presses again. So a chain that is
+    // still owed wears Busy whatever zapret's own state says, and stops wearing it the moment the last
+    // of the three answers arrives.
+    static CombinedLook combinedLook(IZapretBackend::State zapret, WarpManager::State tunnel,
+                                     bool chainPending);
 
     // ---- action gating: pure predicates again, so the whole matrix is checkable without a process ----
     //
@@ -364,6 +374,15 @@ public:
     int warpStartDelayMs() const { return m_warpStartDelayMs; }
     void setWarpStartDelayMs(int ms);
     bool warpStartPending() const { return m_warpStartPending; }
+    // Whether a combined press still owes the tunnel: the union of the three flags that can hold one —
+    // the settle wait is armed, the enrolment is with Cloudflare, or the machine is being made ready
+    // behind a root prompt. Three rather than one because three different answers raise and clear them,
+    // and a look that read only the last of the three would go green in the gap between two — which is
+    // the reading the report described: a green button over a chain that had not finished.
+    bool warpChainPending() const
+    {
+        return m_warpStartPending || m_warpEnrollPending || m_warpPrepPending;
+    }
 
     // The WARP manager. Exposed for the same reason the power button is: its state — available,
     // disconnected, connected — is a claim the window makes on screen, and reading it off the
@@ -759,8 +778,10 @@ private:
     void renderCombinedStatus();
     // …the same drawing with the states handed in, which is what lets a teardown be painted before
     // either manager has reported it (see showStoppingFeedback) and what keeps the two renderers
-    // reading one table.
-    void renderCombinedLook(IZapretBackend::State zapret, WarpManager::State tunnel);
+    // reading one table. `chainPending` is handed in for the same reason the states are: only the live
+    // redraw knows whether a tunnel is still owed, and a teardown look owes none.
+    void renderCombinedLook(IZapretBackend::State zapret, WarpManager::State tunnel,
+                            bool chainPending);
 
     // Create the tray icon if the platform has a tray host. Idempotent; returns whether one exists.
     bool ensureTray();
