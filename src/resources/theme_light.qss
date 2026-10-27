@@ -389,6 +389,34 @@ QLabel#historyBadge {
 QLabel#historyBadge[badgeKind="danger"]  { background-color: #DC2626; color: #FFFFFF; }
 QLabel#historyBadge[badgeKind="warning"] { background-color: #D97706; color: #FFFFFF; }
 
+/* ---------- the WARP setup wizard ----------
+   The same modal as the dark sheet, in daylight tokens: the status line is the state's colour, the pane
+   is a console recessed one step from the dialog's own white, and the bar is the same cyan thread the
+   download uses — this is the same kind of wait. */
+QLabel#setupStatus {
+    background-color: transparent;
+    color: #7C3AED; font-size: 10pt; font-weight: 600;
+}
+QLabel#setupStatusFailed {
+    background-color: transparent;
+    color: #DC2626; font-size: 10pt; font-weight: 600;
+}
+QLabel#setupStatusDone {
+    background-color: transparent;
+    color: #059669; font-size: 10pt; font-weight: 700;
+}
+QProgressBar#setupProgress {
+    border: none; border-radius: 3px; background-color: #F3F4F6;
+    min-height: 6px; max-height: 6px;
+}
+QProgressBar#setupProgress::chunk { background-color: #0891B2; border-radius: 3px; }
+QPlainTextEdit#setupLog {
+    background-color: #F9FAFB; color: #111827;
+    border: 1px solid #D1D5DB; border-radius: 10px;
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
+    font-size: 8pt; padding: 6px;
+}
+
 QScrollArea { background: transparent; border: none; }
 QScrollArea > QWidget > QWidget { background: transparent; }
 QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }

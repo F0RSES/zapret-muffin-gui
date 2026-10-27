@@ -475,17 +475,144 @@ bool WarpManager::composeServiceRestart(const QString &systemctlPath, const QStr
                                    "installed. Run Muffin as root, or restart the service by hand: "
                                    "systemctl restart %1").arg(serviceUnit()));
 
-    // The gate WarpInstaller::composeLinuxInstall(), MuffinInstallHelper::composePromote() and
-    // LinuxBackend all apply: pkexec from a session that is already root is a prompt nobody is there
-    // to answer, not an extra permission.
-    if (alreadyRoot) {
-        *program = systemctlPath;
-        *args = serviceRestartArgs();
+    // The gate itself belongs to composePrivilegedCommand(), and is deliberately not restated here:
+    // two copies of "pkexec from a root session is a prompt nobody is there to answer" is two chances
+    // for one of them to be edited without the other.
+    return composePrivilegedCommand(Strategy::Platform::Linux, systemctlPath, serviceRestartArgs(),
+                                    pkexecPath, alreadyRoot, program, args, error);
+}
+
+bool WarpManager::composePrivilegedCommand(Strategy::Platform platform, const QString &programPath,
+                                           const QStringList &args, const QString &pkexecPath,
+                                           bool alreadyRoot, QString *outProgram,
+                                           QStringList *outArgs, QString *error)
+{
+    auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!outProgram || !outArgs)
+        return fail(QStringLiteral("WarpManager: composePrivilegedCommand() needs somewhere to write"));
+    outProgram->clear();
+    outArgs->clear();
+
+    if (programPath.isEmpty())
+        return fail(QStringLiteral("WarpManager: a privileged command named no program to run"));
+
+    // Windows needs no prefix: packaging/windows/app.manifest asks for requireAdministrator, so this
+    // process already holds the token, and a second prompt for something it may already do is a UAC
+    // dialog with nothing behind it. Linux already root is the same case for a different reason — the
+    // gate WarpInstaller::composeLinuxInstall(), MuffinInstallHelper::composePromote() and LinuxBackend
+    // all apply.
+    if (platform != Strategy::Platform::Linux || alreadyRoot) {
+        *outProgram = programPath;
+        *outArgs = args;
         return true;
     }
-    *program = pkexecPath;
-    *args = QStringList{ systemctlPath } + serviceRestartArgs();
+    if (pkexecPath.isEmpty())
+        return fail(QStringLiteral("WarpManager: this needs root, and pkexec is not installed. Run "
+                                   "Muffin as root, or run it by hand: %1 %2")
+                        .arg(programPath, args.join(QLatin1Char(' '))));
+
+    *outProgram = pkexecPath;
+    *outArgs = QStringList{ programPath } + args;
     return true;
+}
+
+// ---- the setup wizard's chain ----
+
+QStringList WarpManager::setupStepIds(Strategy::Platform platform)
+{
+    // The full chain, spelled by asking for the plan of a machine that has nothing and knows nothing:
+    // one source of truth for the order, rather than a second list a test compares the first one to.
+    QStringList ids;
+    const QList<SetupStep> all = setupSteps(platform, /*installed=*/false, Registration::Unknown);
+    for (const SetupStep &s : all)
+        ids << s.id;
+    return ids;
+}
+
+QList<WarpManager::SetupStep> WarpManager::setupSteps(Strategy::Platform platform, bool installed,
+                                                      Registration registration)
+{
+    // The order is the finding, and every step has a reason for being where it is:
+    //
+    //   install  — nothing else can be asked of a client that is not on the disk. Skipped when one is
+    //              here, because a package manager run over a working install is how a tunnel gets
+    //              removed rather than repaired.
+    //   register — a connect against an unenrolled device is refused by the daemon. Delegated to
+    //              ensureRegistered() rather than spelled as `registration new` here: that function
+    //              reads first and deletes a conflicting enrolment before making a new one, while a
+    //              second `registration new` on an enrolled machine is a second key and an orphaned
+    //              first. Skipped when the reading already says Registered.
+    //   protocol — the transport that survives a provider interfering with the default one.
+    //   service  — the daemon's state goes stale when it came up while a zapret queue was already
+    //              rewriting the routing, and only a restart clears it. After the protocol, because the
+    //              restart is what makes that setting belong to the daemon now running rather than to
+    //              the next one somebody starts by hand.
+    //   connect  — last, and only after all of the above. It is the verb that used to be issued first
+    //              and then never answered, which is the whole reason this chain exists.
+    QList<SetupStep> steps;
+    const bool knownPlatform = platform == Strategy::Platform::Linux
+                               || platform == Strategy::Platform::Windows;
+
+    if (!installed) {
+        SetupStep install;
+        install.id = QStringLiteral("install");
+        install.kind = SetupKind::Install;
+        // Not cancellable, and the wizard disables its own Cancel for the length of the step rather
+        // than offering a choice it cannot honour: an apt or msiexec interrupted halfway leaves a
+        // database to repair. WarpInstaller owns the timeout, the staging and the classification of
+        // what went wrong.
+        install.cancellable = false;
+        steps.append(install);
+    }
+
+    if (registration != Registration::Registered) {
+        SetupStep reg;
+        reg.id = QStringLiteral("register");
+        reg.kind = SetupKind::Registration;
+        steps.append(reg);
+    }
+
+    if (knownPlatform) {
+        SetupStep protocol;
+        protocol.id = QStringLiteral("protocol");
+        protocol.commands.append({ warpCliProgram(), protocolArgs(), /*privileged=*/false,
+                                   kProtocolTimeoutMs });
+        steps.append(protocol);
+    }
+
+    if (platform == Strategy::Platform::Linux) {
+        SetupStep service;
+        service.id = QStringLiteral("service");
+        service.commands.append({ QStringLiteral("systemctl"), serviceRestartArgs(),
+                                  /*privileged=*/true, kServiceTimeoutMs });
+        steps.append(service);
+    } else if (platform == Strategy::Platform::Windows) {
+        // Two commands and not one, because a service control manager has no restart verb and no shell
+        // is allowed to invent one. Both privileged, both short, and the step fails if either does: a
+        // service left stopped by a wizard that reported success is worse than a wizard that said so.
+        SetupStep service;
+        service.id = QStringLiteral("service");
+        service.commands.append({ QStringLiteral("sc"),
+                                  QStringList{ QStringLiteral("stop"), serviceUnit() },
+                                  /*privileged=*/true, kProtocolTimeoutMs });
+        service.commands.append({ QStringLiteral("sc"),
+                                  QStringList{ QStringLiteral("start"), serviceUnit() },
+                                  /*privileged=*/true, kProtocolTimeoutMs });
+        steps.append(service);
+    }
+
+    if (knownPlatform) {
+        SetupStep connectStep;
+        connectStep.id = QStringLiteral("connect");
+        connectStep.commands.append({ warpCliProgram(), connectArgs(), /*privileged=*/false,
+                                      kVerbTimeoutMs });
+        steps.append(connectStep);
+    }
+    return steps;
 }
 
 WarpManager::State WarpManager::parseStatus(const QString &raw, bool wasConnectAttempt)

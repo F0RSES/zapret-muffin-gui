@@ -15,6 +15,7 @@
 #include "Settings.h"
 #include "SettingsPage.h"
 #include "Theme.h"
+#include "WarpSetupDialog.h"
 #include "UpdateChecker.h"
 #include "WarpInstaller.h"
 #include "WarpManager.h"
@@ -2635,13 +2636,24 @@ void MainWindow::onSelectionChanged(bool zapretOn, bool warpOn)
     // offered to a machine that owns the package would be at worst the removal of somebody's working
     // tunnel, so the offer is the last resort here and not the first.
     if (target.warp && m_warp) {
-        if (m_warp->isAvailable()) {
+        const bool needsEnrolment = WarpManager::needsEnrollment(m_warp->registrationState());
+        if (m_warp->isAvailable() && !needsEnrolment) {
             // Nothing to say and nothing to offer: the half is pressable and connectWarp() will run
             // through the enrolment gate like any other request.
         } else if (m_warp->installLooksBroken()) {
             // A client is here and does not work. That is the one case where installing over the top
             // is what the machine needs, and offerWarpInstall() says so in its own question.
             offerWarpInstall();
+        } else if (!m_warp->isInstalled() || needsEnrolment) {
+            // Nothing here at all, or a client that has never been enrolled. This is the case the
+            // automatic path was worst at: four things have to happen in order, each can fail on its
+            // own, and a failure halfway used to leave a lit half with a daemon saying `warp=off` and
+            // no account of which step stopped. The wizard walks the chain in the open.
+            //
+            // A registration this window has not read yet (Unknown) deliberately does NOT come here:
+            // "we do not know" is not "not enrolled", and the press path asks and waits for the answer
+            // instead of guessing at it.
+            openWarpSetup();
         } else if (m_warp->isInstalled()) {
             // Installed, but not drivable from here — a snap whose command is off this PATH, a service
             // the registry knows and a permission this process does not. Said rather than offered,
@@ -2652,7 +2664,7 @@ void MainWindow::onSelectionChanged(bool zapretOn, bool warpOn)
                                   LogPanel::Info);
             }
         } else {
-            offerWarpInstall();
+            openWarpSetup();
         }
     }
 }
@@ -2719,6 +2731,55 @@ void MainWindow::onWarpInstallationChanged(bool installed, const QString &via)
 // gave one. The refusals that need no password (an unknown platform, a host that names no apt suite, a
 // session with nobody to ask for root) come back synchronously from start() and are reported as what
 // they are — a thing that did not even begin — rather than as a failed install.
+void MainWindow::openWarpSetup()
+{
+    if (!m_warp || m_warpSetupOpen)
+        return;   // one wizard at a time: a second would race the first for the same daemon
+
+    m_warpSetupOpen = true;
+    {
+        WarpSetupDialog dialog(*m_warp, this);
+        // The single-window policy, read at the moment of the offer rather than at construction: the user
+        // can have changed it between opening the window and lighting this half, and the installer acts on
+        // it only after the package has landed.
+        dialog.setHideWarpGui(m_settings->hideWarpGui());
+        // The journal gets the outcome either way. The dialog's own pane is where the detail lives, but
+        // the pane closes with the window and the journal does not — and "which step stopped" is exactly
+        // the question somebody asks an hour later. On failure the sentence logged is the one the user
+        // was looking at, rather than a second wording of it kept in this file.
+        connect(&dialog, &WarpSetupDialog::setupFinished, this, [this, &dialog](bool ok) {
+            if (!m_log)
+                return;
+            if (ok)
+                m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.setup.done")),
+                                  LogPanel::Info);
+            else if (dialog.statusLabel())
+                m_log->appendLine(dialog.statusLabel()->text(), LogPanel::Warn);
+        });
+        dialog.exec();
+        const bool accepted = dialog.succeeded();
+        m_warpSetupOpen = false;
+
+        if (!accepted) {
+            // Declined, cancelled or failed at some step: there is no working tunnel behind the lit
+            // half, and leaving it lit is the state that reads as "on" while `warp=off`. Darkening it is
+            // the same answer a declined install has always given, and the store keeps the intent.
+            setCurrentSelection(ModeSelection{true, false});
+            showTransientMessage(LanguageManager::tr(QStringLiteral("warp.install_declined")), 6000);
+            return;
+        }
+
+        // Accepted. Re-ask rather than assume: the wizard's steps are the authority on what this machine
+        // now has, and this window's cached availability was read before any of them ran. The rescan is
+        // what makes the pill pressable and the chip tell the truth about the tunnel that just came up.
+        m_warp->rescanAvailability();
+        QString err;
+        m_warp->refresh(&err);
+        m_warp->setPollingEnabled(m_selection.warp);
+    }
+    updateStatusUi();
+}
+
 void MainWindow::offerWarpInstall()
 {
     if (!m_warpInstaller || m_warpInstaller->isBusy())

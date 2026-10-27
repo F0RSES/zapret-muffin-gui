@@ -125,6 +125,7 @@ set(ZAPRET_UI_SOURCES
     src/ui/ProfileCard.cpp
     src/ui/LogPanel.cpp
     src/ui/DownloadDialog.cpp
+    src/ui/WarpSetupDialog.cpp
     src/ui/SettingsPage.cpp
     src/ui/HistoryPage.cpp
     src/ui/MainWindow.cpp
@@ -143,6 +144,7 @@ set(ZAPRET_UI_HEADERS
     src/ui/ProfileCard.h
     src/ui/LogPanel.h
     src/ui/DownloadDialog.h
+    src/ui/WarpSetupDialog.h
     src/ui/SettingsPage.h
     src/ui/HistoryPage.h
     src/ui/MainWindow.h

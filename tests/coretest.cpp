@@ -5020,6 +5020,140 @@ int main(int argc, char **argv)
               "nothing readable is Unknown, which the journal reports as not knowing rather than as a "
               "finding about the machine");
 
+        // ---- the setup wizard's chain ----
+        //
+        // The order is the whole of what makes the wizard work: an install before an enrolment, an
+        // enrolment before a protocol switch, a restart before the connect that used to hang. Pinned as a
+        // plan rather than as a run, because the alternative is a test that installs a package and
+        // restarts a service on whatever machine the suite happens to be on.
+        check(WarpManager::setupStepIds(Strategy::Platform::Linux)
+                      == (QStringList{QStringLiteral("install"), QStringLiteral("register"),
+                                      QStringLiteral("protocol"), QStringLiteral("service"),
+                                      QStringLiteral("connect")}),
+              "a bare Linux host gets all five steps, in the order that works");
+        check(WarpManager::setupStepIds(Strategy::Platform::Windows).last()
+                          == QStringLiteral("connect"),
+              "and Windows ends on the connect too, whatever it does about the service in between");
+        {
+            const auto steps = WarpManager::setupSteps(Strategy::Platform::Linux, /*installed=*/true,
+                                                       WarpManager::Registration::Registered);
+            QStringList ids;
+            for (const WarpManager::SetupStep &s : steps)
+                ids << s.id;
+            check(ids == (QStringList{QStringLiteral("protocol"), QStringLiteral("service"),
+                                      QStringLiteral("connect")}),
+                  "a machine that already has an enrolled client is neither re-installed nor "
+                  "re-enrolled — the second of those would be a new key and an orphaned old one");
+        }
+        {
+            const auto steps = WarpManager::setupSteps(Strategy::Platform::Linux, /*installed=*/false,
+                                                       WarpManager::Registration::Conflict);
+            bool hasRegister = false;
+            for (const WarpManager::SetupStep &s : steps)
+                hasRegister = hasRegister || s.id == QLatin1String("register");
+            check(hasRegister,
+                  "a conflicting enrolment still goes through the enrolment step, which is the one that "
+                  "knows to delete before it enrolls");
+        }
+        check(WarpManager::setupSteps(Strategy::Platform::Unknown, true,
+                                      WarpManager::Registration::Registered)
+                      .isEmpty(),
+              "a platform this application cannot name gets no commands at all, rather than a guess at "
+              "somebody else's package manager");
+        {
+            const auto steps = WarpManager::setupSteps(Strategy::Platform::Windows, false,
+                                                       WarpManager::Registration::Unknown);
+            const WarpManager::SetupStep *service = nullptr;
+            bool installUncancellable = false;
+            int cancellable = 0;
+            for (const WarpManager::SetupStep &s : steps) {
+                if (s.id == QLatin1String("service"))
+                    service = &s;
+                if (s.id == QLatin1String("install"))
+                    installUncancellable = !s.cancellable;
+                if (s.cancellable)
+                    ++cancellable;
+            }
+            check(service && service->commands.size() == 2
+                          && service->commands.at(0).args.first() == QStringLiteral("stop")
+                          && service->commands.at(1).args.first() == QStringLiteral("start"),
+                  "Windows restarts its service as a stop and a start, because a service control "
+                  "manager has no restart verb and no shell is allowed to invent one");
+            check(service && service->commands.at(0).privileged
+                          && service->commands.at(1).privileged,
+                  "…and both halves are marked as needing the administrator the manifest already asked "
+                  "for");
+            check(installUncancellable,
+                  "the install is the one step a user may not interrupt: an apt or msiexec stopped "
+                  "halfway leaves a database to repair");
+            check(cancellable == steps.size() - 1,
+                  "…and every other step may be, so the wizard is not a dialog with no way out");
+        }
+        {
+            const auto steps = WarpManager::setupSteps(Strategy::Platform::Linux, false,
+                                                       WarpManager::Registration::Unknown);
+            const WarpManager::SetupStep *protocol = nullptr;
+            const WarpManager::SetupStep *connect = nullptr;
+            for (const WarpManager::SetupStep &s : steps) {
+                if (s.id == QLatin1String("protocol"))
+                    protocol = &s;
+                if (s.id == QLatin1String("connect"))
+                    connect = &s;
+            }
+            check(protocol && protocol->commands.size() == 1
+                          && protocol->commands.at(0).args == WarpManager::protocolArgs(),
+                  "the protocol step runs the argv the core spells, so there is one MASQUE in this "
+                  "codebase and not two");
+            check(protocol && !protocol->commands.at(0).privileged,
+                  "…without root: a warp-cli config verb talks to the daemon, not to the kernel");
+            check(protocol && protocol->commands.at(0).timeoutMs > 0,
+                  "…with a deadline, so a daemon that never answers cannot hold a modal window open");
+            check(connect && connect->commands.size() == 1
+                          && connect->commands.at(0).args == WarpManager::connectArgs(),
+                  "and the last step is the ordinary connect, with nothing extra invented for it");
+        }
+
+        // ---- the privilege gate every privileged command shares ----
+        {
+            QString program;
+            QStringList args;
+            QString err;
+            check(WarpManager::composePrivilegedCommand(
+                          Strategy::Platform::Linux, QStringLiteral("/usr/bin/systemctl"),
+                          QStringList{QStringLiteral("restart"), QStringLiteral("warp-svc")},
+                          QStringLiteral("/usr/bin/pkexec"), /*alreadyRoot=*/false, &program, &args,
+                          &err)
+                          && program == QStringLiteral("/usr/bin/pkexec")
+                          && args.first() == QStringLiteral("/usr/bin/systemctl"),
+                  "on Linux a privileged command is pkexec in front of the real path");
+            check(WarpManager::composePrivilegedCommand(
+                          Strategy::Platform::Linux, QStringLiteral("/usr/bin/systemctl"),
+                          QStringList{QStringLiteral("restart")}, QString(), /*alreadyRoot=*/true,
+                          &program, &args, &err)
+                          && program == QStringLiteral("/usr/bin/systemctl"),
+                  "…unless this process is already root, where pkexec would be a prompt nobody is there "
+                  "to answer");
+            check(WarpManager::composePrivilegedCommand(
+                          Strategy::Platform::Windows, QStringLiteral("C:/Windows/sc.exe"),
+                          QStringList{QStringLiteral("stop")}, QString(), /*alreadyRoot=*/false,
+                          &program, &args, &err)
+                          && program == QStringLiteral("C:/Windows/sc.exe"),
+                  "and on Windows nothing is prefixed: the manifest asked for the administrator token "
+                  "before main() ran, so a second prompt would have nothing behind it");
+            err.clear();
+            check(!WarpManager::composePrivilegedCommand(
+                          Strategy::Platform::Linux, QStringLiteral("/usr/bin/systemctl"),
+                          QStringList{QStringLiteral("restart")}, QString(), /*alreadyRoot=*/false,
+                          &program, &args, &err)
+                          && !err.isEmpty(),
+                  "no pkexec and no root is refused in words, not attempted and failed silently");
+            check(!WarpManager::composePrivilegedCommand(Strategy::Platform::Linux, QString(),
+                                                         QStringList(),
+                                                         QStringLiteral("/usr/bin/pkexec"), false,
+                                                         &program, &args, &err),
+                  "and a command with no program to run is refused before anything is spawned");
+        }
+
         // ---- the status parser ----
         //
         // The Linux form: a timestamped log line ending in the state word.

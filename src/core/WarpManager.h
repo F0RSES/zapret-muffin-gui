@@ -147,6 +147,12 @@ public:
     virtual bool isAvailable() const { return m_available; }
     static bool isAvailableFromPath(const QString &resolvedPath);
 
+    // The path availability resolved, or the bare program name when it came from PATH. Published because
+    // a caller that runs warp-cli itself has to run the SAME one: on a Windows host that got the client
+    // from the MSI it exists only in Program Files, and a second lookup by bare name would find nothing
+    // and report a client missing that this manager is successfully driving.
+    QString resolvedProgram() const { return m_program; }
+
     // What a client we managed to run said about itself. The three answers are the whole point of
     // running it: a binary that exits cleanly is here and usable, one that dies or reports it cannot
     // load is a broken install, and anything else is a reading that does not license either verdict.
@@ -331,6 +337,70 @@ public:
     // trade the user did not agree to (see prepareEnvironment()'s note on the elevation). A platform
     // with no package manager, no systemd and no warp-cli to reconfigure prepares nothing at all.
     static QList<PreparationStep> preparationSteps(Strategy::Platform platform);
+
+    // ---- the setup wizard's chain, as data ----
+    //
+    // What "set WARP up from nothing" means, step by step, so the wizard that walks it and the test
+    // that pins it read the same list. Data rather than code for the reason installationProbes() and
+    // preparationSteps() are: the sequence is the finding (a client that is installed but never
+    // enrolled cannot connect; one enrolled over the default transport may not come up on a hostile
+    // link), and a sequence written as calls inside a dialog is a sequence no runner can check without
+    // running a package manager.
+    //
+    // One command a step runs. Most steps have one; Windows' service step has two, because there is no
+    // `restart` verb for a service control manager and no shell is allowed to invent one.
+    struct SetupCommand
+    {
+        QString program;         // resolved by the runner, never guessed
+        QStringList args;        // already split — nothing here is a command line to be parsed
+        bool privileged = false; // needs root/admin; see composePrivilegedCommand()
+        int timeoutMs = 0;       // a step that never answers must not hold a modal window open forever
+    };
+
+    // Which of the three ways a step gets done. Kept explicit rather than inferred from an empty
+    // program, because the three have different owners and different failure modes: the install is
+    // WarpInstaller's (repository, key, repair, and a network-vs-dpkg-lock classification of its own),
+    // the enrolment is WarpManager's (read, then delete-then-new on a conflict — a second
+    // `registration new` on an enrolled device is a second key and an orphaned first), and the rest are
+    // plain commands this dialog runs and reads the output of.
+    enum class SetupKind
+    {
+        Install,
+        Registration,
+        Command
+    };
+    Q_ENUM(SetupKind)
+
+    struct SetupStep
+    {
+        QString id;              // "install" | "register" | "protocol" | "service" | "connect"
+        SetupKind kind = SetupKind::Command;
+        QList<SetupCommand> commands;
+        // Whether the user may walk away mid-step. False for the package manager and nothing else: an
+        // apt or msiexec interrupted halfway leaves a database to repair, which is the same reason
+        // WarpInstaller offers no Cancel — so the wizard disables its own button for the length of that
+        // one step instead of pretending the choice exists.
+        bool cancellable = true;
+    };
+
+    // The chain for one machine, pure: a host that already has a client skips the install, and a device
+    // that is already enrolled skips the enrolment — the two steps that are expensive or destructive
+    // when they are not needed. `installed` and `registration` are handed in rather than read, so every
+    // branch is checkable on a runner that has neither.
+    static QList<SetupStep> setupSteps(Strategy::Platform platform, bool installed,
+                                       Registration registration);
+    // The step ids in the order the wizard walks them, for a host that has nothing and knows nothing —
+    // the full chain, spelled once so a test can pin the sequence without building a plan.
+    static QStringList setupStepIds(Strategy::Platform platform);
+
+    // How a privileged command is run on this host. One gate, one spelling, and every caller goes
+    // through it: pkexec-prefixed on Linux for a session that is not already root, bare everywhere else,
+    // because Windows' own manifest asked for the administrator token before main() ran and a second
+    // UAC prompt for something the process may already do is a prompt with nothing behind it.
+    static bool composePrivilegedCommand(Strategy::Platform platform, const QString &programPath,
+                                         const QStringList &args, const QString &pkexecPath,
+                                         bool alreadyRoot, QString *outProgram, QStringList *outArgs,
+                                         QString *error);
 
     // The program and argv a privileged step actually runs — pkexec-prefixed, or bare for a session
     // that is already root. Split out and passed its resolved paths exactly like

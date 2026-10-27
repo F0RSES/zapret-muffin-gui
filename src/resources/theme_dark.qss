@@ -470,6 +470,41 @@ QLabel#historyBadge {
 QLabel#historyBadge[badgeKind="danger"]  { background-color: #F87171; color: #0B0C10; }
 QLabel#historyBadge[badgeKind="warning"] { background-color: #FBBF24; color: #0B0C10; }
 
+/* ---------- the WARP setup wizard ----------
+   A modal with a running account in it: the status line is the sentence the user reads while a step is
+   in flight, and the pane below it is a console rather than a field — recessed like the journal, in the
+   journal's own monospace, because what it holds is a package manager's output and a command line.
+
+   The status line's colour is the state, and it is the sheet's own three-way vocabulary: muted while a
+   step runs, the success green when the chain finished, the failure red when it did not. A wizard whose
+   last line is the same colour as its middle ones makes the user read it to find out what happened. */
+QLabel#setupStatus {
+    background-color: transparent;
+    color: #C084FC; font-size: 10pt; font-weight: 600;
+}
+QLabel#setupStatusFailed {
+    background-color: transparent;
+    color: #F87171; font-size: 10pt; font-weight: 600;
+}
+QLabel#setupStatusDone {
+    background-color: transparent;
+    color: #34D399; font-size: 10pt; font-weight: 700;
+}
+/* The bar is a step counter, not a percentage: five steps make every value a multiple of twenty, so the
+   number is hidden in code and the thread is all there is to read. Same cyan as the download's, because
+   this is the same kind of wait — something being fetched or installed while the user watches. */
+QProgressBar#setupProgress {
+    border: none; border-radius: 3px; background-color: #0F1116;
+    min-height: 6px; max-height: 6px;
+}
+QProgressBar#setupProgress::chunk { background-color: #22D3EE; border-radius: 3px; }
+QPlainTextEdit#setupLog {
+    background-color: #090A0D; color: #E7E9F2;
+    border: 1px solid #262A36; border-radius: 10px;
+    font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
+    font-size: 8pt; padding: 8px;
+}
+
 /* ---------- scroll ---------- */
 QScrollArea, QScrollArea#cardScroll { background: transparent; border: none; }
 QScrollArea > QWidget > QWidget { background: transparent; }

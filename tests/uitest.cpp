@@ -47,6 +47,7 @@
 #include "Theme.h"
 #include "UpdateChecker.h"
 #include "WarpManager.h"
+#include "WarpSetupDialog.h"
 #include "ZapretDownloader.h"
 #include "ZapretPaths.h"
 
@@ -77,6 +78,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSet>
@@ -2519,7 +2521,16 @@ static void testTheme(QApplication &app)
         // QToolButton padding that no longer fits them at 32 px.
         for (const QString &name : {QStringLiteral("settingsCard"),
                                     QStringLiteral("settingsCardTitle"),
-                                    QStringLiteral("pathToolButton")})
+                                    QStringLiteral("pathToolButton"),
+                                    // The setup wizard's own five names. An unstyled one is visible
+                                    // rather than merely plain: the status line's colour IS the state,
+                                    // and the log pane without its rule is a proportional-font box in a
+                                    // dialog full of monospaced output.
+                                    QStringLiteral("setupStatus"),
+                                    QStringLiteral("setupStatusFailed"),
+                                    QStringLiteral("setupStatusDone"),
+                                    QStringLiteral("setupProgress"),
+                                    QStringLiteral("setupLog")})
             check(sheet.contains(name),
                   QStringLiteral("%1 sheet styles the settings card and its parts: %2")
                       .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"), name));
@@ -4220,6 +4231,11 @@ public:
     // Whether the enrolment check reports that it started. False is the answer of a host with no
     // warp-cli: the caller is told why in the error and owes the check nothing further.
     bool enrolmentStarts = true;
+    // The enrolment reading the window is told, which is what decides whether lighting the tunnel half
+    // means "ask the daemon" or "the machine is not set up yet, walk the wizard". Unknown by default,
+    // because that is what a manager that has never been asked reports — and a mock that claimed
+    // NotRegistered out of the box would send every existing scenario down the wizard path.
+    Registration registration = Registration::Unknown;
 
     int ensureCalls = 0;
     int prepareCalls = 0;
@@ -4240,6 +4256,7 @@ public:
     bool isAvailable() const override { return available; }
     bool isInstalled() const override { return available; }
     bool isPollingEnabled() const override { return polling; }
+    Registration registrationState() const override { return registration; }
 
     bool ensureRegistered(QString *error) override
     {
@@ -4334,6 +4351,7 @@ public:
     int bypassStarts = 0;
     int confirmations = 0;
     int installsOffered = 0;
+    int setupsOpened = 0;
     // Whether the bypass is up for the wait's guard. A press records the request; this is what the
     // delay exists to wait for, and the guard is what makes the delay a condition rather than a pause.
     bool bypassHeld = true;
@@ -4361,6 +4379,15 @@ protected:
     {
         ++installsOffered;
         // Not the base: that installs software as root.
+    }
+
+    // Not the base either, and for a sharper reason: the base opens a modal dialog that runs a package
+    // manager and waits for a password, which in a headless suite is a test that never returns.
+    void openWarpSetup() override
+    {
+        ++setupsOpened;
+        if (log)
+            log->record(QStringLiteral("openWarpSetup"));
     }
 };
 
@@ -4713,9 +4740,38 @@ static void testWarpEnrolmentWiring()
         check(warp->ensureCalls == 0,
               "and pressing on a dark tunnel half asks no enrolment of a client that is not here");
         window.modeToggle()->setSelection(ModeSelection{true, true});
-        check(window.installsOffered == 1,
-              "…while lighting that half is answered with the install that would make it true");
+        check(window.setupsOpened == 1,
+              "…while lighting that half is answered with the wizard, because on a machine with no "
+              "client an install is the first of five steps and not the last");
+        check(window.installsOffered == 0,
+              "…and not with the install-only offer, which would do that first step and then leave the "
+              "device unenrolled, unswitched and unconnected with nothing on screen to say so");
         check(warp->ensureCalls == 0, "…and not with an enrolment against nothing");
+    }
+
+    // ---- a client that is there but was never enrolled ----
+    {
+        EnrolmentFixture f(store);
+        // The reading a manager gives before anything has asked it is Unknown, and Unknown is not
+        // "not enrolled" — it is "not known yet", which the press path answers by asking. Only a reading
+        // that says the device has no enrolment sends the user to the wizard.
+        f.warp->registration = WarpManager::Registration::NotRegistered;
+        f.window->modeToggle()->setSelection(ModeSelection{true, false});
+        f.window->modeToggle()->setSelection(ModeSelection{true, true});
+        check(f.window->setupsOpened == 1,
+              "a client that was never enrolled gets the wizard: the missing step is the enrolment, and "
+              "a connect issued without it is refused by the daemon");
+    }
+
+    // ---- a client that is there and whose enrolment has not been read ----
+    {
+        EnrolmentFixture f(store);
+        f.window->modeToggle()->setSelection(ModeSelection{true, false});
+        f.window->modeToggle()->setSelection(ModeSelection{true, true});
+        check(f.window->setupsOpened == 0,
+              "an unread enrolment is not an absent one — the press asks the daemon and waits for the "
+              "answer instead of walking the user through a wizard it may not need");
+        check(f.window->installsOffered == 0, "…and offers to install nothing over a working client");
     }
 
     // The store is left exactly as the section found it: a run that ended with the WARP half lit would
@@ -4725,6 +4781,247 @@ static void testWarpEnrolmentWiring()
     store.setUseWarp(savedWarp);
     store.setStartLastOnLaunch(savedStart);
 }
+
+// ------------------------------------------------- the WARP setup wizard ----
+//
+// The wizard with its three seams replaced: no package manager, no daemon, no root prompt. Each step is
+// recorded and answered by the scenario, which is what makes the chain's order, its retry, its cancel and
+// the words on its status line checkable on a machine that has none of the software the real chain
+// drives — and, more to the point, without changing anything on the machine running the tests.
+class ProbeSetupDialog : public WarpSetupDialog
+{
+public:
+    using WarpSetupDialog::WarpSetupDialog;
+    // The two ways a step reports back are protected on the base, and a scenario drives the dialog from
+    // outside its own class — so they are re-exposed here. That is the point of the seam: a test answers
+    // a step exactly where the real process would have.
+    using WarpSetupDialog::stepAnswered;
+    using WarpSetupDialog::commandAnswered;
+
+    QStringList commands;      // one entry per launched command, as "program arg arg"
+    int installBegun = 0;
+    int registerBegun = 0;
+
+protected:
+    bool launchCommand(const WarpManager::SetupCommand &command, QString *error) override
+    {
+        Q_UNUSED(error);
+        commands << command.program + QLatin1Char(' ') + command.args.join(QLatin1Char(' '));
+        return true;
+    }
+    bool beginInstallStep(QString *error) override
+    {
+        Q_UNUSED(error);
+        ++installBegun;
+        return true;
+    }
+    bool beginRegistrationStep(QString *error) override
+    {
+        Q_UNUSED(error);
+        ++registerBegun;
+        return true;
+    }
+};
+
+static void testWarpSetupDialog()
+{
+    std::printf("\n[WARP setup wizard]\n");
+
+    // Does this widget actually paint in `want`? The status line is transparent-backed, so the question
+    // is whether any of its pixels carry the colour — which is precisely what a stylesheet rule that was
+    // never re-read after an objectName change fails to do. Reading the wanted colour out of the sheet
+    // rather than out of a literal is what ties the render to the declaration.
+    auto paintsColor = [](QWidget *w, const QColor &want) {
+        if (!w || !want.isValid())
+            return false;
+        const QImage img = w->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < img.height(); ++y) {
+            for (int x = 0; x < img.width(); ++x) {
+                if (qAlpha(img.pixel(x, y)) > 128 && rgbClose(img.pixelColor(x, y), want, 24))
+                    return true;
+            }
+        }
+        return false;
+    };
+    const QString sheet = qApp->styleSheet();
+    const QColor runningColour = sheetRuleColor(sheet, QStringLiteral("QLabel#setupStatus"),
+                                                QStringLiteral("color"));
+    const QColor failedColour = sheetRuleColor(sheet, QStringLiteral("QLabel#setupStatusFailed"),
+                                               QStringLiteral("color"));
+    const QColor doneColour = sheetRuleColor(sheet, QStringLiteral("QLabel#setupStatusDone"),
+                                             QStringLiteral("color"));
+    check(runningColour.isValid() && failedColour.isValid() && doneColour.isValid(),
+          "the sheet gives the status line a colour per state, which is the whole way it reports one");
+    check(runningColour != failedColour && failedColour != doneColour,
+          "…and the three are distinguishable, so the last line cannot be mistaken for a middle one");
+
+    // A control that reports a machine with no client and no enrolment reading, which is the case the
+    // wizard exists for and the one whose plan is the full five steps.
+    CountingWarpManager manager;
+    manager.available = false;
+    manager.registration = WarpManager::Registration::Unknown;
+
+    // ---- the plan the dialog was handed ----
+    {
+        ProbeSetupDialog dialog(manager);
+        const auto steps = dialog.steps();
+        QStringList ids;
+        for (const WarpManager::SetupStep &s : steps)
+            ids << s.id;
+        check(ids == WarpManager::setupStepIds(Strategy::Platform::Linux),
+              "the dialog walks the same plan the core spells, rather than a second copy of it");
+        check(dialog.stepCount() == 5, "…which on a bare Linux host is five steps");
+        bool allTitled = !steps.isEmpty();
+        for (const WarpManager::SetupStep &s : steps)
+            if (WarpSetupDialog::stepTitle(s.id).isEmpty())
+                allTitled = false;
+        check(allTitled,
+              "every step id has a sentence in the catalog — a step renamed in the core and forgotten "
+              "here would otherwise show up as a blank status line");
+        const QString sample = WarpSetupDialog::stepStatusText(2, 5, QStringLiteral("X"));
+        check(sample.contains(QStringLiteral("2")) && sample.contains(QStringLiteral("X")),
+              "the status line carries the step's position and its own name");
+    }
+
+    // ---- the shape before anything runs ----
+    {
+        ProbeSetupDialog dialog(manager);
+        check(dialog.startButton() && dialog.startButton()->isVisibleTo(&dialog),
+              "the dialog opens on its question, with the way to answer it");
+        check(dialog.closeButton() && !dialog.closeButton()->isVisibleTo(&dialog),
+              "…and no Close before there is a result to close");
+        check(!dialog.logVisible() && dialog.progressBar()
+                      && !dialog.progressBar()->isVisibleTo(&dialog),
+              "the bar and the log stay off screen until there is something to show in them");
+        check(dialog.currentStepIndex() == -1, "no step is running before the user agrees");
+    }
+    // ---- the whole chain, step by step ----
+    {
+        ProbeSetupDialog dialog(manager);
+        dialog.show();
+        QSignalSpy finished(&dialog, &WarpSetupDialog::setupFinished);
+
+        dialog.startSetup();
+        check(dialog.startButton() && !dialog.startButton()->isVisibleTo(&dialog),
+              "pressing Start takes the question away — the answer is now the run itself");
+        check(dialog.logVisible() && dialog.progressBar()->isVisibleTo(&dialog)
+                      && dialog.statusLabel()->isVisibleTo(&dialog),
+              "…and brings up the bar, the status line and the log");
+        check(dialog.installBegun == 1 && dialog.currentStepIndex() == 0,
+              "the first step is the install, and it is the installer's rather than a second apt here");
+        check(dialog.statusLabel()->text()
+                      == WarpSetupDialog::stepStatusText(
+                             1, dialog.stepCount(),
+                             WarpSetupDialog::stepTitle(QStringLiteral("install"))),
+              "the status names the step and its position");
+        check(!dialog.cancelButton()->isEnabled(),
+              "and Cancel is withheld for exactly as long as a package manager is mid-transaction");
+        check(paintsColor(dialog.statusLabel(), runningColour),
+              "…and the status line is drawn in the running colour, not merely named after it");
+
+        dialog.stepAnswered(true, QString());
+        check(dialog.registerBegun == 1 && dialog.currentStepIndex() == 1,
+              "the enrolment is next, and it is the manager's — a bare `registration new` here would be "
+              "a second key for a device that may already hold one");
+
+        dialog.stepAnswered(true, QString());
+        check(dialog.currentStepIndex() == 2 && dialog.commands.size() == 1
+                      && dialog.commands.at(0).contains(QStringLiteral("tunnel protocol set MASQUE")),
+              "then the transport is switched, with the argv the core spelled rather than a second copy");
+
+        dialog.commandAnswered(0, QStringLiteral("Success"), false);
+        check(dialog.currentStepIndex() == 3 && dialog.commands.size() == 2
+                      && dialog.commands.at(1).contains(QStringLiteral("systemctl restart warp-svc")),
+              "then the service is restarted — the step that clears the daemon a connect used to hang "
+              "against");
+        check(dialog.logView()->toPlainText().contains(QStringLiteral("systemctl restart warp-svc")),
+              "…and the pane shows the command that was run, not only the plan's idea of it");
+
+        dialog.commandAnswered(0, QString(), false);
+        check(dialog.currentStepIndex() == 4 && dialog.commands.size() == 3
+                      && dialog.commands.at(2).contains(QStringLiteral("connect")),
+              "and only then is the tunnel asked for");
+        check(dialog.progressBar()->value() == 4,
+              "the bar counts finished steps, so it is not full while one is still running");
+
+        dialog.commandAnswered(0, QString(), false);
+        check(dialog.succeeded(), "a chain whose every step answered is a chain that succeeded");
+        check(finished.count() == 1 && finished.at(0).at(0).toBool(),
+              "…announced once, so a caller cannot read two outcomes out of one run");
+        check(dialog.progressBar()->value() == dialog.progressBar()->maximum(),
+              "the bar is full when the work is");
+        check(dialog.statusLabel()->text()
+                      == LanguageManager::tr(QStringLiteral("warp.setup.done")),
+              "and the last line says so in the catalog's own words");
+        check(paintsColor(dialog.statusLabel(), doneColour),
+              "…in the colour the sheet reserves for success, so the ending reads differently from the "
+              "middle without being read at all");
+        check(dialog.closeButton() && dialog.closeButton()->isVisibleTo(&dialog)
+                      && !dialog.startButton()->isVisibleTo(&dialog),
+              "with a Close to press and no Start left to press again");
+        dialog.hide();
+    }
+    // ---- a step that fails, and the retry of it ----
+    {
+        ProbeSetupDialog dialog(manager);
+        dialog.show();
+        QSignalSpy finished(&dialog, &WarpSetupDialog::setupFinished);
+        dialog.startSetup();
+        dialog.stepAnswered(true, QString());                 // install
+        dialog.stepAnswered(true, QString());                 // enrolment
+        const int commandsBefore = dialog.commands.size();
+        dialog.commandAnswered(1, QStringLiteral("warp-cli: unrecognized option"), false);
+
+        check(dialog.currentStepIndex() == 2, "the chain stops at the step that failed");
+        check(dialog.statusLabel()->objectName() == QLatin1String("setupStatusFailed"),
+              "…and the status line is styled as the failure it is, not left in its running colour");
+        check(paintsColor(dialog.statusLabel(), failedColour),
+              "…which means repainted, not just renamed: a stylesheet never re-reads an objectName on "
+              "its own, and a red rule on a purple line is a failure the user cannot see");
+        check(dialog.statusLabel()->text().contains(QStringLiteral("warp-cli: unrecognized option")),
+              "the sentence quotes what the command said, which is the half a bare exit code never "
+              "carries");
+        check(dialog.logView()->toPlainText()
+                      .contains(QStringLiteral("warp-cli: unrecognized option")),
+              "…and so does the log, in the red the journal fails in");
+        check(dialog.startButton() && dialog.startButton()->isVisibleTo(&dialog)
+                      && dialog.startButton()->text()
+                             == LanguageManager::tr(QStringLiteral("warp.setup.retry")),
+              "the primary button comes back as a retry, because after a failure the two options are "
+              "\"try that again\" and \"stop\"");
+        check(dialog.cancelButton()->isEnabled(), "…and stopping is the other one");
+        check(!dialog.succeeded() && finished.count() == 1 && !finished.at(0).at(0).toBool(),
+              "a failed chain is announced as failed, once");
+
+        dialog.startSetup();
+        check(dialog.currentStepIndex() == 2 && dialog.commands.size() == commandsBefore + 1,
+              "and the retry repeats the step that failed rather than installing and enrolling again — "
+              "a second enrolment would be a second key with the first one orphaned");
+        dialog.hide();
+    }
+
+    // ---- walking away ----
+    //
+    // Driven through the button rather than by calling the slot, so the wiring is part of what is
+    // checked: a disabled Cancel that could still be reached by some other route would be a package
+    // manager interrupted halfway.
+    {
+        ProbeSetupDialog dialog(manager);
+        dialog.show();
+        dialog.startSetup();
+        dialog.cancelButton()->click();
+        check(!dialog.cancelled(),
+              "the install step cannot be walked away from: an interrupted package manager leaves a "
+              "database to repair");
+        dialog.stepAnswered(true, QString());
+        dialog.cancelButton()->click();
+        check(dialog.cancelled() && dialog.result() == QDialog::Rejected,
+              "a step that can be interrupted is, and the dialog closes as declined — a window closed by "
+              "hand is not a machine that was set up");
+        dialog.hide();
+    }
+}
+
 
 // A release answer has to become something a person can see, and the seeing is the window's claim
 // rather than the checker's: UpdateChecker decides whether a build is ahead, MainWindow decides what an
@@ -5469,6 +5766,7 @@ int main(int argc, char **argv)
     testMotion();
     testWatchdog();
     testWarpEnrolmentWiring();
+    testWarpSetupDialog();
     testUpdateNotice();
     testWindowFrame();
 

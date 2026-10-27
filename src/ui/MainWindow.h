@@ -639,6 +639,15 @@ private slots:
     // same reason the acts the button performs are: the question it asks is a modal, and a suite has
     // nobody to click it.
     virtual void offerWarpInstall();
+    // The setup wizard: install, enrol, switch the transport, restart the daemon and connect, in that
+    // order and in the open. Offered instead of an install when the machine has no client at all or has
+    // one that was never enrolled, because in those two cases an install is only the first of four
+    // things that have to happen, and doing the other three silently is how the user ends up with a lit
+    // toggle and a daemon that says `warp=off`.
+    //
+    // Virtual for the reason offerWarpInstall() is: the real one is a modal dialog that runs a package
+    // manager and asks for root, and a suite has neither a screen nor a password to type.
+    virtual void openWarpSetup();
 
     void onWarpInstallationProgress(const QString &status);
     void onWarpInstallationFinished(bool success, const QString &error);
@@ -901,6 +910,9 @@ private:
     // has a busy bar and no button (see the class comment in WarpInstaller.h).
     WarpInstaller *m_warpInstaller = nullptr;
     QProgressDialog *m_warpProgress = nullptr;   // that window, non-null only while an install runs
+    // Whether the setup wizard is on screen. One at a time, because two wizards would race for the same
+    // daemon, the same package database and the same root prompt.
+    bool m_warpSetupOpen = false;
     QWidget *m_statusDot = nullptr;        // the 6 px chip beside the connection text
     QLabel *m_statusLabel = nullptr;       // "CONNECTED" and friends
     QLabel *m_footerLabel = nullptr;       // the ping cadence, or a transient message

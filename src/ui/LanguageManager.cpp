@@ -565,6 +565,84 @@ const QVector<Row> &catalog()
             "WARP समय पर नहीं आया। MASQUE प्रोटोकॉल सेट किया और सेवा फिर शुरू की — प्रतीत होता है "
             "प्रदाता स्वयं WARP को रोक रहा है; जाँचें कि इस कनेक्शन पर Cloudflare पहुँच में है या नहीं"),
 
+        // ---- the setup wizard ----
+        //
+        // A machine with no WARP at all needs four things done in order, and doing them silently is how
+        // the user ends up staring at a lit toggle and a daemon that says `warp=off`. These strings are
+        // the wizard's whole vocabulary: what it is about to do, which of the steps it is in, what broke,
+        // and that it finished. Every one of them names a thing rather than promising an outcome, because
+        // a wizard that says "installing" while a password prompt is waiting on the other window is the
+        // difference between a user who types it and a user who kills the app.
+        ROW("warp.setup.title", "Настройка Cloudflare WARP", "Cloudflare WARP setup",
+            "Configuración de Cloudflare WARP", "Cloudflare WARP einrichten", "设置 Cloudflare WARP",
+            "Configuration de Cloudflare WARP", "Cloudflare WARP सेटअप"),
+        ROW("warp.setup.intro",
+            "Для работы WARP необходимо установить клиент, зарегистрировать устройство и настроить "
+            "сетевой протокол. Нажмите «Начать настройку», чтобы продолжить. Потребуются права "
+            "администратора.",
+            "WARP needs its client installed, this device registered and the tunnel protocol set. Press "
+            "“Start setup” to continue. Administrator rights will be requested.",
+            "WARP necesita instalar el cliente, registrar este dispositivo y definir el protocolo del "
+            "túnel. Pulsa «Iniciar configuración» para continuar. Se pedirán permisos de administrador.",
+            "WARP erfordert die Installation des Clients, die Registrierung dieses Geräts und die "
+            "Einstellung des Tunnelprotokolls. Klicken Sie auf „Einrichtung starten“. Es werden "
+            "Administratorrechte angefordert.",
+            "WARP 需要安装客户端、注册此设备并设置隧道协议。点击“开始设置”继续。系统将请求管理员权限。",
+            "WARP a besoin que le client soit installé, que cet appareil soit enregistré et que le "
+            "protocole du tunnel soit défini. Cliquez sur « Démarrer la configuration ». Les droits "
+            "d'administration seront demandés.",
+            "WARP के लिए क्लाइंट इंस्टॉल करना, इस डिवाइस को पंजीकृत करना और टनल प्रोटोकॉल सेट करना "
+            "ज़रूरी है। जारी रखने के लिए «सेटअप शुरू करें» दबाएँ। व्यवस्थापक अधिकार माँगे जाएँगे।"),
+        ROW("warp.setup.start", "Начать настройку", "Start setup", "Iniciar configuración",
+            "Einrichtung starten", "开始设置", "Démarrer la configuration", "सेटअप शुरू करें"),
+        // The same button after a failure. It is a retry of the step that failed, not a fresh chain from
+        // the top, and the word says so.
+        ROW("warp.setup.retry", "Повторить", "Try again", "Reintentar", "Erneut versuchen", "重试",
+            "Réessayer", "फिर कोशिश करें"),
+        ROW("warp.setup.close", "Закрыть", "Close", "Cerrar", "Schließen", "关闭", "Fermer",
+            "बंद करें"),
+        // The running status line. %1 and %2 are the step's position, %3 is its own sentence, so the
+        // numbering can never disagree with the plan the wizard is walking.
+        ROW("warp.setup.step", "Шаг %1 из %2: %3", "Step %1 of %2: %3", "Paso %1 de %2: %3",
+            "Schritt %1 von %2: %3", "第 %1 步，共 %2 步：%3", "Étape %1 sur %2 : %3",
+            "चरण %1 / %2: %3"),
+        // The five steps' own sentences, keyed by the id the plan in WarpManager::setupSteps() carries
+        // so a step can never be announced by the wrong words.
+        ROW("warp.setup.step.install", "Установка пакета…", "Installing the package…",
+            "Instalando el paquete…", "Paket wird installiert…", "正在安装软件包…",
+            "Installation du paquet…", "पैकेज इंस्टॉल हो रहा है…"),
+        ROW("warp.setup.step.register", "Регистрация устройства…", "Registering the device…",
+            "Registrando el dispositivo…", "Gerät wird registriert…", "正在注册设备…",
+            "Enregistrement de l'appareil…", "डिवाइस पंजीकृत हो रहा है…"),
+        ROW("warp.setup.step.protocol", "Настройка протокола MASQUE…", "Setting the MASQUE protocol…",
+            "Definiendo el protocolo MASQUE…", "MASQUE-Protokoll wird eingestellt…",
+            "正在设置 MASQUE 协议…", "Réglage du protocole MASQUE…",
+            "MASQUE प्रोटोकॉल सेट हो रहा है…"),
+        ROW("warp.setup.step.service", "Перезапуск службы WARP…", "Restarting the WARP service…",
+            "Reiniciando el servicio de WARP…", "WARP-Dienst wird neu gestartet…",
+            "正在重启 WARP 服务…", "Redémarrage du service WARP…",
+            "WARP सेवा फिर से शुरू हो रही है…"),
+        ROW("warp.setup.step.connect", "Подключение туннеля…", "Connecting the tunnel…",
+            "Conectando el túnel…", "Tunnel wird verbunden…", "正在连接隧道…",
+            "Connexion du tunnel…", "टनल जुड़ रहा है…"),
+        // A failure, named by the step that produced it and quoting what the command said. The step
+        // number is in the sentence rather than only in the log because the log is the long version:
+        // this is what the user reads first.
+        ROW("warp.setup.error", "Ошибка на шаге %1: %2", "Step %1 failed: %2",
+            "Error en el paso %1: %2", "Fehler in Schritt %1: %2", "第 %1 步出错：%2",
+            "Échec à l'étape %1 : %2", "चरण %1 विफल: %2"),
+        ROW("warp.setup.done", "WARP успешно настроен и подключен!",
+            "WARP is set up and connected!", "¡WARP está configurado y conectado!",
+            "WARP ist eingerichtet und verbunden!", "WARP 已设置并连接成功！",
+            "WARP est configuré et connecté !", "WARP सफलतापूर्वक सेट और कनेक्ट हो गया!"),
+        // Walking away is a legitimate answer, and saying so is what keeps it from reading as a crash:
+        // the dialog closes, the half goes dark, and the journal names which step it stopped at.
+        ROW("warp.setup.cancelled", "Настройка WARP прервана на шаге: %1",
+            "WARP setup was cancelled during: %1", "Se canceló la configuración de WARP durante: %1",
+            "Die WARP-Einrichtung wurde abgebrochen bei: %1", "WARP 设置已在此步骤取消：%1",
+            "La configuration de WARP a été annulée pendant : %1",
+            "WARP सेटअप इस चरण में रद्द किया गया: %1"),
+
 
         // ---- the history and statistics page ----
         // The page's own voice: one aggregate the reader acts on, five column names, and the three words
