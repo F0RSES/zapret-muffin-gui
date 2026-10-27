@@ -2298,6 +2298,80 @@ bool MainWindow::mayConnectWarpAfterDelay(ModeSelection selection, bool startSti
     return selection.warp && startStillPending && bypassHeld;
 }
 
+bool MainWindow::borrowsBypassForWarp(bool bypassUpOrRising, bool profilePicked)
+{
+    // Nothing is borrowed from a machine whose path is already up — that is the Zapret+WARP case, and the
+    // one where a teardown at the end would be the app taking down something the user is running. And
+    // nothing is borrowed where there is no profile to run: the install would go ahead either way, and
+    // the only difference would be a "pick a profile" page opening under a modal that is mid-download.
+    return !bypassUpOrRising && profilePicked;
+}
+
+bool MainWindow::releasesBorrowedBypass(bool borrowed, bool bypassUpOrRising)
+{
+    // Give it back only if this window is the reason it is up, and only while there is something to give
+    // back. A bypass the user brought up themselves is not this install's to take down, and one that is
+    // already coming down has a teardown in flight that a second one would only duplicate.
+    return borrowed && bypassUpOrRising;
+}
+
+void MainWindow::borrowBypassForWarpInstall()
+{
+    if (m_zapretAutoStarted)
+        return;   // one borrow per install, not one per entry point that could ask
+    if (!borrowsBypassForWarp(bypassIsUpOrRising(), !m_selectedId.isEmpty()))
+        return;
+    // The window's own start path, rather than a call into the backend: this is the same launch the
+    // power button performs, with the same gating, the same badges and the same journal, and a second
+    // route to a running bypass is a second place for those to be wrong. It is asynchronous, which is
+    // why nothing here waits — by the time the wizard's first step reaches the network the user has
+    // already pressed Start, and apt's own failure to fetch is the sentence worth reading if that loses
+    // the race.
+    if (!startBypass())
+        return;
+    m_zapretAutoStarted = true;
+    const QString borrowed = LanguageManager::tr(QStringLiteral("warp.zapret_borrowed"));
+    if (m_log)
+        m_log->appendLine(borrowed, LogPanel::Info);
+    showTransientMessage(borrowed, 6000);
+    updateStatusUi();
+}
+
+void MainWindow::releaseBorrowedBypass()
+{
+    // Read then cleared before anything is decided below, because every way out of here is an ending and
+    // the flag must not survive into the next install as somebody else's teardown.
+    const bool borrowed = m_zapretAutoStarted;
+    m_zapretAutoStarted = false;
+    const bool up = bypassIsUpOrRising();
+
+    if (!borrowed) {
+        // Nothing was borrowed. If a bypass is up now it was up before the install too — the Zapret+WARP
+        // case — and saying which of the two the window is looking at is the difference between a journal
+        // that explains itself and one where a user has to work out whether Muffin is about to take their
+        // path down as collateral for somebody else's tunnel. It is not about to.
+        if (up && m_log)
+            m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.zapret_kept")), LogPanel::Info);
+        return;
+    }
+    if (!up)
+        return;   // the borrow never came up, or something else already took it down
+
+    if (m_log)
+        m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.zapret_released")), LogPanel::Info);
+    // The teardown repaints as it goes (see takeDownBorrowedBypass), so nothing is drawn here.
+    takeDownBorrowedBypass();
+}
+
+void MainWindow::takeDownBorrowedBypass()
+{
+    // The one teardown this window has, rather than m_manager->stop(): a borrowed bypass coming down is
+    // the same state change the user would see from the button or the tray, and it has to look the same —
+    // same stopping feedback, same reconciliation with what the backend actually did, same withdrawal of
+    // any tunnel the power button was still waiting to bring up.
+    onStopRequested();
+}
+
 // The chip and the ring for a combined selection, from the two states the selection is about. One
 // layer is live at a time and owns the whole look: while the tunnel is held it is the layer doing
 // something, so it wears the blue and says its word; otherwise the bypass owns the purple and its.
@@ -2793,6 +2867,10 @@ void MainWindow::openWarpSetup()
         return;   // one wizard at a time: a second would race the first for the same daemon
 
     m_warpSetupOpen = true;
+    // The borrow happens here rather than inside the dialog: the wizard installs a package and enrols a
+    // device, and both need a path that this window — not the chain — is the one allowed to bring up and
+    // take down. Nothing is borrowed from a machine that already has the bypass running.
+    borrowBypassForWarpInstall();
     {
         WarpSetupDialog dialog(*m_warp, this);
         // The single-window policy, read at the moment of the offer rather than at construction: the user
@@ -2803,6 +2881,12 @@ void MainWindow::openWarpSetup()
         // the pane closes with the window and the journal does not — and "which step stopped" is exactly
         // the question somebody asks an hour later. On failure the sentence logged is the one the user
         // was looking at, rather than a second wording of it kept in this file.
+        // The chain's own moment for giving the bypass back: it is reached between the enrolment and the
+        // connect, and only the wizard knows which of those two the chain is standing at. Connected to the
+        // same slot the failure paths below call, and idempotent, so an install that never got that far is
+        // answered once rather than twice.
+        connect(&dialog, &WarpSetupDialog::bypassReleaseRequested, this,
+                &MainWindow::releaseBorrowedBypass);
         connect(&dialog, &WarpSetupDialog::setupFinished, this, [this, &dialog](bool ok) {
             if (!m_log)
                 return;
@@ -2815,6 +2899,11 @@ void MainWindow::openWarpSetup()
         dialog.exec();
         const bool accepted = dialog.succeeded();
         m_warpSetupOpen = false;
+        // Whatever the chain did with it — finished to the connect, failed at a step, or was closed by
+        // hand — a bypass borrowed for this install is not left running by it. The slot says so in the
+        // journal when it actually takes one down, and does nothing at all when the wizard already
+        // returned it before the connect.
+        releaseBorrowedBypass();
 
         if (!accepted) {
             // Declined, cancelled or failed at some step: there is no working tunnel behind the lit
@@ -2868,6 +2957,12 @@ void MainWindow::offerWarpInstall()
         showTransientMessage(LanguageManager::tr(QStringLiteral("warp.install_declined")), 6000);
         return;
     }
+
+    // The same borrow the wizard makes, for the path that only installs: the package comes from
+    // pkg.cloudflareclient.com, which is exactly the kind of endpoint a blocked network refuses. Asked
+    // before the installer starts rather than after it fails, because a fetch that has already died says
+    // so in apt's words and not in ours.
+    borrowBypassForWarpInstall();
 
     // Refresh the single-window policy at the moment of the offer. It was set at construction from the
     // settings page's default, and the user may have flipped it between then and picking WARP on the
@@ -2932,6 +3027,11 @@ void MainWindow::onWarpInstallationFinished(bool success, const QString &error)
         m_warpProgress->deleteLater();
         m_warpProgress = nullptr;
     }
+    // The install-only path has no enrolment and no connect in it, so the borrow has nothing left to
+    // need it once the package has landed — and equally on a failure, which is the case a borrowed bypass
+    // would otherwise be left running after. Both outcomes end the debt; the slot decides whether anything
+    // is actually owed back.
+    releaseBorrowedBypass();
 
     if (success) {
         if (m_log)

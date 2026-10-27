@@ -508,6 +508,34 @@ const QVector<Row> &catalog()
             "无法设置 WARP——不会启动隧道",
             "Impossible de configurer WARP — le tunnel n'est pas lancé",
             "WARP सेट नहीं हो सका — टनल शुरू नहीं किया जा रहा"),
+        // ---- the bypass lent to a WARP install, and given back ----
+        //
+        // Three lines for one loan, and each is worth its own sentence because each is a machine left in a
+        // different state. A user who sees apt reach Cloudflare on a network that has never managed it
+        // should be able to read why; one who finds the queue rules gone afterwards should be able to
+        // read that too; and one who asked for Zapret + WARP must not be left wondering whether Muffin is
+        // about to take their bypass down as collateral.
+        ROW("warp.zapret_borrowed", "Zapret временно запущен для установки WARP",
+            "Zapret was started temporarily for the WARP install",
+            "Zapret se inició temporalmente para instalar WARP",
+            "Zapret wurde für die WARP-Installation vorübergehend gestartet",
+            "Zapret 已为安装 WARP 临时启动",
+            "Zapret a été démarré temporairement pour l'installation de WARP",
+            "WARP इंस्टॉल के लिए Zapret अस्थायी रूप से शुरू किया गया"),
+        ROW("warp.zapret_released", "Zapret остановлен после установки WARP",
+            "Zapret was stopped after the WARP install",
+            "Zapret se detuvo tras instalar WARP",
+            "Zapret wurde nach der WARP-Installation gestoppt",
+            "WARP 安装完成后已停止 Zapret",
+            "Zapret a été arrêté après l'installation de WARP",
+            "WARP इंस्टॉल के बाद Zapret बंद कर दिया गया"),
+        ROW("warp.zapret_kept", "Zapret продолжает работать для режима Zapret + WARP",
+            "Zapret keeps running for the Zapret + WARP mode",
+            "Zapret sigue en marcha para el modo Zapret + WARP",
+            "Zapret läuft für den Modus Zapret + WARP weiter",
+            "Zapret 继续运行以支持 Zapret + WARP 模式",
+            "Zapret continue de fonctionner pour le mode Zapret + WARP",
+            "Zapret + WARP मोड के लिए Zapret चलता रहेगा"),
         // ---- what the preparation says while it runs ----
         //
         // Three sentences for the three waits a tunnel start now contains. They exist because the
@@ -662,6 +690,27 @@ const QVector<Row> &catalog()
             "Die WARP-Einrichtung wurde abgebrochen bei: %1", "WARP 设置已在此步骤取消：%1",
             "La configuration de WARP a été annulée pendant : %1",
             "WARP सेटअप इस चरण में रद्द किया गया: %1"),
+        // ---- the gap the daemon owes after a step moved it, and the retry a refusal earns ----
+        //
+        // Two sentences for the two waits the chain now contains. Both exist because the wizard runs
+        // commands, and a command that returns has not necessarily made the thing it changed usable:
+        // systemd says warp-svc is active before the daemon has re-opened its control socket, and the verb
+        // issued in that gap is refused by an answer about the service that the step's own title blames on
+        // the device. Silence reads as a stuck program; these two lines say which of the two it is.
+        ROW("warp.setup.settle", "Служба перезапущена — жду %1 с, пока демон WARP снова откроет сокет…",
+            "The service was restarted — waiting %1 s for the WARP daemon to re-open its socket…",
+            "El servicio se reinició: esperando %1 s a que el demonio de WARP reabra su socket…",
+            "Der Dienst wurde neu gestartet — %1 s gewartet, bis der WARP-Demon seinen Socket wieder öffnet…",
+            "服务已重启 — 等待 %1 秒让 WARP 守护进程重新打开套接字…",
+            "Le service a été redémarré — attente de %1 s avant que le démon WARP rouvre sa socket…",
+            "सेवा फिर से शुरू हुई — WARP डेमन के सॉकेट के फिर से खुलने की प्रतीक्षा %1 स…"),
+        ROW("warp.setup.retry_daemon", "Демон WARP ещё не отвечает — повторная попытка %1 из %2…",
+            "The WARP daemon is not answering yet — retry %1 of %2…",
+            "El demonio de WARP aún no responde: reintento %1 de %2…",
+            "Der WARP-Demon antwortet noch nicht — Versuch %1 von %2…",
+            "WARP 守护进程尚未响应 — 第 %1 次重试（共 %2 次）…",
+            "Le démon WARP ne répond pas encore — nouvelle tentative %1 sur %2…",
+            "WARP डेमन अभी जवाब नहीं दे रहा — पुनःप्रयास %1 / %2…"),
         // ---- the rescan between the install and everything that depends on it ----
         //
         // Three lines, and the reason they exist is a specific failure: the install step succeeds, and

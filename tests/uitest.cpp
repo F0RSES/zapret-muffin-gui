@@ -1502,6 +1502,41 @@ static void testCombinedPower()
               "breathes over a live tunnel forever");
     }
 
+    // ---- what an install borrows, what it gives back, and what it waits for ----
+    //
+    // Three decisions, all of them about authorship rather than about what the pill happens to show, and
+    // all three worth stating as tables because each has a wrong answer that looks reasonable: borrow
+    // again when one is already up, take down a bypass the user started, or hold the chain for a gap after
+    // a step that moved nothing.
+    {
+        check(MainWindow::borrowsBypassForWarp(false, true),
+              "an install on a machine with nothing up and a profile to run borrows a bypass");
+        check(!MainWindow::borrowsBypassForWarp(true, true),
+              "…and one riding a bypass that is already up borrows nothing it would then have to return");
+        check(!MainWindow::borrowsBypassForWarp(false, false),
+              "…nor does one with no profile to run: there is nothing to start, and the user has already "
+              "been shown where to pick one");
+
+        check(MainWindow::releasesBorrowedBypass(true, true),
+              "a bypass this window started for the install is given back when the install is over");
+        check(!MainWindow::releasesBorrowedBypass(false, true),
+              "…and one the user started is not: the pill reading it a teardown has to act on is the "
+              "same one the borrow could not tell apart");
+        check(!MainWindow::releasesBorrowedBypass(true, false),
+              "…nor is a borrow that never came up, which would be a stop issued against nothing");
+
+        check(WarpSetupDialog::owesSettleAfter(QStringLiteral("daemon")),
+              "starting the service owes a gap: on a clean machine that is a cold start, and the "
+              "enrolment is the very next thing that needs its socket");
+        check(WarpSetupDialog::owesSettleAfter(QStringLiteral("service")),
+              "…and restarting it owes the same gap before the connect");
+        for (const char *stepId : {"install", "register", "protocol", "connect"})
+            check(!WarpSetupDialog::owesSettleAfter(QLatin1String(stepId)),
+                  QStringLiteral("no gap after %1: it moved no daemon, so a wait there would be a pause "
+                                 "with nothing behind it")
+                      .arg(QLatin1String(stepId)));
+    }
+
 }
 
 // --------------------------------------------------------------- ProfileCard ----
@@ -4477,8 +4512,14 @@ public:
     // Whether the bypass is up for the wait's guard. A press records the request; this is what the
     // delay exists to wait for, and the guard is what makes the delay a condition rather than a pause.
     bool bypassHeld = true;
+    // Counted, not run: the base of this one reaches a real backend's teardown, and what the install
+    // scenarios claim is that the window decided to give the bypass back — the stop itself is the
+    // button's own path and is measured where it is tested.
+    int bypassStops = 0;
 
 protected:
+    void takeDownBorrowedBypass() override { ++bypassStops; }
+
     bool startBypass() override
     {
         ++bypassStarts;
@@ -4923,6 +4964,63 @@ static void testWarpEnrolmentWiring()
         check(f.window->installsOffered == 0, "…and offers to install nothing over a working client");
     }
 
+    // ---- the bypass a WARP install borrows, and gives back ----
+    //
+    // Cloudflare's own repository is one of the endpoints a blocked network refuses, so an install on a
+    // machine that is not running a bypass needs one lent to it — and needs it handed back afterwards, or
+    // Muffin has left queue rules rewriting traffic for a tunnel the user may never finish setting up.
+    // Both halves are the claim; the middle one is the case where nothing is borrowed and nothing may be
+    // taken down, because the user brought the path up themselves.
+    {
+        EnrolmentFixture f(store);
+        f.warp->log = nullptr;            // this scenario reads the journal, not the act log
+        f.window->bypassHeld = false;     // nothing is up to borrow
+        check(!f.window->zapretAutoStarted(), "the window starts owing no bypass");
+
+        f.window->borrowBypassForWarpInstall();
+        check(f.window->bypassStarts == 1 && f.window->zapretAutoStarted(),
+              "a WARP install on a machine with no bypass running starts one, and remembers that it did");
+        check(f.window->logPanel()->view()->toPlainText()
+                      .contains(LanguageManager::tr(QStringLiteral("warp.zapret_borrowed"))),
+              "…says so in the journal, because the launch that follows costs a root prompt and the line "
+              "is the only thing telling the user what that password is for");
+
+        f.window->borrowBypassForWarpInstall();
+        check(f.window->bypassStarts == 1,
+              "asking twice borrows once — a second launch would be a second pkexec behind the first");
+
+        f.window->bypassHeld = true;      // the borrowed bypass came up
+        f.window->releaseBorrowedBypass();
+        check(f.window->bypassStops == 1 && !f.window->zapretAutoStarted(),
+              "and when the install ends the borrowed path is given back: the machine is left as it was "
+              "found rather than running a bypass nobody asked to keep");
+        check(f.window->logPanel()->view()->toPlainText()
+                      .contains(LanguageManager::tr(QStringLiteral("warp.zapret_released"))),
+              "…in the journal, which is where somebody reading an hour later looks");
+
+        f.window->releaseBorrowedBypass();
+        check(f.window->bypassStops == 1,
+              "…once. A second release at the end of the wizard, after the chain already returned it at "
+              "the connect, must not spend a second teardown on a bypass that is coming down");
+    }
+    {
+        EnrolmentFixture f(store);
+        f.warp->log = nullptr;
+        f.window->bypassHeld = true;      // the user's own Zapret + WARP run is already up
+        f.window->borrowBypassForWarpInstall();
+        check(f.window->bypassStarts == 0 && !f.window->zapretAutoStarted(),
+              "nothing is borrowed from a machine whose bypass is already up, and nothing is claimed as "
+              "borrowed that was not");
+        f.window->releaseBorrowedBypass();
+        check(f.window->bypassStops == 0,
+              "…and at the end of the install nothing is taken down either: a path the user brought up is "
+              "not this install's collateral");
+        check(f.window->logPanel()->view()->toPlainText()
+                      .contains(LanguageManager::tr(QStringLiteral("warp.zapret_kept"))),
+              "the keeping is said, because a journal that passes over a bypass still running after an "
+              "install leaves the user to work out whether Muffin means to stop it");
+    }
+
     // The store is left exactly as the section found it: a run that ended with the WARP half lit would
     // be a next launch that asks for a tunnel.
     store.setZapretPath(savedPath);
@@ -4953,15 +5051,31 @@ public:
     // Shared with the control, so one log carries the order the chain actually ran in — which is the
     // whole claim when the question is "was the host re-asked before the enrolment".
     ActLog *acts = nullptr;
+    // How long this scenario's gap after a step that moved the daemon is. Zero by default: the wait is
+    // 1.5 s of real time per chain scenario, and a suite that spent it in every scenario would be timing
+    // a clock rather than ordering acts. The two scenarios that watch the gap set it, and one of them
+    // also checks that the base answer is the core's number rather than a second one kept here.
+    int settleMs = 0;
     // Whether the enrolment step is the real one rather than a record. Off by default, because a
     // scenario driving the chain from outside wants a step it answers rather than a pair of signals it
     // has to arrange; on for the scenario watching what the manager's own channels do to the sentence a
     // failure is reported with, which cannot be observed through a stub.
     bool delegateRegistration = false;
+    // Whether the wizard's own command launcher runs rather than a record. Off by default for the same
+    // reason the other seams are, and on for the one claim that cannot be made through a stub: that a
+    // command's own stderr survives into the sentence about its failure.
+    bool realCommands = false;
+    // The base's answer to the seam below, for the scenario that pins the wizard's gap to the core's
+    // number rather than to a second constant kept here.
+    int baseSettleMs() const { return WarpSetupDialog::serviceSettleMs(); }
 
 protected:
+    int serviceSettleMs() const override { return settleMs; }
+
     bool launchCommand(const WarpManager::SetupCommand &command, QString *error) override
     {
+        if (realCommands)
+            return WarpSetupDialog::launchCommand(command, error);
         Q_UNUSED(error);
         commands << command.program + QLatin1Char(' ') + command.args.join(QLatin1Char(' '));
         return true;
@@ -5062,6 +5176,10 @@ static void testWarpSetupDialog()
         ProbeSetupDialog dialog(manager);
         dialog.show();
         QSignalSpy finished(&dialog, &WarpSetupDialog::setupFinished);
+        // The half of the borrow that lives in the chain rather than in the window: the wizard is the only
+        // thing that knows when it has stopped needing the bypass, and the connect is that line. Watched
+        // as a signal because the wiring on the other end of it opens a modal the suite cannot drive.
+        QSignalSpy released(&dialog, &WarpSetupDialog::bypassReleaseRequested);
 
         dialog.startSetup();
         check(dialog.startButton() && !dialog.startButton()->isVisibleTo(&dialog),
@@ -5115,10 +5233,16 @@ static void testWarpSetupDialog()
         check(dialog.logView()->toPlainText().contains(QStringLiteral("systemctl restart warp-svc")),
               "…and the pane shows the command that was run, not only the plan's idea of it");
 
+        check(released.isEmpty(),
+              "and nothing has been given back yet: the enrolment is still talking to Cloudflare through "
+              "the path the install borrowed");
         dialog.commandAnswered(0, QString(), false);
         check(dialog.currentStepIndex() == 5 && dialog.commands.size() == 4
                       && dialog.commands.at(3).contains(QStringLiteral("connect")),
               "and only then is the tunnel asked for");
+        check(released.count() == 1,
+              "…with the release announced at the connect step and not before it, which is where the "
+              "borrow stops being needed: everything after this rides the tunnel, not the bypass");
         check(dialog.progressBar()->value() == 5,
               "the bar counts finished steps, so it is not full while one is still running");
 
@@ -5280,30 +5404,130 @@ static void testWarpSetupDialog()
         dialog.hide();
     }
 
-    // ---- the refusal whose cause the user can fix ----
+    // ---- the gap a step that moved the daemon owes the verb after it ----
+    //
+    // The race the field report caught: systemd says warp-svc is active before warp-svc has re-opened
+    // its control socket, and the wizard runs its next command the instant the previous one exits. Without
+    // a gap, the connect that follows a restart is aimed at a path with nobody behind it, and the answer
+    // it gets — "Unable to connect to the CloudflareWARP daemon: No such file or directory" — reads as a
+    // broken tunnel rather than as a daemon still arriving.
+    {
+        ProbeSetupDialog dialog(manager);
+        dialog.settleMs = 60;
+        dialog.show();
+        check(dialog.baseSettleMs() == WarpManager::serviceSettleMs(),
+              "the wizard's gap is the core's number read through, not a second constant kept beside it: "
+              "two numbers for one socket are two opinions about how long it takes to come back");
+        dialog.startSetup();
+        dialog.stepAnswered(true, QString());          // install reports success
+        check(dialog.commands.size() == 1
+                      && dialog.commands.at(0).contains(QStringLiteral("enable --now warp-svc")),
+              "the daemon step is launched");
+        dialog.commandAnswered(0, QStringLiteral("active"), false);
+        check(dialog.isSettling(),
+              "and when it exits the chain stops rather than continuing: the unit is active, the daemon "
+              "is not yet answerable");
+        check(dialog.commands.size() == 1 && dialog.registerBegun == 0,
+              "…and nothing is asked of the daemon inside the gap, which is the whole of the race");
+        check(dialog.statusLabel()->text().contains(
+                      LanguageManager::tr(QStringLiteral("warp.setup.settle")).arg(0.06, 0, 'g', 2)),
+              "…and the pause says what it is waiting for, so a wizard that has stopped moving for a "
+              "moment is not one that has stuck");
+        QTest::qWait(200);
+        check(!dialog.isSettling() && dialog.currentStepIndex() == 2 && dialog.registerBegun == 1,
+              "when the gap ends the chain carries on by itself, into the enrolment");
+        dialog.hide();
+    }
+
+    // ---- a command refused by a daemon that is still arriving is asked again ----
+    //
+    // The other half of the same wait-out, on the path the settle does not cover: a command that exits
+    // non-zero because the unit is active but its socket is not. The wording is the one the clean-install
+    // report carried, and it is the classifier's newest marker — a phrase the older list would have read
+    // as an ordinary failure and reported as one.
+    {
+        ProbeSetupDialog dialog(manager);
+        dialog.settleMs = 0;
+        dialog.show();
+        dialog.startSetup();
+        dialog.stepAnswered(true, QString());          // install
+        dialog.commandAnswered(0, QStringLiteral("active"), false);   // daemon
+        dialog.stepAnswered(true, QString());          // enrolment (stubbed)
+        check(dialog.commands.size() == 2
+                      && dialog.commands.at(1).contains(QStringLiteral("protocol set MASQUE")),
+              "the protocol verb is the command now in flight");
+        dialog.commandAnswered(1, QStringLiteral("Unable to connect to the CloudflareWARP daemon: "
+                                                "No such file or directory"), false);
+        check(dialog.daemonRetries() == 1 && dialog.currentStepIndex() == 3 && !dialog.succeeded(),
+              "a refusal that says the daemon is not there is waited out on the same command, not failed "
+              "and not advanced past");
+        QTest::qWait(30);
+        check(dialog.commands.size() == 3 && dialog.commands.at(2).contains(QStringLiteral("MASQUE")),
+              "…and the ask is repeated rather than replayed from a cache, which is the only way a "
+              "daemon that arrives in the meantime is ever reached");
+        dialog.commandAnswered(0, QStringLiteral("Success"), false);
+        check(dialog.currentStepIndex() == 4 && dialog.daemonRetries() == 0,
+              "…and once it answers, the step moves on with a full budget again: attempts spent on a "
+              "socket that was arriving are not charged to the next one");
+        dialog.hide();
+    }
+
+    // ---- a refusal that names the daemon is asked again, and only then told on ----
     //
     // The report the daemon step was added for, driven through the manager's real channels rather than
     // through the stub, because what is under test is what the dialog does with what the manager says:
     // registrationFinished() carries a bool and nothing else, and the reason arrives beside it on the
-    // journal channel — which the dialog used to relay and then forget.
+    // journal channel — which the dialog used to relay and then forget. The retry is the newer half of the
+    // same story: a cold-starting warp-svc answers the first verb after its start with this exact
+    // sentence, and a wizard that reported it as a failure was reporting the machine as broken while it
+    // was still arriving.
     {
+        const QString daemonRefusal = QStringLiteral(
+            "WarpManager: Missing registration. Try running: 'warp-cli registration new'\n"
+            "Maybe the daemon is not running?");
         ProbeSetupDialog dialog(manager);
         dialog.delegateRegistration = true;
         dialog.show();
         dialog.startSetup();
         dialog.stepAnswered(true, QString());          // install
         dialog.commandAnswered(0, QString(), false);   // daemon
-        manager.answerLog(QStringLiteral("WarpManager: Missing registration. Try running: 'warp-cli "
-                                         "registration new'\nMaybe the daemon is not running?"), 2);
+        const int enrollBefore = manager.ensureCalls;
+
+        for (int attempt = 1; attempt <= WarpSetupDialog::kDaemonRetryAttempts; ++attempt) {
+            manager.answerLog(daemonRefusal, 2);
+            manager.answerFinished(false);
+            QTest::qWait(30);   // the retry's gap is armed on the event loop and never slept in the caller
+            check(dialog.currentStepIndex() == 2 && !dialog.succeeded(),
+                  QStringLiteral("attempt %1 is waited out on the same step, not failed").arg(attempt));
+            check(dialog.daemonRetries() == attempt,
+                  QStringLiteral("…and counted, which is the only thing that bounds it to %1")
+                      .arg(WarpSetupDialog::kDaemonRetryAttempts));
+            check(dialog.logView()->toPlainText().contains(
+                          LanguageManager::tr(QStringLiteral("warp.setup.retry_daemon"))
+                              .arg(attempt)
+                              .arg(WarpSetupDialog::kDaemonRetryAttempts)),
+                  QStringLiteral("…said in the pane, so a chain that pauses is not a chain that has stuck"));
+        }
+        check(manager.ensureCalls == enrollBefore + WarpSetupDialog::kDaemonRetryAttempts,
+              "the retry re-asks the manager rather than replaying a cached answer — and it is the same "
+              "bounded number of asks, not one per turn of the event loop");
+        check(dialog.statusLabel()->objectName() == QLatin1String("setupStatus"),
+              "…while it is retrying the window is still in its running state, not its failed one");
+
+        // The budget spent. Now, and only now, this is a failure the user has to be handed.
+        manager.answerLog(daemonRefusal, 2);
         manager.answerFinished(false);
+        QTest::qWait(30);
 
         const QString pane = dialog.logView()->toPlainText();
         check(pane.contains(QStringLiteral("Maybe the daemon is not running?")),
               "the daemon's own sentence reaches the pane…");
         check(pane.contains(LanguageManager::tr(QStringLiteral("warp.setup.daemon_down"))
                                 .arg(WarpManager::serviceStartHint(ZapretSource::hostPlatform()))),
-              "…with the one command that would fix it underneath, which is the difference between a "
-              "refusal the user can act on and one they can only read");
+              "…with the one command that would fix it underneath, once the second chances are spent: the "
+              "difference between a refusal the user can act on and one they can only read");
+        check(dialog.currentStepIndex() == 2,
+              "…and only now is the step failed, and at the step it belongs to");
         check(dialog.statusLabel()->text().contains(QStringLiteral("Missing registration")),
               "the status line quotes the reason instead of the step's title, because the words for what "
               "went wrong are about the service and the title says \"registration\"");
@@ -5316,6 +5540,79 @@ static void testWarpSetupDialog()
               "whole recovery, so a dialog offering neither is one that has to be killed");
         dialog.hide();
     }
+
+#if defined(Q_OS_UNIX)
+    // ---- what a failed command said is what its failure sentence says ----
+    //
+    // The pane reported "exit 1 with no output" for commands that had explained themselves in full. The
+    // cause was in this file and not in the child: the handler that streams output into the pane drains the
+    // channel as it goes, and the failure sentence was then built from a second read of that same, now
+    // empty, buffer — with the channels merged, so stderr had been drained by that very read too. Asserted
+    // end to end against a real process writing to a real error channel, because every other scenario
+    // here replaces the launcher rather than running it.
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "temporary directory for the stand-in client");
+        const QString fake = dir.path() + QStringLiteral("/warp-cli");
+        const QString body = QStringLiteral("#!/bin/sh\n"
+                                            "echo 'the socket is not there yet' >&2\n"
+                                            "exit 3\n");
+        bool written = false;
+        QString how;
+        {
+            QFile script(fake);
+            const bool opened = script.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            const qint64 sent = opened ? script.write(body.toUtf8()) : -1;
+            script.close();
+            const bool perms = QFile::setPermissions(
+                fake, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner
+                      | QFileDevice::ReadGroup | QFileDevice::ExeGroup | QFileDevice::ReadOther
+                      | QFileDevice::ExeOther);
+            how = QStringLiteral("(open %1, wrote %2 of %3, chmod %4, exists %5)")
+                      .arg(opened ? QStringLiteral("ok") : QStringLiteral("failed"))
+                      .arg(sent)
+                      .arg(body.toUtf8().size())
+                      .arg(perms ? QStringLiteral("ok") : QStringLiteral("failed"))
+                      .arg(QFileInfo::exists(fake) ? QStringLiteral("yes") : QStringLiteral("no"));
+            written = opened && sent == body.toUtf8().size() && perms;
+        }
+        check(written, QStringLiteral("a stand-in warp-cli that answers on stderr and exits 3 was "
+                                       "written and made runnable %1")
+                          .arg(how));
+
+        const bool wasAvailable = manager.available;
+        const WarpManager::Registration wasRegistration = manager.registration;
+        const QString wasPath = manager.programPath;
+        manager.available = true;                        // isInstalled() reads this one flag
+        manager.registration = WarpManager::Registration::Registered;
+        manager.programPath = fake;                      // and this is the binary the chain will run
+        {
+            ProbeSetupDialog dialog(manager);
+            dialog.realCommands = true;
+            dialog.settleMs = 0;
+            dialog.show();
+            check(dialog.stepCount() == 3,
+                  "a machine with an enrolled client is left with protocol, service and connect — so the "
+                  "first thing the chain runs is a command this test can let be real");
+            dialog.startSetup();
+            QTest::qWait(900);
+            const QString pane = dialog.logView()->toPlainText();
+            check(dialog.statusLabel()->text().contains(QStringLiteral("the socket is not there yet")),
+                  "the failure sentence quotes what the command said, including the line it wrote to its "
+                  "error channel");
+            check(!pane.contains(QStringLiteral("with no output"))
+                          && !dialog.statusLabel()->text().contains(QStringLiteral("with no output")),
+                  "…and neither the pane nor the sentence claims a command said nothing");
+            check(!dialog.succeeded(),
+                  "…and the step is failed on its merits rather than swallowed by a wait for output that "
+                  "had already been read");
+            dialog.hide();
+        }
+        manager.available = wasAvailable;
+        manager.registration = wasRegistration;
+        manager.programPath = wasPath;
+    }
+#endif
 
     // ---- walking away ----
     //

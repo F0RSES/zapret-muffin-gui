@@ -67,6 +67,19 @@ public:
     static QString stepTitle(const QString &stepId);
     bool succeeded() const { return m_succeeded; }
     bool cancelled() const { return m_cancelled; }
+    // Whether the chain is inside the gap a service restart owes the verb that follows it. Public because
+    // it is the only way to see the wait from outside: the bar has already counted the step as finished
+    // and the next one has not been announced yet, so without this the pause is indistinguishable from a
+    // wizard that has stuck.
+    bool isSettling() const { return m_settling; }
+    // How many times a daemon-shaped refusal has been asked again. Bounded by kDaemonRetryAttempts, and
+    // readable for the same reason the wait is: a retry nobody can count is a loop nobody can rule out.
+    int daemonRetries() const { return m_daemonRetries; }
+    static constexpr int kDaemonRetryAttempts = 2;
+    // Whether the step that just finished owes a gap before the next one may run. Pure and named by the
+    // step's own id rather than decided inline, so the claim "a restart is followed by a wait" is a table
+    // a test can read instead of a branch buried in the runner.
+    static bool owesSettleAfter(const QString &finishedStepId);
 
     // The single-window policy, handed in by the window that owns it rather than read here: Settings
     // belongs to the UI and this dialog is told what the user chose, exactly as WarpInstaller is. Without
@@ -95,6 +108,13 @@ signals:
     // the user reads the last line and presses Close, which is the difference between a result and a
     // window that vanished while they were looking at it.
     void setupFinished(bool ok);
+    // The chain has reached the point where a borrowed bypass is no longer needed: the package is down
+    // and the device is enrolled, and everything left is either local to this machine or rides the tunnel
+    // itself. Emitted before the connect is launched rather than after it, so a window that started zapret
+    // for the sake of this install has given it back by the time `warp-cli connect` runs — which is the
+    // order the borrow exists to keep, since a bypass taken down under a live connect is a tunnel that
+    // reports Connected over a path nothing forwards.
+    void bypassReleaseRequested();
 
 protected:
     // ---- the three seams ----
@@ -104,6 +124,12 @@ protected:
     virtual bool launchCommand(const WarpManager::SetupCommand &command, QString *error);
     virtual bool beginInstallStep(QString *error);
     virtual bool beginRegistrationStep(QString *error);
+    // How long the wizard waits when the daemon has just been (re)started and the next verb needs its
+    // socket: after the service step, and again before a retry of a refusal that named the daemon. A
+    // seam because a suite that waited the real interval in every scenario would be testing a clock, and
+    // because the number is not this dialog's to invent — it is the same one WarpManager's own
+    // preparation owes (serviceSettleMs()), read rather than copied so the two cannot drift.
+    virtual int serviceSettleMs() const;
 
     // How a step's work reports back. Protected rather than private because it is the other half of the
     // seam: a suite that overrides the launchers has to be able to answer them.
@@ -123,6 +149,17 @@ private:
     // from runStep() because a step can need two commands and only the step knows when it is finished.
     bool runStepCommand(const WarpManager::SetupStep &step);
     void advance();
+    // The second half of advance(), split out because a service restart inserts a wait between the two:
+    // the bar has moved, the next step has not been announced, and the gap belongs to the daemon rather
+    // than to the chain. Never slept — the timer fires on this dialog's own event loop, which is what
+    // keeps the window answerable (and Cancel pressable) for the length of it.
+    void finishAdvance();
+    void startSettle();
+    // Whether a refusal earns another attempt, and the pane's sentence about it if it does. One predicate
+    // for both shapes of failure — a command's own exit and the enrolment's verdict — because the cause is
+    // the same socket and the bound has to be the same too. Keyed on the daemon's own wording, so neither
+    // a genuine failure nor a refusal about something else is retried into a loop.
+    bool daemonRetryEarned(const QString &detail);
     // Ask the host again what it has, immediately after the step that changed the answer, and say what
     // came back. Its own method because the two halves — the rescan and the sentence about it — belong
     // together, and because a caller that rescans silently is how the next step ends up refused for a
@@ -147,6 +184,18 @@ private:
     WarpManager &m_manager;
     WarpInstaller *m_installer = nullptr;
     QProcess *m_process = nullptr;    // the command in flight, non-null only while it runs
+    // Everything the command in flight has said so far, accumulated rather than read at the end. The pane's
+    // own incremental handler drains the channel as it goes, so a failure detail taken from the buffer
+    // afterwards finds it empty and reports "exit 1 with no output" about a command that said exactly why
+    // it refused — which is the report this member exists to answer. MergedChannels already routes stderr
+    // into the same channel, so one accumulation is both streams and there is no second read to forget.
+    QString m_commandOutput;
+    // The gap a service restart owes the verb that follows it, and how many times a refusal that named the
+    // daemon has been asked again. Both bounded: the timer is single-shot and the retry count is capped by
+    // kDaemonRetryAttempts, so neither can turn a slow daemon into a wizard that never ends.
+    QTimer *m_settleTimer = nullptr;
+    bool m_settling = false;
+    int m_daemonRetries = 0;
     QList<WarpManager::SetupStep> m_steps;
     int m_index = -1;
     // Which command of the current step is running: a step can need two, because a service control

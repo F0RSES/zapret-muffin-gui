@@ -5213,9 +5213,18 @@ int main(int argc, char **argv)
                   "the answer a healthy client gives when its daemon is dead is recognised as one — this "
                   "is the transcript the daemon step was added for, and its first line read on its own is "
                   "an enrolment problem that no enrolment can fix");
-            check(WarpManager::daemonLooksDown(QStringLiteral(
-                      "WarpManager: failed to connect to the daemon")),
+            check(WarpManager::daemonLooksDown(QStringLiteral("WarpManager: failed to connect to the "
+                                                              "daemon")),
                   "so is a client that says plainly that it could not reach the socket");
+            // The clean-install transcript, and the reason this one is its own marker rather than a
+            // variant of the two above: the vendor's own name sits between the verb and the noun, so
+            // "connect to the daemon" does not match a line that says "connect to the CloudflareWARP
+            // daemon". A classifier that missed it would leave the wizard's new wait and retries looking
+            // for a refusal they never recognised.
+            check(WarpManager::daemonLooksDown(QStringLiteral(
+                      "Unable to connect to the CloudflareWARP daemon: No such file or directory")),
+                  "a cold daemon that has not re-opened its socket is recognised by the words the report "
+                  "came in with, not only by the phrasings the code was written against");
             check(!WarpManager::daemonLooksDown(QStringLiteral(
                       "2024-11-20T10:00:00.000Z warp-cli [INFO] Disconnected")),
                   "a status answer is not a complaint about the service");

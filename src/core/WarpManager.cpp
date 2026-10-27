@@ -400,6 +400,17 @@ QStringList WarpManager::serviceRestartArgs()
     return { QStringLiteral("restart"), serviceUnit() };
 }
 
+int WarpManager::serviceSettleMs()
+{
+    // One number, and two readers of it: this class's own preparation, and the setup wizard's chain,
+    // which restarts the same unit and then runs `warp-cli connect` as its next command. The gap is a
+    // fact about warp-svc rather than about either caller — systemd reports the unit active before the
+    // daemon has re-opened its control socket, and a verb issued in that window is answered with "Unable
+    // to connect to the CloudflareWARP daemon: No such file or directory" — so a second constant in the
+    // dialog would be a second opinion about how long the daemon takes, and the two would drift.
+    return kServiceSettleMs;
+}
+
 QStringList WarpManager::systemdEnableStartArgs()
 {
     // `enable --now` rather than a bare `start`: the second brings the daemon up until the next boot
@@ -445,6 +456,13 @@ bool WarpManager::daemonLooksDown(const QString &output)
         "is the daemon running",
         "connect to the daemon",     // "failed to connect to the daemon", "couldn't connect to…"
         "connection to the daemon",
+        // The spelling the clean-install report arrived in, verbatim:
+        //   Unable to connect to the CloudflareWARP daemon: No such file or directory
+        // Worth its own marker because the word between "connect to the" and "daemon" is the vendor's,
+        // so neither of the two phrasings above matches it — and this is the one answer that means the
+        // restart has not finished re-opening its socket yet, i.e. exactly the refusal worth waiting out
+        // rather than reporting.
+        "warp daemon",
         "daemon is unavailable",
         "warp-svc is not running",
         "warp-svc failed",
@@ -1566,7 +1584,7 @@ void WarpManager::startSettleWait()
         return;
     }
     setStage(Stage::Waiting);
-    m_settleTimer->start(kServiceSettleMs);
+    m_settleTimer->start(serviceSettleMs());
 }
 
 void WarpManager::finishPreparation(bool ok, const QString &why)

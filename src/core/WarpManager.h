@@ -325,6 +325,12 @@ public:
     static QStringList serviceRestartArgs();
     static QString serviceUnit();
 
+    // How long the daemon is given to come back after that restart before anything asks it for
+    // something. Public because the setup wizard restarts the same unit and then runs `warp-cli connect`
+    // as its next command: the gap is a fact about warp-svc, not about either caller, and a second
+    // constant on the other side of it is a second opinion that will drift. Timed, never slept.
+    static int serviceSettleMs();
+
     // ---- the daemon's own start, spelled once per service manager ----
     //
     // Every warp-cli verb is a client talking to warp-svc over a local socket, so a daemon that is not

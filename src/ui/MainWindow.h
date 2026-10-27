@@ -219,6 +219,15 @@ public:
     static bool mayConnectWarpAfterDelay(ModeSelection selection, bool startStillPending,
                                          bool bypassHeld);
 
+    // What the end of a WARP install does with the bypass. Two decisions, both about authorship rather
+    // than about what the pill shows: a bypass this window started for the install is given back, and a
+    // bypass that was already up — the Zapret + WARP case, where the user is running the path on purpose —
+    // is left alone and said about. The second input is not the selection, because the pill clamps a lit
+    // tunnel half onto a lit bypass half: zapret is always "selected" here, and asking it would make the
+    // borrow impossible to ever hand back.
+    static bool borrowsBypassForWarp(bool bypassUpOrRising, bool profilePicked);
+    static bool releasesBorrowedBypass(bool borrowed, bool bypassUpOrRising);
+
     // The look the chip and the ring wear while both halves are lit. Grouped in one struct because
     // the five things a state decides — the button's mode, its palette, the chip's word, the chip's
     // QSS token, and whether a press would be honoured — must come from one table: two renderers
@@ -383,6 +392,20 @@ public:
     {
         return m_warpStartPending || m_warpEnrollPending || m_warpPrepPending;
     }
+    // Borrow the bypass for the length of a WARP install, and give it back afterwards. Public because
+    // both have several callers already — the wizard, the install-only offer, the wizard's own release
+    // signal — and because the pair is the claim the suite has to be able to drive: nothing here can be
+    // proved about an install that has to be run for real.
+    //
+    // Both are no-ops when the state says so: nothing is borrowed from a bypass that is already up, and
+    // nothing is given back that this window did not start. Virtual for the usual reason in this class: a
+    // suite can only watch acts it can intercept.
+    virtual void borrowBypassForWarpInstall();
+    virtual void releaseBorrowedBypass();
+    // Whether this window is the reason a bypass is running. Readable for the same reason the flags above
+    // are: the claim is about what the window will do at the end of an install, and a test cannot watch a
+    // bool it cannot see.
+    bool zapretAutoStarted() const { return m_zapretAutoStarted; }
 
     // The WARP manager. Exposed for the same reason the power button is: its state — available,
     // disconnected, connected — is a claim the window makes on screen, and reading it off the
@@ -615,6 +638,10 @@ protected:
     // three seams are — proving which comes first must not require a payload, a daemon, or a root
     // prompt, none of which a headless suite has.
     virtual bool startBypass();       // the power button's own start path for the selected profile
+    // The one act of returning a borrowed bypass that needs a running payload: the teardown itself. The
+    // decision above it (was this ours, and is there anything to take down) is the part worth counting,
+    // so it stays in the base and this stays the seam.
+    virtual void takeDownBorrowedBypass();
     // Bring the tunnel up. Split into two because the half that makes it work is asynchronous: an
     // unenrolled client accepts `connect` and then never comes up, so this asks WarpManager to check
     // the enrolment first, and the tunnel is issued from the answer. Named as the request it is — a
@@ -956,6 +983,11 @@ private:
     // Whether the setup wizard is on screen. One at a time, because two wizards would race for the same
     // daemon, the same package database and the same root prompt.
     bool m_warpSetupOpen = false;
+    // The bypass this window started for the length of a WARP install, and nothing else. One bool rather
+    // than a saved snapshot of the selection, because the only thing it has to answer at the end is
+    // "was this me" — and a keep/borrow decision that read what the user's pill says instead would tear
+    // down a bypass on the way out that the user had since asked for by name.
+    bool m_zapretAutoStarted = false;
     QWidget *m_statusDot = nullptr;        // the 6 px chip beside the connection text
     QLabel *m_statusLabel = nullptr;       // "CONNECTED" and friends
     QLabel *m_footerLabel = nullptr;       // the ping cadence, or a transient message

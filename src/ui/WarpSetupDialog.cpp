@@ -35,6 +35,10 @@ constexpr int kFallbackCommandTimeoutMs = 120000;
 // one thing went wrong, and the pane is a summary — the tail is where the reason is.
 constexpr int kOutputTailChars = 400;
 constexpr int kErrorDetailChars = 300;
+// How much of one command's output is kept for the failure detail. Bounded because a package manager can
+// run for minutes and the detail is a tail: an accumulation with no limit is a string the size of the
+// whole install log, held for the sake of one sentence.
+constexpr int kOutputAccumulateChars = 8192;
 } // namespace
 
 WarpSetupDialog::WarpSetupDialog(WarpManager &manager, QWidget *parent)
@@ -151,6 +155,19 @@ void WarpSetupDialog::build()
     buttons->addWidget(m_close);
     column->addLayout(buttons);
 
+    // The gap a service step owes the verb that follows it. Single-shot and owned by this dialog: the wait
+    // is timed rather than slept for the same reason every command here is asynchronous — a modal window
+    // whose thread is inside a sleep is a window that cannot be cancelled, and the one thing a user can do
+    // during a wait is decide they no longer want it.
+    m_settleTimer = new QTimer(this);
+    m_settleTimer->setSingleShot(true);
+    connect(m_settleTimer, &QTimer::timeout, this, [this] {
+        if (!m_running || m_cancelled)
+            return;   // the wait outlived the wizard's interest in what followed it
+        m_settling = false;
+        finishAdvance();
+    });
+
     connect(m_start, &QPushButton::clicked, this, &WarpSetupDialog::startSetup);
     connect(m_cancel, &QPushButton::clicked, this, &WarpSetupDialog::onCancel);
     connect(m_close, &QPushButton::clicked, this, [this] {
@@ -202,6 +219,37 @@ bool WarpSetupDialog::logVisible() const
     return m_log && m_log->isVisible();
 }
 
+int WarpSetupDialog::serviceSettleMs() const
+{
+    // Read rather than copied. The core owns the number because it owns the fact being measured: how long
+    // warp-svc takes to re-open its control socket after systemd has already said the unit is active.
+    return WarpManager::serviceSettleMs();
+}
+
+bool WarpSetupDialog::owesSettleAfter(const QString &finishedStepId)
+{
+    // Both steps that move warp-svc, and only those. `systemctl enable --now` on a machine that has just
+    // installed the package is a COLD start — slower than the restart the automatic path performs, and
+    // followed immediately by the enrolment, which is the first verb to need the socket. `systemctl
+    // restart` is followed by the connect, which is the verb the field report found waiting for nobody:
+    // "Unable to connect to the CloudflareWARP daemon: No such file or directory". Every other step is
+    // either local to this machine or already waiting on something of its own, so a gap after one of them
+    // would be a pause with nothing behind it.
+    return finishedStepId == QLatin1String("daemon")
+           || finishedStepId == QLatin1String("service");
+}
+
+bool WarpSetupDialog::daemonRetryEarned(const QString &detail)
+{
+    if (m_daemonRetries >= kDaemonRetryAttempts || !WarpManager::daemonLooksDown(detail))
+        return false;
+    ++m_daemonRetries;
+    appendLog(LanguageManager::tr(QStringLiteral("warp.setup.retry_daemon"))
+                  .arg(m_daemonRetries)
+                  .arg(kDaemonRetryAttempts));
+    return true;
+}
+
 // ---- the chain ----
 
 void WarpSetupDialog::startSetup()
@@ -216,6 +264,11 @@ void WarpSetupDialog::startSetup()
     if (m_index < 0)
         m_index = 0;
     m_commandIndex = 0;
+    // A press the user makes by hand after a failure starts a fresh budget: the automatic retries exist to
+    // spare them a second click over a daemon that is still arriving, and having spent those attempts, a
+    // manual retry would otherwise get none — a wizard that refuses to wait out the socket a second time
+    // for a user who explicitly asked it to try.
+    m_daemonRetries = 0;
     m_running = true;
     m_cancelled = false;
 
@@ -238,6 +291,13 @@ void WarpSetupDialog::runStep()
         return;
     }
     const WarpManager::SetupStep step = m_steps.at(m_index);
+    // Announced before the step is launched rather than after it, and only for the connect: this is the
+    // moment a bypass borrowed for the install stops being needed. Everything the chain has done until
+    // here either talked to Cloudflare (the enrolment) or to this machine (the protocol verb, the service
+    // restart), and the connect that follows rides the tunnel itself — so a window that started zapret to
+    // get the package and the key past a blocked CDN takes it back down here, and not under a live verb.
+    if (step.id == QLatin1String("connect"))
+        emit bypassReleaseRequested();
     paintStatus();
 
     // Cancel is offered only where it can be honoured: a step whose work is a package manager cannot be
@@ -327,22 +387,35 @@ bool WarpSetupDialog::launchCommand(const WarpManager::SetupCommand &command, QS
     proc->setProcessChannelMode(QProcess::MergedChannels);
     proc->setProgram(program);
     proc->setArguments(args);
+    // Emptied per command rather than per dialog: the detail a failure reports has to be the words of the
+    // command that failed, and a leftover tail from the step before it is a diagnosis of the wrong thing.
+    m_commandOutput.clear();
     // Nothing is written to this child's stdin and the write channel is never closed here. The password
     // prompt of a privileged step belongs to a polkit agent in another window, not to this pipe, and
     // closing the channel is how a caller "helpfully" turns that prompt into an immediate EOF — which is
     // one of the two ways the automatic path was reported to stall.
     connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
-        const QString chunk = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
-        if (!chunk.isEmpty())
-            appendLog(chunk);
+        const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
+        // Kept as well as shown, and this is the whole of the fix for a failure that used to report "exit
+        // 1 with no output": reading the channel here drains it, so the finished handler below finds an
+        // empty buffer no matter how much the command explained itself. MergedChannels routes stderr into
+        // this same channel, which is why one accumulation covers both streams and there is no second read
+        // to remember — a separate readAllStandardError() here would return nothing at all.
+        m_commandOutput += chunk;
+        if (m_commandOutput.size() > kOutputAccumulateChars)
+            m_commandOutput = m_commandOutput.right(kOutputAccumulateChars);
+        const QString shown = chunk.trimmed();
+        if (!shown.isEmpty())
+            appendLog(shown);
     });
     connect(proc, &QProcess::finished, this, [this, proc](int exitCode, QProcess::ExitStatus status) {
         if (m_process != proc)
             return;
         m_process = nullptr;
-        const QString tail = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+        // Whatever arrived after the last readyRead, folded into the same accumulation.
+        m_commandOutput += QString::fromUtf8(proc->readAllStandardOutput());
         proc->deleteLater();
-        commandAnswered(exitCode, tail, status == QProcess::CrashExit);
+        commandAnswered(exitCode, m_commandOutput.trimmed(), status == QProcess::CrashExit);
     });
     connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError e) {
         // FailedToStart is the only error that never produces finished(); without this branch a command
@@ -453,11 +526,31 @@ void WarpSetupDialog::commandAnswered(int exitCode, const QString &output, bool 
             runStepCommand(step);
             return;
         }
+        // A refusal that names the daemon is worth asking again, and this is the one moment in the chain
+        // where that is a fact about the machine rather than an excuse: systemd reports warp-svc active
+        // before the daemon has re-opened its control socket, so the first verb after a start or a restart
+        // can reach a path with nothing behind it — "Unable to connect to the CloudflareWARP daemon: No
+        // such file or directory". The gap that follows is the same wait the service step owes, and the
+        // count is bounded, so a daemon that is genuinely absent earns a failure after the attempts rather
+        // than a wizard that never ends.
+        if (daemonRetryEarned(detail)) {
+            QTimer::singleShot(serviceSettleMs(), this, [this, step] {
+                if (!m_running || m_cancelled)
+                    return;
+                runStepCommand(step);   // m_commandIndex still names the command that refused
+            });
+            return;
+        }
         stepAnswered(false, detail);
         return;
     }
     if (!output.isEmpty())
         appendLog(output.right(kOutputTailChars));
+
+    // A command that answered ends the retry budget for this step: what a later step is waiting on is a
+    // later socket, and a count carried forward would leave the connect with fewer attempts than the
+    // protocol verb used up.
+    m_daemonRetries = 0;
 
     // One command of a step answered. A step with more than one — Windows' service stop and start — runs
     // its next; a step with one is finished and the chain moves on.
@@ -472,9 +565,23 @@ void WarpSetupDialog::stepAnswered(bool ok, const QString &detail)
     disconnect(m_registrationWatcher);
     disconnect(m_managerLogWatcher);
     if (!ok) {
+        // The same second chance the commands get, and for the same reason: the enrolment is the first
+        // verb the wizard asks of a daemon it may have started a moment ago, and the answer a cold-starting
+        // warp-svc gives then is about the service while the step is named for the device. Re-running the
+        // step is safe in a way a blind retry usually is not — ensureRegistered() reads the device before
+        // it touches it, so a retry after a refusal cannot issue a second key.
+        if (daemonRetryEarned(detail)) {
+            QTimer::singleShot(serviceSettleMs(), this, [this] {
+                if (!m_running || m_cancelled)
+                    return;
+                runStep();   // m_index has not moved, so this is the same step again
+            });
+            return;
+        }
         failStep(detail);
         return;
     }
+    m_daemonRetries = 0;
     // The step that just finished may have changed what this machine has, and the manager learned
     // everything it knows about the host when it was constructed — before that happened.
     if (m_index >= 0 && m_index < m_steps.size()
@@ -508,6 +615,40 @@ void WarpSetupDialog::advance()
     // The bar counts completed steps, so it moves when a step is done rather than when the next one
     // begins: a bar that filled on arrival would claim the work was finished before it started.
     m_progress->setValue(qMin(m_index + 1, m_progress->maximum()));
+    m_daemonRetries = 0;
+
+    // The gap the daemon owes, inserted between the step that moved the service and the step that asks it
+    // for something. Asked for rather than slept: the window stays answerable, Cancel stays pressable,
+    // and the wait is a line in the pane rather than a silence.
+    if (m_index >= 0 && m_index < m_steps.size()
+        && owesSettleAfter(m_steps.at(m_index).id)) {
+        startSettle();
+        return;
+    }
+    finishAdvance();
+}
+
+void WarpSetupDialog::startSettle()
+{
+    const int ms = serviceSettleMs();
+    if (ms <= 0) {
+        finishAdvance();   // a caller that asked for no wait still runs the chain the same way
+        return;
+    }
+    m_settling = true;
+    const QString sentence = LanguageManager::tr(QStringLiteral("warp.setup.settle"))
+                                 .arg(ms / 1000.0, 0, 'g', 2);
+    appendLog(sentence);
+    // The status line carries it too, because the bar has already counted the restart as finished and the
+    // next step has not been named yet: without a word here the pause is indistinguishable from a wizard
+    // that has stopped answering.
+    m_status->setText(sentence);
+    setStatusCode(QStringLiteral("setupStatus"));
+    m_settleTimer->start(ms);
+}
+
+void WarpSetupDialog::finishAdvance()
+{
     ++m_index;
     m_commandIndex = 0;
     runStep();
@@ -579,6 +720,11 @@ void WarpSetupDialog::onCancel()
 
     m_cancelled = true;
     m_running = false;
+    // A wait that is still counting down has nothing left to hand over, and letting it fire after the
+    // window has been answered would advance a chain the user just walked away from.
+    if (m_settleTimer)
+        m_settleTimer->stop();
+    m_settling = false;
     if (m_process) {
         m_process->disconnect(this);
         m_process->kill();
