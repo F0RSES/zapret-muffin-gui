@@ -4902,6 +4902,124 @@ int main(int argc, char **argv)
         check(WarpManager::disconnectArgs().contains(QStringLiteral("disconnect")),
               "disconnectArgs ends in `disconnect`");
 
+        // ---- the preparation, as data ----
+        //
+        // What a tunnel needs before `connect` can be asked for on a host whose provider interferes
+        // with the default transport, and what root it needs to ask. All of it is pinned as argv and as
+        // a plan rather than as a run: a suite that executed these would be restarting the warp-svc of
+        // the machine running the tests and rewriting that client's tunnel configuration, and a
+        // `sudo sysctl -w` in a test run would change a kernel setting for every host the tests touch.
+        check(WarpManager::tunnelProtocol() == QStringLiteral("MASQUE"),
+              "the transport this exists to switch to is named once, in one spelling");
+        {
+            const QStringList proto = WarpManager::protocolArgs();
+            check(proto.first() == QStringLiteral("--accept-tos"),
+                  "the protocol verb carries --accept-tos like every other warp-cli call, or it blocks "
+                  "on a prompt nobody can see");
+            check(proto.contains(QStringLiteral("tunnel")) && proto.contains(QStringLiteral("protocol"))
+                          && proto.contains(QStringLiteral("set")),
+                  "the verb is `tunnel protocol set`, which is what warp-cli calls it");
+            check(proto.last() == WarpManager::tunnelProtocol(),
+                  "…and the protocol is the last word of it, named by the one function");
+        }
+        check(WarpManager::serviceUnit() == QStringLiteral("warp-svc"),
+              "the unit restarted is the one the client's own package installs");
+        check(WarpManager::serviceRestartArgs()
+                      == (QStringList{QStringLiteral("restart"), QStringLiteral("warp-svc")}),
+              "the service step asks for exactly one action: restart");
+        check(WarpManager::ipv6CheckArgs().last()
+                      == QStringLiteral("net.ipv6.conf.all.disable_ipv6"),
+              "the IPv6 step names the one value it reads");
+        check(!WarpManager::ipv6CheckArgs().contains(QStringLiteral("-w")),
+              "…and reads it rather than writes it — Muffin does not change a system-wide kernel "
+              "setting on a user's behalf while they wait for a tunnel");
+
+        // ---- the plan, in order ----
+        //
+        // The order is the finding, so it is pinned as an order: protocol, then the read, then the
+        // restart. A plan that ran the restart first would pay a root prompt before it knew whether the
+        // protocol verb was even understood, and one that read IPv6 afterwards would report the host as
+        // the restart left it rather than as it was found.
+        const QList<WarpManager::PreparationStep> linuxSteps =
+            WarpManager::preparationSteps(Strategy::Platform::Linux);
+        QStringList linuxIds;
+        for (const WarpManager::PreparationStep &s : linuxSteps)
+            linuxIds << s.id;
+        check(linuxIds == (QStringList{QStringLiteral("masque"), QStringLiteral("ipv6"),
+                                       QStringLiteral("service")}),
+              "on Linux the preparation is the protocol, the read, then the restart — in that order");
+        check(!linuxSteps.isEmpty() && linuxSteps.at(0).program == WarpManager::warpCliProgram()
+                       && !linuxSteps.at(0).privileged
+                       && !linuxSteps.at(0).args.contains(QStringLiteral("systemctl")),
+              "the first step is a warp-cli call and needs no root");
+        int privileged = 0;
+        for (const WarpManager::PreparationStep &s : linuxSteps)
+            privileged += s.privileged ? 1 : 0;
+        check(privileged == 1,
+              "exactly one step asks for root, so exactly one prompt is raised per tunnel start instead "
+              "of one per thing the preparation knows about");
+        for (const WarpManager::PreparationStep &s : linuxSteps)
+            check(!s.fatal, QStringLiteral("no step is fatal: an older warp-cli that has never heard "
+                                           "of the protocol verb still carries a working tunnel, and so "
+                                           "does a host with no systemd (%1)").arg(s.id));
+        check(WarpManager::preparationSteps(Strategy::Platform::Windows).size() == 1,
+              "Windows prepares the protocol only — the stuck daemon is systemd's, and nobody agreed to "
+              "a UAC prompt on every tunnel start");
+        check(WarpManager::preparationSteps(Strategy::Platform::Unknown).isEmpty(),
+              "a platform with no client to reconfigure prepares nothing, and answers immediately "
+              "rather than pretending to work");
+
+        // ---- the elevation, composed and never guessed ----
+        {
+            QString program;
+            QStringList args;
+            QString err;
+            check(WarpManager::composeServiceRestart(QStringLiteral("/usr/bin/systemctl"),
+                                                     QStringLiteral("/usr/bin/pkexec"),
+                                                     /*alreadyRoot=*/false, &program, &args, &err),
+                  "a normal session composes a privileged restart");
+            check(program == QStringLiteral("/usr/bin/pkexec")
+                          && args
+                                 == (QStringList{QStringLiteral("/usr/bin/systemctl"),
+                                                 QStringLiteral("restart"),
+                                                 QStringLiteral("warp-svc")}),
+                  "…as pkexec + the resolved systemctl + the unit, with no shell in front of any of it "
+                  "— nothing here is a command line some code has to parse out of a string");
+            check(WarpManager::composeServiceRestart(QStringLiteral("/usr/bin/systemctl"), QString(),
+                                                     /*alreadyRoot=*/true, &program, &args, &err)
+                          && program == QStringLiteral("/usr/bin/systemctl")
+                          && args == WarpManager::serviceRestartArgs(),
+                  "already root runs systemctl directly, because pkexec from a root session is a prompt "
+                  "nobody is there to answer");
+            err.clear();
+            check(!WarpManager::composeServiceRestart(QStringLiteral("/usr/bin/systemctl"), QString(),
+                                                      /*alreadyRoot=*/false, &program, &args, &err)
+                          && program.isEmpty() && args.isEmpty()
+                          && err.contains(QStringLiteral("warp-svc")),
+                  "no pkexec is refused in words that name the unit, so the journal can say what to run "
+                  "by hand instead of losing the reason");
+            err.clear();
+            check(!WarpManager::composeServiceRestart(QString(), QStringLiteral("/usr/bin/pkexec"),
+                                                      /*alreadyRoot=*/true, &program, &args, &err),
+                  "a host with no systemctl has nothing to restart, and says that rather than inventing "
+                  "a different service command");
+        }
+
+        // ---- reading the one value the preparation reads ----
+        check(WarpManager::parseIpv6State(QStringLiteral("0")) == WarpManager::Ipv6::Enabled,
+              "a bare 0 under -n means IPv6 is enabled");
+        check(WarpManager::parseIpv6State(QStringLiteral("1")) == WarpManager::Ipv6::Disabled,
+              "…and a bare 1 means this host switched it off");
+        check(WarpManager::parseIpv6State(
+                      QStringLiteral("net.ipv6.conf.all.disable_ipv6 = 1"))
+                      == WarpManager::Ipv6::Disabled,
+              "the key-and-value form sysctl writes when it prints the key anyway is the same answer");
+        check(WarpManager::parseIpv6State(QString()) == WarpManager::Ipv6::Unknown
+                      && WarpManager::parseIpv6State(QStringLiteral("cannot open /proc/sys"))
+                                 == WarpManager::Ipv6::Unknown,
+              "nothing readable is Unknown, which the journal reports as not knowing rather than as a "
+              "finding about the machine");
+
         // ---- the status parser ----
         //
         // The Linux form: a timestamped log line ending in the state word.

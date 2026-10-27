@@ -508,6 +508,63 @@ const QVector<Row> &catalog()
             "无法设置 WARP——不会启动隧道",
             "Impossible de configurer WARP — le tunnel n'est pas lancé",
             "WARP सेट नहीं हो सका — टनल शुरू नहीं किया जा रहा"),
+        // ---- what the preparation says while it runs ----
+        //
+        // Three sentences for the three waits a tunnel start now contains. They exist because the
+        // preparation is the first step of this app that can take a minute of visible nothing — the
+        // service restart goes through a root prompt, and a program that has asked for a password is
+        // not a program that has frozen. Each one names the thing happening rather than promising an
+        // outcome, and the footer carries them so the answer to "what is it waiting on" is on screen
+        // rather than in the journal the user has to open to find out.
+        ROW("warp.prepare.protocol", "Переключаю WARP на протокол MASQUE…",
+            "Switching WARP to the MASQUE protocol…", "Cambiando WARP al protocolo MASQUE…",
+            "WARP wird auf das MASQUE-Protokoll umgestellt…", "正在将 WARP 切换到 MASQUE 协议…",
+            "Basculement de WARP vers le protocole MASQUE…",
+            "WARP को MASQUE प्रोटोकॉल पर बदला जा रहा है…"),
+        ROW("warp.prepare.service", "Перезапускаю службу WARP…", "Restarting the WARP service…",
+            "Reiniciando el servicio de WARP…", "WARP-Dienst wird neu gestartet…",
+            "正在重启 WARP 服务…", "Redémarrage du service WARP…",
+            "WARP सेवा फिर से शुरू की जा रही है…"),
+        ROW("warp.prepare.waiting", "Жду запуска службы WARP…",
+            "Waiting for the WARP service to come back…",
+            "Esperando a que el servicio de WARP se recupere…",
+            "Warten auf den WARP-Dienst…", "正在等待 WARP 服务恢复…",
+            "En attente du retour du service WARP…", "WARP सेवा के लौटने की प्रतीक्षा…"),
+        // The preparation was asked for and could not be completed. Distinct from enroll_failed, which
+        // is a device that could not be enrolled: this one is the machine not being made ready, and the
+        // tunnel is still attempted, so the sentence says what was skipped rather than that nothing
+        // happened.
+        ROW("warp.prepare_failed", "Muffin не смог полностью подготовить WARP — пробую подключить как есть",
+            "Muffin could not fully prepare WARP — trying to connect as it stands",
+            "Muffin no pudo preparar WARP por completo: intentando conectar tal cual",
+            "Muffin konnte WARP nicht vollständig vorbereiten — Versuch mit dem aktuellen Zustand",
+            "Muffin 无法完全准备 WARP——按现状尝试连接",
+            "Muffin n'a pas pu préparer entièrement WARP — connexion tentée en l'état",
+            "Muffin WARP को पूरी तरह तैयार नहीं कर सका — मौजूदा हालत में जोड़ने का प्रयास"),
+
+        // The tunnel was asked for and never came up, after the protocol was switched and the service
+        // restarted. The one case where the honest answer is that the problem is not in this program:
+        // the provider is the remaining suspect, and saying so saves the user from restarting Muffin
+        // forever over a tunnel their link will not carry.
+        ROW("warp.connect_timeout",
+            "WARP не поднялся за отведённое время. Протокол MASQUE установлен и служба перезапущена — "
+            "похоже, провайдер блокирует сам WARP. Проверьте, открывается ли Cloudflare на этом соединении",
+            "WARP did not come up in time. The MASQUE protocol was set and the service restarted, so "
+            "the provider appears to be blocking WARP itself — check whether Cloudflare is reachable "
+            "on this connection at all",
+            "WARP no se inició a tiempo. Se definió el protocolo MASQUE y se reinició el servicio, así "
+            "que todo indica que el proveedor bloquea WARP: comprueba si Cloudflare es alcanzable en "
+            "esta conexión",
+            "WARP kam nicht rechtzeitig hoch. MASQUE-Protokoll wurde gesetzt und der Dienst neu "
+            "gestartet — es bleibt, dass der Anbieter WARP selbst blockiert: prüfen Sie, ob Cloudflare "
+            "über diese Verbindung überhaupt erreichbar ist",
+            "WARP 未能按时启动。已设置 MASQUE 协议并重启服务——因此请检查你的网络服务商是否直接屏蔽了 Cloudflare",
+            "WARP ne s'est pas établi à temps. Le protocole MASQUE a été appliqué et le service "
+            "redémarré : le fournisseur bloque probablement WARP lui-même — vérifiez si Cloudflare est "
+            "accessible sur cette connexion",
+            "WARP समय पर नहीं आया। MASQUE प्रोटोकॉल सेट किया और सेवा फिर शुरू की — प्रतीत होता है "
+            "प्रदाता स्वयं WARP को रोक रहा है; जाँचें कि इस कनेक्शन पर Cloudflare पहुँच में है या नहीं"),
+
 
         // ---- the history and statistics page ----
         // The page's own voice: one aggregate the reader acts on, five column names, and the three words

@@ -141,6 +141,12 @@ constexpr int kHeaderBandPx = 64 + MainWindow::kWindowFrameMarginPx + MainWindow
 // rest of the session. One full budget plus room for the queued call to reach the worker.
 constexpr int kPingTestWatchdogMs = 26000;
 
+// How long one stage of the WARP preparation is left on the footer. Longer than the restart's own
+// likely duration, so the sentence does not vanish while its root prompt is still open, and short
+// enough that a stage the daemon has left behind is not still being announced over the tunnel's real
+// state.
+constexpr int kWarpStageHintMs = 8000;
+
 // The footer's standing line when nothing is being announced. The mock's "Updated every 5s".
 QString pingCadenceText(int seconds)
 {
@@ -1456,6 +1462,76 @@ void MainWindow::onWarpRegistrationFinished(bool ok)
                               LogPanel::Warn);
         return;
     }
+    // The enrolment settled, so the machine is now made ready for a tunnel: the protocol that gets
+    // WARP through where its default is blocked, and a restart of a daemon whose state goes stale when
+    // it came up while zapret was already rewriting the routing. Both before the connect and never
+    // after a failed one — a connect issued against a stuck warp-svc is answered forever.
+    prepareWarpEnvironment();
+}
+
+// The middle step of bringing the tunnel up, and the reason it is a step of its own: WarpManager runs
+// its sequence asynchronously, so "enrolled" and "able to connect" are two answers that arrive at two
+// moments, and the window has to be the one that holds the request across both.
+void MainWindow::prepareWarpEnvironment()
+{
+    if (!m_warp)
+        return;
+    // Armed before the call, not after it — and that order is a bug fixed rather than a style choice.
+    // WarpManager answers a host with nothing to prepare synchronously, from inside
+    // prepareEnvironment() itself, so a flag set on the way out would be raised over an answer that had
+    // already arrived, been refused by the guard as one nobody was waiting for, and the tunnel would
+    // never be asked for at all.
+    m_warpPrepPending = true;
+    QString err;
+    if (!m_warp->prepareEnvironment(&err)) {
+        // The sequence could not be begun at all. The preparation is the fix for a tunnel that will
+        // not come up, not a precondition of asking — so the connect still goes ahead, with the reason
+        // said first.
+        m_warpPrepPending = false;
+        if (m_log && !err.isEmpty())
+            m_log->appendLine(QStringLiteral("WarpManager: %1").arg(err), LogPanel::Warn);
+        startWarpTunnel();
+        return;
+    }
+}
+
+// Which part of the preparation the user is waiting on, said where they are looking. The footer carries
+// it because the footer is what the window shows while a tunnel half is lit; the journal gets the same
+// sentence because the footer is gone by the time anybody reads it.
+void MainWindow::onWarpStage(WarpManager::Stage stage)
+{
+    QString key;
+    switch (stage) {
+    case WarpManager::Stage::Protocol: key = QStringLiteral("warp.prepare.protocol"); break;
+    case WarpManager::Stage::Service:  key = QStringLiteral("warp.prepare.service"); break;
+    case WarpManager::Stage::Waiting:  key = QStringLiteral("warp.prepare.waiting"); break;
+    case WarpManager::Stage::Idle:
+        // The run is over. Whatever stands on the footer now is the status the window redraws for the
+        // tunnel's own state, and a fourth sentence about a finished preparation would only bury it.
+        return;
+    }
+    const QString text = LanguageManager::tr(key);
+    if (m_log)
+        m_log->appendLine(text, LogPanel::Info);
+    showTransientMessage(text, kWarpStageHintMs);
+}
+
+// The preparation answered. Both paths issue the connect; what differs is whether the journal says the
+// machine was made ready or that Muffin had to try anyway.
+void MainWindow::onWarpPreparationFinished(bool ok)
+{
+    if (!m_warpPrepPending)
+        return;   // an answer to a request this window is no longer making
+    m_warpPrepPending = false;
+
+    // The same re-check onWarpRegistrationFinished() makes, for the same reason: the restart and its
+    // root prompt take long enough that the user can have turned the tunnel half dark while watching
+    // it. A connect issued for a half nobody is lit on is the window acting on a withdrawn request.
+    if (!m_selection.warp)
+        return;
+    if (!ok && m_log)
+        m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.prepare_failed")),
+                          LogPanel::Warn);
     startWarpTunnel();
 }
 
@@ -1662,6 +1738,13 @@ void MainWindow::wire()
     // issued at all — connectWarp() asks, and this is the only way back to a connect.
     connect(m_warp, &WarpManager::registrationChanged, this, &MainWindow::onWarpRegistrationChanged);
     connect(m_warp, &WarpManager::registrationFinished, this, &MainWindow::onWarpRegistrationFinished);
+    // The preparation pair, wired where the enrolment pair is: the stages belong to the manager's
+    // sequence rather than to the press that started it, so a handler that outlives the request is the
+    // only correct home for them. stageChanged is what puts a sentence on the footer while a root
+    // prompt is open; preparationFinished is the second of the two answers a connect waits on.
+    connect(m_warp, &WarpManager::stageChanged, this, &MainWindow::onWarpStage);
+    connect(m_warp, &WarpManager::preparationFinished, this,
+            &MainWindow::onWarpPreparationFinished);
     // The third of the object's answers, and the one that decides whether an offer is ever made:
     // installationChanged() arrives when the host has finished saying whether it owns a WARP package
     // this process cannot run. Connected once, here, for the same reason as the pair above — the
@@ -2371,8 +2454,17 @@ void MainWindow::renderCombinedLook(IZapretBackend::State zapret, WarpManager::S
 
     if (m_power)
         m_power->setPalette(look.palette);
-    if (m_statusLabel)
-        setConnectionChip(look.chipText, look.chipKind);
+    if (m_statusLabel) {
+        // The chip speaks for the layer a press would act on, which is zapret's whenever the tunnel is
+        // not up — but this function only runs while the tunnel half is lit, and a header that then
+        // says CONNECTED is the reported bug exactly: the tunnel was off, the bypass was on, and the
+        // one word on screen described the wrong one of the two. So a tunnel that is not held names
+        // itself, and zapret's verdict keeps the power ring and the tooltip, where an idle tunnel does
+        // not crowd it out.
+        const bool tunnelHeld = isTunnelHeld(tunnel);
+        setConnectionChip(tunnelHeld ? look.chipText : connectionText(tunnel),
+                          tunnelHeld ? look.chipKind : statusKind(tunnel));
+    }
 
     if (m_power) {
         m_power->setMode(look.mode);

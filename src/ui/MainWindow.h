@@ -584,6 +584,11 @@ protected:
     // caller having to know the two are separate round trips. This is the seam that actually reaches
     // warp-cli, so a suite that wants to prove the ordering can record this instead of running it.
     virtual void startWarpTunnel();
+    // The step between "this device is enrolled" and "bring the tunnel up": put the machine into a
+    // state where a connect can actually come up. Virtual for the same reason its two neighbours are —
+    // the ordering across three asynchronous answers is the claim, and it is only provable by a suite
+    // that can watch the acts instead of running them.
+    virtual void prepareWarpEnvironment();
     // Whether the bypass is up, or on its way up and not being taken down. The wait's guard reads this
     // rather than the manager directly, so the delay can be proved to withhold a connect over a run
     // that never came up — the one failure the three seconds exist for.
@@ -646,6 +651,15 @@ private slots:
     // The enrolment check answered. True means the device is enrolled and the tunnel can be asked for;
     // false means it is not and no connect is issued behind it — see WarpManager::ensureRegistered().
     void onWarpRegistrationFinished(bool ok);
+    // The machine is being made ready for a tunnel: the MASQUE switch, the IPv6 read, the service
+    // restart. Every stage is said in the journal and in the footer, because this is the first step of
+    // the start sequence that can spend a minute visibly doing nothing — a root prompt on screen with a
+    // button that has stopped moving is the exact thing that makes a user kill a working program.
+    void onWarpStage(WarpManager::Stage stage);
+    // The preparation answered. A tunnel is asked for either way — a machine that could not be fully
+    // prepared may still carry a working daemon, and the sentence that says what was skipped is more
+    // useful than a start refused on principle — but never for a request the user has withdrawn.
+    void onWarpPreparationFinished(bool ok);
     void onStrategyStarted(const QString &id, const QString &name);
     void onStrategyStopped();
     void onLogMessage(const QString &line, int level);
@@ -874,6 +888,11 @@ private:
     // honoured twice if the user pressed again while the check ran, and a half the user turned back off
     // during it is a connect owed to nobody.
     bool m_warpEnrollPending = false;
+    // The same flag for the preparation that follows the enrolment. Kept apart rather than folded into
+    // one "start is on its way" bool because the two answers arrive through different signals, and a
+    // single flag could not tell a late enrolment answer from a late preparation answer — which is how
+    // a withdrawn request gets a tunnel issued behind it anyway.
+    bool m_warpPrepPending = false;
     int m_warpStartDelayMs = kWarpStartDelayMs;
 
     // Puts the Cloudflare WARP client on a host that has none, when the user picks the WARP half of the

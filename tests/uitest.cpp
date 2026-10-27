@@ -4222,10 +4222,17 @@ public:
     bool enrolmentStarts = true;
 
     int ensureCalls = 0;
+    int prepareCalls = 0;
     int startCalls = 0;
     int stopCalls = 0;
     int refreshCalls = 0;
     bool polling = false;
+    // Whether the preparation can be begun at all, and whether it answers on the spot. The second flag
+    // defaults to yes because the ordering scenarios here are about *which acts ran in which order*,
+    // and a preparation that completes inside its own call keeps every one of those assertions about
+    // the press intact. A scenario that wants to watch the gap between the two answers turns it off.
+    bool preparationStarts = true;
+    bool preparationAnswersImmediately = true;
 
     // Overridden without default arguments on purpose: the base's defaults belong to the base, and a
     // caller reaching this object through a WarpManager* keeps taking them from there.
@@ -4244,6 +4251,25 @@ public:
                 *error = QStringLiteral("warp-cli is not installed on this host");
             return false;
         }
+        return true;
+    }
+
+    // The preparation between the enrolment and the connect. Counted like the two verbs either side of
+    // it, because what the scenarios assert is that a tunnel is asked for after the machine was made
+    // ready — so the default answer is "ready, immediately", and the one scenario that wants the gap
+    // turns that off and hands out preparationFinished() itself.
+    bool prepareEnvironment(QString *error) override
+    {
+        ++prepareCalls;
+        if (log)
+            log->record(QStringLiteral("prepareEnvironment"));
+        if (!preparationStarts) {
+            if (error)
+                *error = QStringLiteral("warp-cli is not installed on this host");
+            return false;
+        }
+        if (preparationAnswersImmediately)
+            emit preparationFinished(true);
         return true;
     }
 
@@ -4287,6 +4313,14 @@ public:
     // handed out by hand. A scenario decides when the enrolment has settled; nothing here waits.
     void answerReading(Registration reading) { emit registrationChanged(reading); }
     void answerFinished(bool ok) { emit registrationFinished(ok); }
+    // The second of the two answers a connect waits on, for the scenario that turned
+    // preparationAnswersImmediately off.
+    void answerPreparation(bool ok) { emit preparationFinished(ok); }
+    // The stage announcements, handed out the same way the two verdicts are.
+    void answerStage(Stage stage) { emit stageChanged(stage); }
+    // The daemon's own answer, for a scenario that needs the window to repaint from a state rather than
+    // to cause one. Emitted here because a signal of another object cannot be raised from outside it.
+    void emitState(State s) { reported = s; emit stateChanged(s); }
 };
 
 // The window under test: the same class, with the acts that would need a payload, a root prompt or a
@@ -4472,12 +4506,109 @@ static void testWarpEnrolmentWiring()
               "a settled enrolment is answered with the connect it was waiting for");
         check(f.log.acts == (QStringList{QStringLiteral("startBypass"),
                                          QStringLiteral("ensureRegistered"),
+                                         QStringLiteral("prepareEnvironment"),
                                          QStringLiteral("start")}),
-              "…and the connect came last: the ordering is the whole claim of connectWarp(), and two "
-              "counters that agreed would also have agreed about it being issued first");
+              "…and the connect came last, after the machine was made ready: the ordering is the whole "
+              "claim of connectWarp(), and two counters that agreed would also have agreed about it "
+              "being issued first");
         f.warp->answerFinished(true);
         check(f.warp->startCalls == 1,
               "one request earns one tunnel, not one connect per answer that happens to arrive");
+    }
+
+    // ---- the preparation is a step the user can see ----
+    //
+    // The scenario this fix introduces: between "this device is enrolled" and "bring the tunnel up"
+    // there is now a stretch of seconds in which the program is waiting on a root prompt. Nothing on
+    // the dashboard moves during it, so what is checked here is not the ordering — the scenario above
+    // covers that — but whether the window has anything at all to show while the machine is being made
+    // ready. A user given no answer to "what is it doing" has one sane move left: kill it.
+    {
+        EnrolmentFixture f(store);
+        f.warp->preparationAnswersImmediately = false;   // hold the answer open, as a restart does
+        f.press();
+        f.warp->answerFinished(true);
+        check(f.warp->prepareCalls == 1,
+              "a settled enrolment is followed by a request to prepare the machine");
+        check(f.warp->startCalls == 0,
+              "…and no tunnel is asked for while that is still outstanding — the restart is a step "
+              "rather than a hope precisely because a connect issued first is never answered");
+
+        QLabel *footer = f.window->findChild<QLabel *>(QStringLiteral("footerHint"));
+        check(footer != nullptr, "the footer is reachable by name to be read");
+        const int linesBefore = f.window->logPanel()->storedLineCount();
+        f.warp->answerStage(WarpManager::Stage::Service);
+        const QString restarting = LanguageManager::tr(QStringLiteral("warp.prepare.service"));
+        check(f.window->logPanel()->storedLineCount() == linesBefore + 1
+                      && f.window->logPanel()->view()->toPlainText().contains(restarting),
+              "a restart in progress is named in the journal, not left as a still button");
+        check(footer && footer->text() == restarting,
+              "…and on the footer, which is the part of the window the user is actually looking at");
+
+        f.warp->answerStage(WarpManager::Stage::Idle);
+        check(f.window->logPanel()->storedLineCount() == linesBefore + 1,
+              "the closing Idle announces nothing — a finished preparation has no business overwriting "
+              "the tunnel's own status with a fourth sentence");
+
+        f.warp->answerPreparation(true);
+        check(f.warp->startCalls == 1,
+              "and the connect is issued the moment the machine is said to be ready");
+    }
+
+    // ---- a machine that could not be prepared is still asked to connect ----
+    //
+    // The preparation is the fix for a tunnel that will not come up, not a precondition of asking: a
+    // host with no pkexec, or a user who declined the prompt, may still be a host whose daemon is
+    // perfectly stuck-free. Refusing there would turn an unavailable optimisation into a tunnel that
+    // cannot be started at all — and would say so only in a journal nobody had opened yet.
+    {
+        EnrolmentFixture f(store);
+        f.warp->preparationAnswersImmediately = false;
+        f.press();
+        f.warp->answerFinished(true);
+        const int linesBefore = f.window->logPanel()->storedLineCount();
+        f.warp->answerPreparation(false);
+        check(f.warp->startCalls == 1, "a preparation that could not finish still issues the connect");
+        check(f.window->logPanel()->storedLineCount() == linesBefore + 1
+                      && f.window->logPanel()->view()->toPlainText().contains(
+                             LanguageManager::tr(QStringLiteral("warp.prepare_failed"))),
+              "…and says that it is trying without having prepared, so the attempt and the skipped fix "
+              "stay distinguishable after the fact");
+    }
+
+    // ---- the header speaks for the tunnel while the tunnel half is lit ----
+    //
+    // The reported bug was "the WARP button is blue but nothing connects, and the terminal says
+    // warp=off". With the tunnel down the chip borrowed the bypass's word, and for a running zapret
+    // that word is CONNECTED — so the one sentence on screen described the wrong subsystem while the
+    // half the user had lit was the one that had failed.
+    //
+    // Which of these assertions carries that weight, and which cannot: a suite here cannot bring a real
+    // payload up (pkexec, a live queue), so the bypass stays Stopped and a Stopped zapret's own word is
+    // OFFLINE — the same word the tunnel wants when it is down. The Disconnected pair below is therefore
+    // stated for completeness, and the assertion that actually bites is the Error one: it is the case
+    // where the borrowed word and the true one cannot agree. Verified by reversing the fix — with the
+    // old mapping this section fails on the Error check and nothing else.
+    {
+        EnrolmentFixture f(store);
+        QLabel *chip = f.window->findChild<QLabel *>(QStringLiteral("statusText"));
+        check(chip != nullptr, "the header chip is reachable by name to be read");
+        if (chip) {
+            f.warp->emitState(WarpManager::State::Connected);
+            const QString up = chip->text();
+            f.warp->emitState(WarpManager::State::Disconnected);
+            check(up == QStringLiteral("CONNECTED"),
+                  "a tunnel that is up is allowed the word it earns");
+            check(chip->text() != up && chip->text() == QStringLiteral("OFFLINE"),
+                  QStringLiteral("…and one that is not up says that instead, whatever the bypass is "
+                                 "doing (the chip now reads %1)").arg(chip->text()));
+            check(chip->property("statusKind").toString() == QStringLiteral("stopped"),
+                  "…with the dot agreeing with the word, so the pair cannot describe two states at once");
+            f.warp->emitState(WarpManager::State::Error);
+            check(chip->text() == QStringLiteral("ERROR")
+                          && chip->property("statusKind").toString() == QStringLiteral("error"),
+                  "a failed verb is named as the failure it is, not inherited from the other layer");
+        }
     }
 
     // ---- an answer to a request this window never made ----

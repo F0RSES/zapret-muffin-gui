@@ -1,3 +1,4 @@
+#include "PrivilegeHelper.h"
 #include "WarpManager.h"
 
 #include "ZapretSource.h"
@@ -28,6 +29,30 @@ constexpr int kVerbTimeoutMs = 30000;
 constexpr int kVersionTimeoutMs = 3000;
 // …and the same reasoning applies per package database, of which a round asks at most four.
 constexpr int kProbeTimeoutMs = 2000;
+
+// ---- the preparation's own clocks ----
+//
+// The protocol verb is a warp-cli talking to the daemon over a local socket: normally instant, and
+// given the same budget as any other verb so a daemon that will not answer is caught rather than
+// waited on.
+constexpr int kProtocolTimeoutMs = kVerbTimeoutMs;
+// The IPv6 read is a sysctl of one value. Two seconds is generous, and a host with no sysctl answers
+// by not answering at all, which the step treats as "unknown" rather than as a finding.
+constexpr int kIpv6TimeoutMs = 2000;
+// The service restart is the one step a human may have to authorise, so its deadline has to be a
+// polite one: pkexec sits waiting for a polkit agent while nobody is looking at the keyboard, and a
+// prompt killed at thirty seconds reads as a program that has broken. A minute is long enough to
+// type a password into and short enough that an unattended prompt still ends.
+constexpr int kServiceTimeoutMs = 60000;
+// How long the daemon is given to come back after a restart before the tunnel is asked for it.
+// systemd reports the unit active before warp-svc has re-opened its control socket, and a connect
+// issued in that window is answered by nothing at all — the same silent failure this whole sequence
+// exists to remove, reproduced by our own fix. Timed, never slept: this fires on the event loop.
+constexpr int kServiceSettleMs = 1500;
+// How long a connect is allowed to stay "Connecting" before the journal says what that usually
+// means. The daemon's own handshake on a working host is a couple of seconds; the case worth
+// naming is the one where it never finishes because the provider is interfering with the transport.
+constexpr int kConnectDeadlineMs = 15000;
 
 } // namespace
 
@@ -342,6 +367,127 @@ QByteArray WarpManager::termsAnswer()
     return QByteArrayLiteral("y\n");
 }
 
+// ---- the preparation, as data ----
+
+QString WarpManager::tunnelProtocol()
+{
+    // One spelling for the transport that gets WARP through where its default does not. Named by a
+    // function rather than written inline because the argv, the journal line and the test all have to
+    // say the same word.
+    return QStringLiteral("MASQUE");
+}
+
+QStringList WarpManager::protocolArgs()
+{
+    return { QStringLiteral("--accept-tos"), QStringLiteral("tunnel"),
+             QStringLiteral("protocol"), QStringLiteral("set"), tunnelProtocol() };
+}
+
+QString WarpManager::serviceUnit()
+{
+    // The systemd unit the client's own package installs and names after itself.
+    return QStringLiteral("warp-svc");
+}
+
+QStringList WarpManager::serviceRestartArgs()
+{
+    return { QStringLiteral("restart"), serviceUnit() };
+}
+
+QStringList WarpManager::ipv6CheckArgs()
+{
+    // `-n` prints the value alone, which is what parseIpv6State() reads. Asking rather than setting:
+    // see prepareEnvironment() for why this one is a check and not a fix.
+    return { QStringLiteral("-n"), QStringLiteral("net.ipv6.conf.all.disable_ipv6") };
+}
+
+WarpManager::Ipv6 WarpManager::parseIpv6State(const QString &sysctlOutput)
+{
+    // The kernel's own spelling is "<key> = 0" when sysctl printed the key anyway, and a bare "0" or
+    // "1" under `-n`. Both are read, because a host that printed the key is not a host whose IPv6
+    // state we should then claim not to know. Anything else — an empty answer, an error sentence, a
+    // value that is neither digit — is Unknown, which the journal reports as "could not tell" rather
+    // than as a finding about the machine.
+    const QString t = sysctlOutput.trimmed();
+    if (t.isEmpty())
+        return Ipv6::Unknown;
+    const QString value = t.contains(QLatin1Char('=')) ? t.section(QLatin1Char('='), 1).trimmed() : t;
+    if (value == QLatin1String("1"))
+        return Ipv6::Disabled;      // disable_ipv6=1 means this host switched IPv6 off
+    if (value == QLatin1String("0"))
+        return Ipv6::Enabled;
+    return Ipv6::Unknown;
+}
+
+QList<WarpManager::PreparationStep> WarpManager::preparationSteps(Strategy::Platform platform)
+{
+    // Linux carries the whole sequence: the transport that survives a hostile provider, the read that
+    // explains why a MASQUE tunnel may still not come up, and the restart that clears the daemon's
+    // stale state.
+    //
+    // The order is the finding, not a preference. Protocol first because it is free, unprivileged and
+    // warp-cli's own verb — if the daemon is reachable at all, this lands before anything heavier
+    // runs. IPv6 second because it is a read, and reading before a restart means the journal's line
+    // about the host describes the host as it was, not as the restart left it. Service last because it
+    // is the step that can prompt a human for a password, and nothing that need not wait behind it
+    // should be made to.
+    QList<PreparationStep> steps;
+    if (platform == Strategy::Platform::Linux || platform == Strategy::Platform::Windows) {
+        steps.append({ QStringLiteral("masque"), warpCliProgram(), protocolArgs(),
+                       /*privileged=*/false, /*fatal=*/false, kProtocolTimeoutMs });
+    }
+    if (platform != Strategy::Platform::Linux) {
+        // Windows gets the protocol step and nothing else: the stuck-daemon state is systemd's, and
+        // the equivalent here would be `sc stop`/`sc start` on the service — a UAC prompt on every
+        // tunnel start, which is a cost nobody agreed to pay for a problem not observed on this
+        // platform. Unknown gets neither step, because there is no client to reconfigure.
+        return steps;
+    }
+    steps.append({ QStringLiteral("ipv6"), QStringLiteral("sysctl"), ipv6CheckArgs(),
+                   /*privileged=*/false, /*fatal=*/false, kIpv6TimeoutMs });
+    steps.append({ QStringLiteral("service"), QStringLiteral("systemctl"), serviceRestartArgs(),
+                   /*privileged=*/true, /*fatal=*/false, kServiceTimeoutMs });
+    return steps;
+}
+
+bool WarpManager::composeServiceRestart(const QString &systemctlPath, const QString &pkexecPath,
+                                        bool alreadyRoot, QString *program, QStringList *args,
+                                        QString *error)
+{
+    auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!program || !args)
+        return fail(QStringLiteral("WarpManager: composeServiceRestart() needs somewhere to write"));
+    program->clear();
+    args->clear();
+
+    // No systemctl means no systemd: this is a host the restart cannot be performed on, said plainly
+    // rather than worked around — the alternative is guessing at `service restart` for a unit that may
+    // not exist there either.
+    if (systemctlPath.isEmpty())
+        return fail(QStringLiteral("WarpManager: this host has no systemctl, so %1 cannot be "
+                                   "restarted before the tunnel is asked for").arg(serviceUnit()));
+    if (!alreadyRoot && pkexecPath.isEmpty())
+        return fail(QStringLiteral("WarpManager: restarting %1 needs root, and pkexec is not "
+                                   "installed. Run Muffin as root, or restart the service by hand: "
+                                   "systemctl restart %1").arg(serviceUnit()));
+
+    // The gate WarpInstaller::composeLinuxInstall(), MuffinInstallHelper::composePromote() and
+    // LinuxBackend all apply: pkexec from a session that is already root is a prompt nobody is there
+    // to answer, not an extra permission.
+    if (alreadyRoot) {
+        *program = systemctlPath;
+        *args = serviceRestartArgs();
+        return true;
+    }
+    *program = pkexecPath;
+    *args = QStringList{ systemctlPath } + serviceRestartArgs();
+    return true;
+}
+
 WarpManager::State WarpManager::parseStatus(const QString &raw, bool wasConnectAttempt)
 {
     // warp-cli's status answer is a single line ending in a state word, wrapped in an ISO
@@ -501,13 +647,26 @@ WarpManager::WarpManager(QObject *parent)
     m_pollTimer->setInterval(kPollIntervalMs);
     m_pollTimer->setTimerType(Qt::CoarseTimer);
     connect(m_pollTimer, &QTimer::timeout, this, [this]() {
-        // A poll is not a user request — if a verb is already in flight, drop this tick rather
-        // than queueing a second warp-cli behind it and having the pair disagree about the state.
+        // A poll is not a user request — if a verb is already in flight, drop this tick rather than
+        // queueing a second warp-cli behind it and having the pair disagree about the state.
         if (m_process)
             return;
         QString err;
         refresh(&err);
     });
+
+    // The preparation's two clocks. Single-shot both: the settle gap is owed once per restart, and a
+    // connect gets one deadline per request rather than a repeating reminder every fifteen seconds.
+    m_settleTimer = new QTimer(this);
+    m_settleTimer->setSingleShot(true);
+    connect(m_settleTimer, &QTimer::timeout, this, [this] {
+        finishPreparation(true, QString());
+    });
+
+    m_connectDeadline = new QTimer(this);
+    m_connectDeadline->setSingleShot(true);
+    m_connectDeadline->setTimerType(Qt::CoarseTimer);
+    connect(m_connectDeadline, &QTimer::timeout, this, &WarpManager::onConnectDeadline);
 
     rescanAvailability();
 }
@@ -794,7 +953,12 @@ void WarpManager::stopInstallationProbe()
 
 bool WarpManager::start(QString *error)
 {
-    return startVerb(connectArgs(), State::Connecting, true, error);
+    if (!startVerb(connectArgs(), State::Connecting, true, error))
+        return false;
+    // The request was accepted, which is not the same as the tunnel being up — and the difference is
+    // the exact shape of the failure this whole half was written for. Give it a deadline to say so.
+    armConnectDeadline();
+    return true;
 }
 
 bool WarpManager::stop(QString *error)
@@ -950,6 +1114,10 @@ void WarpManager::finishRegistration(bool ok, const QString &why)
     if (!ok)
         emit logMessage(QStringLiteral("WarpManager: %1").arg(why), 2);
     emit registrationFinished(ok);
+    // The caller's slot may already have started the preparation from inside that signal. This is for
+    // the other case — a preparation that queued itself before the enrolment ever ran — which would
+    // otherwise be stranded by the sequence it was waiting for having finished without a pump.
+    runQueuedPreparation();
 }
 
 void WarpManager::runQueuedRegistration()
@@ -960,12 +1128,255 @@ void WarpManager::runQueuedRegistration()
     runRegistrationShow();
 }
 
+void WarpManager::runQueuedPreparation()
+{
+    if (!m_prepQueued || m_prepRunning || m_process)
+        return;
+    // Enrolment first, always: restarting the daemon in the middle of a `registration new` would cost
+    // the key that call is in the process of obtaining. Staying queued is the answer, and
+    // finishRegistration() pumps this again when the sequence ahead of it has answered.
+    if (m_regRunning || m_regQueued)
+        return;
+    m_prepQueued = false;
+    m_prepIndex = 0;
+    runPreparationStep();
+}
+
+void WarpManager::runQueuedSequences()
+{
+    // One pump for both deferred sequences. Two callers each pumping only their own is how a
+    // preparation queued behind an enrolment is forgotten the moment the enrolment finishes — which
+    // leaves a connect issued without the MASQUE switch and the restart, the exact hang this half
+    // exists to prevent.
+    runQueuedRegistration();
+    runQueuedPreparation();
+}
+
+// ---- the preparation sequence ----
+
+bool WarpManager::prepareEnvironment(QString *error)
+{
+    m_prepSteps = preparationSteps(ZapretSource::hostPlatform());
+    m_prepIndex = 0;
+    m_prepRestarted = false;
+    if (m_prepSteps.isEmpty()) {
+        // Nothing to do is not a failure to do it. A host with no client to reconfigure answers
+        // immediately and lets the caller on to its connect; the journal stays quiet, because a
+        // sentence about a no-op at every tunnel start is noise that teaches nobody to read it.
+        if (error)
+            error->clear();
+        emit preparationFinished(true);
+        return true;
+    }
+    if (!m_available) {
+        if (error)
+            *error = QStringLiteral("WarpManager: warp-cli is not installed on this machine.");
+        return false;
+    }
+    // Already on its way: joining the run is the right answer, and a second restart queued behind the
+    // first would restart a service that has not had the chance to come back up yet.
+    if (m_prepRunning)
+        return true;
+    if (m_process) {
+        // A poll, a verb or the enrolment holds the slot. Deferring is not dropping.
+        m_prepQueued = true;
+        return true;
+    }
+    return runPreparationStep();
+}
+
+bool WarpManager::runPreparationStep()
+{
+    if (m_prepIndex >= m_prepSteps.size()) {
+        startSettleWait();
+        return true;
+    }
+    const PreparationStep step = m_prepSteps.at(m_prepIndex);
+    m_prepRunning = true;
+
+    QString err;
+    QString program;
+    QStringList args;
+    if (step.privileged) {
+        // Resolved here rather than stored in the plan, because "where is pkexec" is a fact about the
+        // host at the moment the step runs, not about its platform.
+        const QString target = QStandardPaths::findExecutable(step.program);
+        const QString pkexec = QStandardPaths::findExecutable(QStringLiteral("pkexec"));
+        QString stepError;
+        if (!composeServiceRestart(target, pkexec, PrivilegeHelper::isElevated(), &program, &args,
+                                   &stepError)) {
+            // Non-fatal by design: the protocol step has already run, and a host whose daemon is not
+            // stuck connects anyway. Saying so once and continuing beats refusing a tunnel because one
+            // of two fixes could not be applied — and beats a second prompt behind a refused first.
+            emit logMessage(stepError, 1);
+            ++m_prepIndex;
+            return runPreparationStep();
+        }
+    } else {
+        // warp-cli by the resolved path (an MSI install is off PATH), everything else by PATH — and a
+        // program that is not there is skipped with a word, never guessed at another name for.
+        program = step.program == warpCliProgram()
+            ? (m_program.isEmpty() ? warpCliProgram() : m_program)
+            : QStandardPaths::findExecutable(step.program);
+        args = step.args;
+        if (program.isEmpty()) {
+            emit logMessage(QStringLiteral("WarpManager: %1 is not available on this host — skipping "
+                                            "the %2 step").arg(step.program, step.id), 1);
+            ++m_prepIndex;
+            return runPreparationStep();
+        }
+    }
+
+    setStage(step.id == QLatin1String("masque") ? Stage::Protocol
+                                                : Stage::Service);
+    const PreparationStep captured = step;
+    if (!startStep(program, args, step.timeoutMs, m_state, /*wasConnectAttempt=*/false, &err,
+                   QByteArray(),
+                   [this, captured](const QString &out, int code, bool crashed) {
+                       onPreparationStepAnswered(captured, out, code, crashed);
+                   })) {
+        finishPreparation(false, err);
+        return false;
+    }
+    return true;
+}
+
+void WarpManager::onPreparationStepAnswered(const PreparationStep &step, const QString &out,
+                                            int exitCode, bool crashed)
+{
+    const bool failed = crashed || exitCode != 0;
+
+    if (step.id == QLatin1String("ipv6")) {
+        // A read rather than a change, so its answer is a sentence and not a verdict. Reported
+        // whatever it says: "could not tell" and "IPv6 is switched off here" are the two things a user
+        // staring at a tunnel that will not come up can actually act on.
+        const Ipv6 state = parseIpv6State(out);
+        if (state == Ipv6::Disabled) {
+            emit logMessage(QStringLiteral("WarpManager: this host has IPv6 switched off "
+                                           "(net.ipv6.conf.all.disable_ipv6=1), which a MASQUE tunnel "
+                                           "often needs. Muffin does not change a system-wide setting "
+                                           "on your behalf; to try it: sudo sysctl -w "
+                                           "net.ipv6.conf.all.disable_ipv6=0"), 1);
+        } else if (state == Ipv6::Enabled) {
+            emit logMessage(QStringLiteral("WarpManager: IPv6 is enabled on this host"), 0);
+        } else {
+            emit logMessage(QStringLiteral("WarpManager: could not tell this host's IPv6 state (%1)")
+                                .arg(out.isEmpty() ? QStringLiteral("no output") : out), 1);
+        }
+    } else if (failed) {
+        emit logMessage(QStringLiteral("WarpManager: the %1 step failed (%2, exit %3)")
+                            .arg(step.id,
+                                 out.isEmpty()
+                                     ? (crashed ? QStringLiteral("killed or crashed")
+                                                : QStringLiteral("no output"))
+                                     : out)
+                            .arg(exitCode),
+                        step.fatal ? 2 : 1);
+        if (step.fatal) {
+            finishPreparation(false, QStringLiteral("the %1 step failed").arg(step.id));
+            return;
+        }
+    } else if (step.id == QLatin1String("masque")) {
+        emit logMessage(QStringLiteral("WarpManager: the tunnel protocol is set to %1")
+                            .arg(tunnelProtocol()), 0);
+    } else if (step.id == QLatin1String("service")) {
+        // The one answer that changes what the end of the run owes: the daemon is back and has to be
+        // given the moment it takes to re-open its control socket.
+        m_prepRestarted = true;
+        emit logMessage(QStringLiteral("WarpManager: %1 was restarted").arg(serviceUnit()), 0);
+    }
+
+    ++m_prepIndex;
+    if (m_prepIndex >= m_prepSteps.size()) {
+        startSettleWait();
+        return;
+    }
+    runPreparationStep();
+}
+
+void WarpManager::setStage(Stage stage)
+{
+    if (stage == m_stage)
+        return;
+    m_stage = stage;
+    emit stageChanged(stage);
+}
+
+void WarpManager::startSettleWait()
+{
+    // Only a run that actually restarted the service owes the wait: systemd reports a unit active
+    // before warp-svc has re-opened its control socket, and a connect issued in that gap is answered by
+    // nothing at all — the same silent failure this sequence exists to remove, reproduced by our own
+    // fix. A host that skipped the step or had it refused is not waiting for a daemon that never moved,
+    // so it is not held for 1.5 s either.
+    if (!m_prepRestarted || !m_settleTimer) {
+        finishPreparation(true, QString());
+        return;
+    }
+    setStage(Stage::Waiting);
+    m_settleTimer->start(kServiceSettleMs);
+}
+
+void WarpManager::finishPreparation(bool ok, const QString &why)
+{
+    if (!m_prepRunning)
+        return;   // already closed: preparationFinished() is promised exactly once per started run
+    m_prepRunning = false;
+    m_prepQueued = false;
+    m_prepIndex = m_prepSteps.size();
+    setStage(Stage::Idle);
+    if (!ok && !why.isEmpty())
+        emit logMessage(QStringLiteral("WarpManager: %1").arg(why), 2);
+    emit preparationFinished(ok);
+    // A sequence this one was holding ahead of, or that it made wait for the slot.
+    runQueuedRegistration();
+}
+
+void WarpManager::armConnectDeadline()
+{
+    if (!m_connectDeadline)
+        return;
+    m_connectDeadline->start(kConnectDeadlineMs);
+}
+
+void WarpManager::onConnectDeadline()
+{
+    // The one case worth a sentence is the one the user cannot see: a connect that was accepted and
+    // has not come up. Anything the daemon has already answered — connected, disconnected, error —
+    // says itself, and repeating it here would be the app disagreeing with its own status line.
+    if (m_state != State::Connecting)
+        return;
+    emit logMessage(QStringLiteral("WarpManager: the tunnel did not come up within %1 s of being "
+                                   "asked to. The protocol was set to %2 and %3 was restarted, so "
+                                   "what is left is that the provider is blocking WARP itself — "
+                                   "check whether it reaches Cloudflare on this connection at all.")
+                        .arg(kConnectDeadlineMs / 1000)
+                        .arg(tunnelProtocol(), serviceUnit()),
+                    2);
+}
+
 bool WarpManager::startVerb(const QStringList &args, State onAccepted, bool wasConnectAttempt,
                             QString *error, const QByteArray &stdinData, RawHandler raw)
 {
     if (!m_available) {
         if (error)
             *error = QStringLiteral("WarpManager: warp-cli is not installed on this machine.");
+        return false;
+    }
+    // The resolved path, not the bare name: on a Windows host that got WARP from the MSI, warp-cli
+    // exists only in Program Files and PATH has never heard of it. rescanAvailability() put either
+    // a PATH hit or that absolute path in m_program before anything could reach this line.
+    return startStep(m_program.isEmpty() ? warpCliProgram() : m_program, args, kVerbTimeoutMs,
+                     onAccepted, wasConnectAttempt, error, stdinData, std::move(raw));
+}
+
+bool WarpManager::startStep(const QString &program, const QStringList &args, int timeoutMs,
+                            State onAccepted, bool wasConnectAttempt, QString *error,
+                            const QByteArray &stdinData, RawHandler raw)
+{
+    if (program.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("WarpManager: a preparation step named no program to run.");
         return false;
     }
     if (m_process) {
@@ -976,17 +1387,14 @@ bool WarpManager::startVerb(const QStringList &args, State onAccepted, bool wasC
 
     m_lastVerbWasConnect = wasConnectAttempt;
     m_pendingState = onAccepted;
-    // Which of the two completion paths this verb's answer takes: a handler means the enrolment
-    // sequence wants the raw output and exit code, no handler means the state machine reads it as a
-    // status. Set before the process exists so the failure paths below can find it too.
+    // Which of the two completion paths this verb's answer takes: a handler means the sequence owns
+    // the raw output and exit code, no handler means the state machine reads it as a status. Set
+    // before the process exists so the failure paths below can find it too.
     m_rawHandler = std::move(raw);
 
     auto *proc = new QProcess(this);
     proc->setProcessChannelMode(QProcess::MergedChannels);
-    // The resolved path, not the bare name: on a Windows host that got WARP from the MSI, warp-cli
-    // exists only in Program Files and PATH has never heard of it. rescanAvailability() put either
-    // a PATH hit or that absolute path in m_program before anything could reach this line.
-    proc->setProgram(m_program.isEmpty() ? warpCliProgram() : m_program);
+    proc->setProgram(program);
     proc->setArguments(args);
 
     if (!stdinData.isEmpty()) {
@@ -1005,7 +1413,7 @@ bool WarpManager::startVerb(const QStringList &args, State onAccepted, bool wasC
     connect(proc, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
         onVerbFinished();
     });
-    connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError e) {
+    connect(proc, &QProcess::errorOccurred, this, [this, proc, program](QProcess::ProcessError e) {
         // FailedToStart is the only case that never produces finished(); every other error is
         // reported after the exit signal arrives. If we do not clear the pointer here a
         // wedged QProcess keeps every subsequent verb from starting at all.
@@ -1024,11 +1432,11 @@ bool WarpManager::startVerb(const QStringList &args, State onAccepted, bool wasC
         if (failed) {
             m_lastVerbWasConnect = false;
             failed(text, -1, true);
-            runQueuedRegistration();
+            runQueuedSequences();
             return;
         }
-        emit logMessage(QStringLiteral("WarpManager: warp-cli could not be started (%1)")
-                            .arg(text), 2);
+        emit logMessage(QStringLiteral("WarpManager: %1 could not be started (%2)")
+                            .arg(program, text), 2);
         emit errorOccurred(text);
         setState(State::Error);
     });
@@ -1043,7 +1451,7 @@ bool WarpManager::startVerb(const QStringList &args, State onAccepted, bool wasC
 
     // Bound the wait even though warp-cli is normally quick. A daemon that has hung would
     // otherwise strand us in Connecting forever.
-    QTimer::singleShot(kVerbTimeoutMs, proc, [this, proc]() {
+    QTimer::singleShot(timeoutMs, proc, [this, proc]() {
         if (m_process != proc)
             return;   // the finished signal already beat us here
         proc->kill();
@@ -1083,7 +1491,7 @@ void WarpManager::onVerbFinished()
         emit logMessage(QStringLiteral("WarpManager: %1").arg(reason), 2);
         emit errorOccurred(reason);
         setState(State::Error);
-        runQueuedRegistration();
+        runQueuedSequences();
         return;
     }
 
@@ -1100,16 +1508,22 @@ void WarpManager::onVerbFinished()
         setState(parsed);
     }
     m_lastVerbWasConnect = false;
-    // The verb that made an enrolment wait its turn has landed. If the request that queued itself is
-    // still owed — nobody cancelled it, since the only thing that clears the flag is the sequence
-    // running to its end — this is where it gets its turn.
-    runQueuedRegistration();
+    // The verb that made a deferred sequence wait its turn has landed. If either request is still
+    // owed — nobody cancelled it, since the only thing that clears a flag is its sequence running to
+    // its end — this is where it gets its turn.
+    runQueuedSequences();
 }
 
 void WarpManager::setState(State s)
 {
     if (s == m_state)
         return;
+    // The deadline exists to name a connect that was accepted and then said nothing. Any answer that
+    // arrives cancels it: Connected because the tunnel came up, Error and Disconnecting because the
+    // daemon has said something more specific than silence, and the journal should carry that instead.
+    if (m_connectDeadline
+        && (s == State::Connected || s == State::Error || s == State::Disconnecting))
+        m_connectDeadline->stop();
     m_state = s;
     emit stateChanged(s);
 }

@@ -95,6 +95,39 @@ public:
     };
     Q_ENUM(Registration)
 
+    // Which part of the preparation the tunnel is currently waiting on, announced as it starts.
+    //
+    // This is a third axis, beside State and Registration, and it exists for one reason: the steps
+    // take seconds, one of them asks the user for root, and a tunnel half that is lit while nothing
+    // visibly happens is read as a frozen program. The stage is what lets the window say "restarting
+    // the WARP service" instead of saying nothing.
+    //
+    // It carries no verdict. Idle is where a host that needed nothing leaves it and where a finished
+    // run lands; the answer to "did it work" is preparationFinished(), and the answer to "is the
+    // tunnel up" is state().
+    enum class Stage
+    {
+        Idle,      // nothing is being prepared — before the first step and after the last
+        Protocol,  // switching the tunnel to MASQUE
+        Service,   // restarting warp-svc, which is the step that can ask for root
+        Waiting    // the service is back and the daemon needs a moment before it will answer
+    };
+    Q_ENUM(Stage)
+
+    // One command of prepareEnvironment(), spelled as data for the same reason installationProbes()
+    // is: the whole policy of what a tunnel needs before it can be asked to connect can then be read
+    // at once, pinned by a test on a host that has none of these binaries, and extended without
+    // touching the runner.
+    struct PreparationStep
+    {
+        QString id;          // "masque" | "ipv6" | "service" — names the step in the journal and in the stage
+        QString program;     // "warp-cli" | "sysctl" | "systemctl" — resolved by the runner, never guessed
+        QStringList args;    // the question already split; no shell composes any of this
+        bool privileged = false;  // needs root, so the program is prefixed with pkexec (unless we have it)
+        bool fatal = false;       // a failure of this one ends the preparation instead of continuing
+        int timeoutMs = 0;        // a step that never answers must not hold the tunnel hostage
+    };
+
     explicit WarpManager(QObject *parent = nullptr);
     ~WarpManager() override;
 
@@ -258,6 +291,56 @@ public:
     static QStringList registrationNewArgs();
     static QStringList registrationDeleteArgs();
 
+    // ---- the preparation argv, spelled once ----------------------------------
+    //
+    // What a WARP tunnel needs before `connect` can be asked for on a host whose provider interferes
+    // with the default transport. Both halves were learned from a machine that could not otherwise
+    // come up, and both are cheap enough to run unconditionally rather than to guess about:
+    //
+    //   * `tunnel protocol set MASQUE` — the protocol that survives where the WireGuard handshake
+    //     does not. warp-cli accepts the command on a host already set to MASQUE and says so; setting
+    //     it again is not a change, so nothing here has to read the current value first.
+    //   * `systemctl restart warp-svc` — the daemon keeps a stale state when it came up while a zapret
+    //     queue was already rewriting the routing, and then answers every connect without ever
+    //     connecting. Only a restart clears it, which is why this runs before every tunnel start
+    //     rather than after a failed one.
+
+    // The protocol verb, on warp-cli's own slot: `tunnel protocol set <name>`, carrying --accept-tos
+    // like every other verb here. MASQUE is named by one function so the runner, the journal and the
+    // test cannot each spell it slightly differently.
+    static QStringList protocolArgs();
+    static QString tunnelProtocol();
+
+    // The service restart, without the privilege prefix: what `systemctl` is asked to do.
+    static QStringList serviceRestartArgs();
+    static QString serviceUnit();
+
+    // The IPv6 question, asked rather than answered: reading one sysctl value needs no root and
+    // changes nothing, and an IPv6-less host is worth naming in the journal because MASQUE is much
+    // less likely to come up there. Deliberately not `sysctl -w` — see prepareEnvironment().
+    static QStringList ipv6CheckArgs();
+    // Whether that answer says IPv6 is switched off on this host. Unknown when the text said nothing
+    // either way, which is the case the journal mentions without drawing a conclusion from.
+    enum class Ipv6 { Unknown, Enabled, Disabled };
+    Q_ENUM(Ipv6)
+    static Ipv6 parseIpv6State(const QString &sysctlOutput);
+
+    // The whole preparation as data: which command, with what argv, needing root or not, and whether
+    // its failing stops the rest. Linux gets all three steps; Windows the protocol one only, because
+    // the stuck-daemon state this exists for is systemd's, and a UAC prompt on every tunnel start is a
+    // trade the user did not agree to (see prepareEnvironment()'s note on the elevation). A platform
+    // with no package manager, no systemd and no warp-cli to reconfigure prepares nothing at all.
+    static QList<PreparationStep> preparationSteps(Strategy::Platform platform);
+
+    // The program and argv a privileged step actually runs — pkexec-prefixed, or bare for a session
+    // that is already root. Split out and passed its resolved paths exactly like
+    // WarpInstaller::composeLinuxInstall(): the gate that matters, pkexec from a root session being a
+    // prompt nobody is there to answer, must be checkable without being root, and a host with no
+    // pkexec has to be told so in words rather than by a FailedToStart naming a program nobody typed.
+    static bool composeServiceRestart(const QString &systemctlPath, const QString &pkexecPath,
+                                      bool alreadyRoot, QString *program, QStringList *args,
+                                      QString *error);
+
     // ---- the parser -----------------------------------------------------------
     //
     // warp-cli's status output varies by version and platform: a Linux 2023.09 answer reads
@@ -373,6 +456,38 @@ public:
     // method exists to prevent, and no static parser can see that mistake.
     virtual bool ensureRegistered(QString *error = nullptr);
 
+    // Put this machine into a state where a connect can actually come up, without touching anything
+    // that does not need touching.
+    //
+    // Why it exists, in the words of the machine it was found on: on a host whose provider interferes
+    // with WARP's default transport, `warp-cli connect` is accepted and never completes — the UI's
+    // tunnel half lights, the power ring stays on zapret, and the daemon says `warp=off` forever. Two
+    // things fix that, and neither is a guess at a diagnosis: switch the tunnel to MASQUE, and
+    // restart warp-svc, whose state goes stale when it came up while a zapret queue was already
+    // rewriting the routing. Both are in preparationSteps(); the runner works through that list rather
+    // than through ifs.
+    //
+    // Ordering is the whole point, and it is why this is a step rather than three calls at the caller:
+    // the restart has to happen *after* the enrolment (a daemon restart mid-`registration new` loses
+    // it) and *before* the connect, and the connect has to wait for the service to come back — hence
+    // the settle at the end, on a timer, never a sleep on the GUI thread.
+    //
+    // On root: exactly one step needs it, and it is asked for through pkexec each time the tunnel is
+    // brought up — which is a prompt the user sees, so it is announced through stageChanged() first.
+    // Two deliberate refusals follow from that. The first is IPv6: the fix some guides give is
+    // `sysctl -w net.ipv6.conf.all.disable_ipv6=0`, which flips a system-wide setting beyond this
+    // app's remit and would need a second prompt to do it; this reads the value instead and says in
+    // the journal what it found and what would change it. The second is Windows, where the service
+    // step is absent — the stuck state is systemd's, and a UAC prompt per tunnel start was not
+    // agreed to. A refused or unavailable elevation is reported and does not stop the connect: the
+    // other step is still worth what it cost, and a host where the daemon is not stuck works anyway.
+    //
+    // Answers through preparationFinished(ok) — true when every fatal step said yes — and reports each
+    // step as it begins through stageChanged(stage). Like ensureRegistered(), it never blocks, joins
+    // its own run rather than starting a second one, queues itself behind a busy verb slot, and
+    // returns false only when nothing could be begun at all.
+    virtual bool prepareEnvironment(QString *error = nullptr);
+
     // Re-probe availability: find the program, then ask it whether it is able to answer, and — only if
     // nothing runnable was found — ask this machine's package databases whether the client is there
     // anyway. Called on construction; a caller who just installed WARP while the window was open can
@@ -410,6 +525,15 @@ signals:
     // a client that exists but cannot be run changes only this one; a caller holding a deferred offer
     // needs the second edge, not a re-run of the first.
     void installationChanged(bool installed, QString via);
+    // Which step of prepareEnvironment() is running, announced as it begins — Idle when the last one
+    // is over. The window turns these into the sentence the user reads while a root prompt or a
+    // service restart is doing its work; see Stage.
+    void stageChanged(WarpManager::Stage stage);
+    // Whether the machine was left ready for a connect: true when every fatal step answered yes
+    // (including the case where the host had no steps to run), false when one refused or failed.
+    // Exactly one of these closes every sequence prepareEnvironment() was told it started, in the
+    // same contract registrationFinished() keeps.
+    void preparationFinished(bool ok);
     // Mirror of IZapretBackend's channel — the log line format the window already understands.
     // level: 0=info, 1=warn, 2=error
     void logMessage(const QString &line, int level);
@@ -428,7 +552,8 @@ private:
     void onVerbFinished();
     void setState(State s);
 
-    // The three steps of ensureRegistered(), each one started from the previous one's answer.
+
+    // The steps of ensureRegistered(), each one started from the previous one's answer.
     void runRegistrationShow();
     void onRegistrationShown(const QString &out, int exitCode, bool crashed);
     void onRegistrationDeleted(const QString &out, int exitCode, bool crashed);
@@ -439,6 +564,39 @@ private:
     void finishRegistration(bool ok, const QString &why);
     // Starts an enrolment that was asked for while some other verb held the slot, if one is waiting.
     void runQueuedRegistration();
+    // The preparation's own version of the same courtesy, and the reason both exist: a sequence that
+    // found the slot busy is not cancelled by that, it is deferred — a connect issued without the
+    // MASQUE switch and the service restart is the hang this whole half was written for.
+    void runQueuedPreparation();
+    // The one pump every freed slot calls, so the two deferred sequences cannot each forget the other.
+    void runQueuedSequences();
+
+    // ---- the preparation sequence ----
+    // The same shape as the enrolment chain — one step per answer, one signal at the end — and one
+    // deliberate difference: a step's program is not always warp-cli, so it goes through startStep()
+    // with a resolved path rather than through startVerb().
+    bool runPreparationStep();
+    void onPreparationStepAnswered(const PreparationStep &step, const QString &out, int exitCode,
+                                   bool crashed);
+    void setStage(Stage stage);
+    // Ends the sequence with the same once-only guarantee finishRegistration() gives its own.
+    void finishPreparation(bool ok, const QString &why);
+    // The gap between the service coming back and the daemon being worth asking. Started by the last
+    // step's answer, and the only thing between that answer and preparationFinished(true).
+    void startSettleWait();
+    // The wait a connect that never completed is owed: one journal line naming the one cause this
+    // whole sequence exists for, so a timeout is not indistinguishable from a dead client.
+    void armConnectDeadline();
+    void onConnectDeadline();
+
+    // Every verb this class runs goes through these two. startVerb() is the warp-cli spelling —
+    // program resolved, state machine told what to expect — and startStep() is the same machinery for
+    // an arbitrary program, which is what lets `pkexec systemctl restart warp-svc` ride the existing
+    // timeout, the same in-flight slot, and the same FailedToStart cleanup instead of growing a second
+    // copy of all three.
+    bool startStep(const QString &program, const QStringList &args, int timeoutMs, State onAccepted,
+                   bool wasConnectAttempt, QString *error,
+                   const QByteArray &stdinData = QByteArray(), RawHandler raw = nullptr);
 
     // ---- the two follow-ups rescanAvailability() starts ----
     //
@@ -496,6 +654,31 @@ private:
     // starts as soon as that verb lands, because enrolment is the one thing that must not simply be
     // dropped: a connect issued without it is a connect that never comes up.
     bool m_regQueued = false;
+
+    // ---- the preparation half ----
+    //
+    // The same running/queued pair the enrolment keeps, for the same two reasons: a second request
+    // joins the run in flight rather than queueing a second restart of one service, and a request that
+    // found the slot busy cannot be dropped — a connect issued without the preparation is the silent
+    // hang this sequence exists to prevent.
+    bool m_prepRunning = false;
+    bool m_prepQueued = false;
+    // The list being worked through, snapshotted when the run starts so a step's answer can be read
+    // against the step that asked it, and m_prepIndex walks it.
+    QList<PreparationStep> m_prepSteps;
+    int m_prepIndex = 0;
+    // The last stage announced.
+    Stage m_stage = Stage::Idle;
+    // Whether this run actually restarted the service — which is the only case that owes the settle
+    // wait. A host that skipped the step (no pkexec, an older warp-cli) or whose restart was refused
+    // never moved the daemon, and making it wait 1.5 s for a service that did not move would be the
+    // app charging the user for a fix it did not apply.
+    bool m_prepRestarted = false;
+    // The gap between the service coming back and the daemon being worth asking, and the deadline a
+    // connect is given to prove itself. Single-shot both, owned by this object, and neither ever
+    // sleeps the GUI thread.
+    QTimer *m_settleTimer = nullptr;
+    QTimer *m_connectDeadline = nullptr;
 
     // ---- the installation half ----
     //
