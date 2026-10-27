@@ -771,6 +771,7 @@ QWidget *MainWindow::buildHeader()
     // reader; the two controls on the right are the only ways off this window the frame no longer gives.
     auto *title = new QLabel(QStringLiteral("Muffin"), header);
     title->setObjectName(QStringLiteral("appTitle"));
+    m_appTitle = title;
 
     m_statusDot = new QWidget(header);
     m_statusDot->setObjectName(QStringLiteral("statusDot"));
@@ -979,15 +980,40 @@ QWidget *MainWindow::buildProfilesPage()
     i18nTip(refresh, QStringLiteral("action.refresh_tip"));
     connect(refresh, &QPushButton::clicked, this, &MainWindow::refreshStrategies);
 
+    // The corner is the list's own utility: read the folder again, and — for a folder that exists but is
+    // old — fetch the current release into it. Both are icon-only here because the page's headline already
+    // says what the rows are; the download's LOUD form is the placeholder this page shows when there are
+    // no rows at all, which is where the affordance matters. It used to live beside the path field on the
+    // settings page, which meant fetching zapret was something you did by guessing that the second icon
+    // on a form about folders was the one that made the folders appear.
+    m_fetchButton = new QToolButton(page);
+    // The same object name, size and focus policy the settings page's path icons carry, so one sheet
+    // rule draws all of them and a keyboard reaches this one the way it reaches those. applyTheme()
+    // re-bakes the glyph from the two properties, because the colour is painted into the pixmap at load
+    // time and a stylesheet cannot reach a pixmap the sheet never owned.
+    m_fetchButton->setObjectName(QStringLiteral("pathToolButton"));
+    m_fetchButton->setProperty("role", QStringLiteral("download"));
+    m_fetchButton->setProperty("glyph", QStringLiteral("download-cloud"));
+    m_fetchButton->setProperty("glyphPx", 16);
+    m_fetchButton->setIcon(Theme::themedIcon(QStringLiteral("download-cloud"), 16));
+    m_fetchButton->setIconSize(QSize(16, 16));
+    m_fetchButton->setFixedSize(32, 32);
+    m_fetchButton->setCursor(Qt::PointingHandCursor);
+    m_fetchButton->setFocusPolicy(Qt::TabFocus);
+    i18nTip(m_fetchButton, QStringLiteral("action.download_zapret_tip"));
+    // A control with no words on it still has to say what it does — twice, because the audiences differ:
+    // the tooltip answers a pointer, the accessible name is all a screen reader gets.
+    i18nAcc(m_fetchButton, QStringLiteral("action.download_zapret"));
+    connect(m_fetchButton, &QToolButton::clicked, this, &MainWindow::downloadZapret);
+
     head->addWidget(back);
     head->addSpacing(6);
     head->addWidget(title);
     head->addSpacing(12);
     head->addWidget(m_pingTestButton);
     head->addWidget(m_blockcheckButton);
-    // The corner is the list's own utility: read the folder again. Everything else this page can do has
-    // a place to say it in — the measurement in its label, the download on the settings page.
     head->addStretch(1);
+    head->addWidget(m_fetchButton, 0, Qt::AlignVCenter);
     head->addWidget(refresh);
     box->addLayout(head);
 
@@ -1167,6 +1193,35 @@ QWidget *MainWindow::currentPageWidget() const
     return m_pages ? m_pages->currentWidget() : nullptr;
 }
 
+QString MainWindow::appTitleText() const
+{
+    return m_appTitle ? m_appTitle->text() : QString();
+}
+
+QString MainWindow::headerTitleFor(int page)
+{
+    // The dashboard IS the window, so it keeps the bare brand: a section word there would name a section
+    // the rail has no glyph for. Every other page lends its word to the header from the same catalog key
+    // the rail's tooltip uses, so the header, the glyph and the accessible name cannot drift into three
+    // different names for one screen.
+    const QString section =
+        page == PageProfiles   ? LanguageManager::tr(QStringLiteral("nav.profiles"))
+        : page == PageLogs     ? LanguageManager::tr(QStringLiteral("nav.logs"))
+        : page == PageHistory  ? LanguageManager::tr(QStringLiteral("nav.history"))
+        : page == PageSettings ? LanguageManager::tr(QStringLiteral("nav.settings"))
+                               : QString();
+    if (section.isEmpty())
+        return QStringLiteral("Muffin");
+    return LanguageManager::tr(QStringLiteral("header.title")).arg(section);
+}
+
+void MainWindow::updateHeaderTitle()
+{
+    if (!m_appTitle)
+        return;
+    m_appTitle->setText(headerTitleFor(m_pages ? m_pages->currentIndex() : PageDashboard));
+}
+
 void MainWindow::setCurrentPage(int page)
 {
     if (!m_pages)
@@ -1179,18 +1234,20 @@ void MainWindow::setCurrentPage(int page)
     const int previous = m_pages->currentIndex();
     m_pages->setCurrentIndex(target);
 
-    // The new page appears rather than arriving. One hook covers every way a page is chosen — the four
-    // rail glyphs, the way back, Ctrl+S, and the startup "no strategies yet" prompt — because they all
-    // come through here, and navigation that animates from the rail but snaps from the keyboard is
-    // exactly the inconsistency a second call site would create.
+    // A page arrives rather than being switched on: the same entrance the rows use — a fade with a short
+    // rise beside it, eased out — so navigation reads as one vocabulary rather than two. One hook covers
+    // every way a page is chosen (the four rail glyphs, the way back, Ctrl+S and the startup "no
+    // strategies yet" prompt), because an animation that ran from the rail but snapped from the keyboard
+    // is exactly the inconsistency a second call site would create.
     //
     // Nothing is animated when the stack did not move: re-selecting the page that is already up is a
-    // no-op for the user, and a fade would make it one.
+    // no-op for the user, and a rise would make it one.
     if (target != previous) {
-        Motion::fadeIn(m_pages->currentWidget());
+        Motion::riseIn(m_pages->currentWidget(), 0, Motion::kPageMoveMs, Motion::kPageLiftPx);
         if (target == PageProfiles)
             animateCardEntrance();
     }
+    updateHeaderTitle();
 
     // The rail's glyphs are the only page indicator left, so they have to follow the stack even when the
     // page was chosen from code — a lit journal icon over the dashboard is worse than no icon at all. The
@@ -2796,36 +2853,24 @@ void MainWindow::stopHeldForSelectionChange(ModeSelection from, ModeSelection to
     }
 }
 
-// The selection change's question: is the user willing to lose a live subsystem to move a half?
-//
-// Yes or No, defaulting to No — agreeing costs a teardown through pkexec or warp-cli, so a box
-// closed on the keyboard must not be read as consent. The two whole selections are spelled with
-// ModeToggle::describe ("Zapret + WARP → Zapret") in the informative line rather than being threaded
-// through seven translations of the question — the exact seam confirmWatchdogRotation uses, and the
-// reason this and the rotation read the same way to a user.
-bool MainWindow::confirmStopAndSwitch(ModeSelection from, ModeSelection to)
-{
-    QMessageBox box(QMessageBox::Question,
-                    LanguageManager::tr(QStringLiteral("mode.switch_title")),
-                    LanguageManager::tr(QStringLiteral("mode.switch_question")),
-                    QMessageBox::Yes | QMessageBox::No, this);
-    box.setInformativeText(QStringLiteral("%1 \u2192 %2")
-                               .arg(ModeToggle::describe(from), ModeToggle::describe(to)));
-    box.setDefaultButton(QMessageBox::No);
-    return box.exec() == QMessageBox::Yes;
-}
+// The pill asks nothing on the user's way to a different pair of halves — see onSelectionChanged. What it
+// does is stop what the change takes down, through the window's own teardown, and light what was picked:
+// the two whole selections used to be spelled with ModeToggle::describe ("Zapret + WARP → Zapret") in a
+// box's informative line, and that seam is now the watchdog rotation's alone.
 
 // The user flipped one half of the pill. The widget has already moved both halves (it applies the
-// clamp and emits the pair as it is now); this decides whether the change is allowed to cost a live
-// subsystem, tears it down if the user agreed, and snaps the halves back if they did not.
+// clamp and emits the pair as it is now); this decides whether the change costs a live subsystem, pays
+// that cost, and lights the halves the user asked for.
 //
 // The whole rule lives in the pure helpers — isBypassHeld/isTunnelHeld read the real managers,
 // strandsAHeldSubsystem says whether the change costs anything, resolveSelectionChange decides which
-// selection wins, confirmStopAndSwitch asks — so this slot is only the ordering around them.
+// selection wins — so this slot is only the ordering around them. It asks nothing: a modal per pill
+// press, on the control the whole window is built around, was a click to agree to what the click had
+// already done.
 void MainWindow::onSelectionChanged(bool zapretOn, bool warpOn)
 {
-    // The echo of a move setCurrentSelection() is itself making is not a request from the user.
-    // Without this guard the snap-back on a refused question would re-enter and ask again forever.
+    // The echo of a move setCurrentSelection() is itself making is not a request from the user. Without
+    // this guard the snap-back would re-enter on every write of its own.
     if (m_settingMode)
         return;
 
@@ -2836,30 +2881,23 @@ void MainWindow::onSelectionChanged(bool zapretOn, bool warpOn)
 
     const bool zapretHeld = isBypassHeld(m_manager->state());
     const bool warpHeld = isTunnelHeld(m_warp ? m_warp->state() : WarpManager::State::Unavailable);
-    // Only a change that takes a held half down has a price; lighting a dark half or blanking an
-    // idle one is free, and asking about it would be asking about nothing.
+    // Only a change that takes a held half down has a price; lighting a dark half or blanking an idle one
+    // is free, and asking about either was asking about nothing.
     const bool costs = strandsAHeldSubsystem(from, requested, zapretHeld, warpHeld);
-    const bool agreed = costs && confirmStopAndSwitch(from, requested);
 
-    // Which halves end up lit is resolveSelectionChange's answer, not a second copy of it written
-    // out here: a refused change keeps what it had, and everything else takes what the user asked.
-    const ModeSelection target = resolveSelectionChange(from, requested, costs, agreed);
+    // The change is agreed by definition now, and resolveSelectionChange is still the one place that
+    // decides which selection wins — passing the true answer to its `userAgreed` is what says so, rather
+    // than a second copy of the rule written out here where a future ask could forget it.
+    const ModeSelection target = resolveSelectionChange(from, requested, costs, /*userAgreed=*/true);
 
-    // Agreed, and the change takes something down: tear it down first, while the stopping look still
-    // belongs to the run the user was watching, and only then record the selection they asked for.
+    // The change takes something down: tear it down first, while the stopping look still belongs to the
+    // run the user was watching, and only then record the selection they asked for. The teardown is the
+    // window's own — the same one the stop button and the tray follow — so the pill never lights a half
+    // that is still running.
     if (costs && target != from)
         stopHeldForSelectionChange(from, target);
 
-    // Either way the pill ends where the decision left it. On an agreed change that is the pair the
-    // user picked; on a refused one setCurrentSelection(from) un-moves the halves, and whatever was
-    // running keeps running untouched.
     setCurrentSelection(target);
-
-    // A refused change still has a visible effect — the halves snapped back — and the footer says so,
-    // because "no" should read as the user's own decision rather than as a swallowed click.
-    if (costs && target == from)
-        showTransientMessage(LanguageManager::tr(QStringLiteral("mode.switch_declined")), 5000);
-
     // The selection now asks for the tunnel. Before anything is offered, the machine gets to answer
     // whether it already has the client: isInstalled() asks PATH, the package databases, the Windows
     // service and the registry, and it answers yes while any of them is still replying. An install
@@ -3042,8 +3080,8 @@ void MainWindow::offerWarpInstall()
 
     // Asked before the password, because the answer is a system change that outlives this application:
     // a package the user's own tooling now has to know about, and a network interface it owns. Default
-    // No — the same rule confirmStopAndSwitch() applies to a teardown, for the same reason: a box
-    // closed on the keyboard must not be read as consent to install software.
+    // No — the rule confirmWatchdogRotation() applies to a live swap, for the same reason: a box closed
+    // on the keyboard must not be read as consent to install software.
     QMessageBox box(QMessageBox::Question,
                     LanguageManager::tr(QStringLiteral("warp.install_title")),
                     LanguageManager::tr(installQuestionKey(repair)),
@@ -3294,6 +3332,9 @@ void MainWindow::applyTheme()
 void MainWindow::retranslateUi()
 {
     retranslateTree(this);
+    // The header's title is composed rather than keyed to a widget property, so the walk above cannot
+    // reach it: it has to be re-derived from the page the stack is on, in the new language.
+    updateHeaderTitle();
 
     // Rows derive their name from the strategy rather than from a key, so they re-derive it; the menu
     // actions and the chip wording carry their own keys and move with the walk above.

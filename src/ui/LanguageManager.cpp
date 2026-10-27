@@ -70,6 +70,11 @@ const QVector<Row> &catalog()
 
         // ---- rail / navigation ----
         ROW("nav.logs", "Логи", "Logs", "Registros", "Protokolle", "日志", "Journaux", "लॉग"),
+        // The header's own sentence: the brand, a separator, and the section the stack is on. Spelled as
+        // one row rather than as three labels because the separator is typography, and typography that has
+        // to be legible in seven languages is a translated thing.
+        ROW("header.title", "Muffin • %1", "Muffin • %1", "Muffin • %1", "Muffin • %1",
+            "Muffin • %1", "Muffin • %1", "Muffin • %1"),
         ROW("nav.profiles", "Профили", "Profiles", "Perfiles", "Profile", "档案",
             "Profils", "प्रोफ़ाइलें"),
         ROW("nav.history", "История", "History", "Historial", "Verlauf", "历史",
@@ -301,32 +306,10 @@ const QVector<Row> &catalog()
 
 
         // ---- the Zapret/WARP pill ----
-        // The one question the toggle is allowed to ask. Moving the thumb costs nothing, so most
-        // switches need no dialogue at all; it is only when a bypass is already holding the path that
-        // the window has to say what switching will do to it — stop it. The two halves' names are not
-        // threaded through these seven spellings: they are data, and they go in the box's informative
-        // line ("Zapret → WARP"), exactly like the watchdog's rotation question does.
-        ROW("mode.switch_title", "Смена режима", "Switching mode", "Cambio de modo",
-            "Moduswechsel", "切换模式", "Changement de mode", "मोड बदलना"),
-        ROW("mode.switch_question",
-            "Сейчас работает обход. Остановить его и переключить режим?",
-            "A bypass is running right now. Stop it and switch the mode?",
-            "En este momento se está eludiendo el bloqueo. ¿Detenerlo y cambiar de modo?",
-            "Aktuell läuft eine Umgehung. Die Umgehung stoppen und den Modus wechseln?",
-            "当前正在绕行。要停止绕行并切换模式吗？",
-            "Un contournement est en cours. L'arrêter et changer de mode ?",
-            "अभी बाईपास काम कर रहा है। उसे रोककर मोड बदलें?"),
-        // Said in the footer when the answer was no: the pill went back, and nothing else moved. The
-        // user needs to learn that a refused question had an effect (the thumb snapped back) rather
-        // than that the click was swallowed.
-        ROW("mode.switch_declined", "Режим не изменён — обход продолжает работать",
-            "Mode unchanged — the bypass keeps running",
-            "Modo sin cambios: la elusión sigue funcionando",
-            "Modus unverändert — die Umgehung läuft weiter",
-            "模式未改变——绕行仍在运行",
-            "Mode inchangé : le contournement continue de fonctionner",
-            "मोड वही रहा — बाईपास चलता रहेगा"),
-        // The journal line a confirmed switch writes before it tears the live bypass down.
+        // The pill asks nothing: moving the thumb takes a live bypass down if it has to, and says so in
+        // the journal rather than in a modal. Only one question used to live here, and it was one click
+        // per switch on the control the whole window is built around — see onSelectionChanged.
+        // The journal line a switch writes before it tears the live bypass down.
         ROW("mode.switch_stopping", "Переключение режима: останавливаю %1",
             "Switching mode: stopping %1", "Cambio de modo: deteniendo %1",
             "Moduswechsel: %1 wird gestoppt", "切换模式：正在停止 %1",

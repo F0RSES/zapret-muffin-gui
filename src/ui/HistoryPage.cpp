@@ -54,6 +54,9 @@ const char kRateLevelProperty[] = "rateLevel";
 // QSS has no positional state for header sections, a radius on the header widget loses to the sections
 // painting over it, and a mask clips in stair-steps. See the sheet's comment for the same arithmetic.
 constexpr int kTableInsetPx = 4;
+// How wide the empty-state sentence is allowed to get before it wraps. Below the panel's own width on
+// purpose: a bounded label reads as a centred sentence, an unbounded one as a rule across the page.
+constexpr int kEmptyTextMaxWidthPx = 460;
 
 // The three counts' colour band, stamped the same way and for the same reason: "neutral" is a number that
 // is not a problem, "danger" the checks that never connected, "warning" the certificates that came back
@@ -426,8 +429,26 @@ void HistoryPage::build()
     m_emptyText->setObjectName(QStringLiteral("placeholder"));
     m_emptyText->setAlignment(Qt::AlignCenter);
     m_emptyText->setWordWrap(true);
+    // A word-wrapped QLabel is clipped to one line by a box layout unless its size policy says its height
+    // depends on its width — the height it is offered is then the one-line sizeHint, and the second line
+    // of the sentence is simply not drawn. This page is the only place in the app that wraps a label inside
+    // a centred column, and the symptom arrived as "the text rides over the icon".
+    QSizePolicy textPolicy = m_emptyText->sizePolicy();
+    textPolicy.setHeightForWidth(true);
+    m_emptyText->setSizePolicy(textPolicy);
+    // …and it is added to the column WITHOUT an alignment, which is the part that actually matters. A box
+    // layout stops honouring a widget's height-for-width as soon as the item carries an alignment flag: it
+    // sizes the item to its sizeHint instead, and a word-wrapped label's sizeHint is one line wide by one
+    // line tall. Centering is already taken care of twice over — the fixed width makes the horizontal policy
+    // Fixed, which a box layout centres by itself, and AlignCenter inside the label centres the text.
+    // Bounded AND fixed-width, which is what actually stops the clipping. A word-wrapped label in a box
+    // layout is offered its sizeHint's height, and the height inside that sizeHint is computed for the
+    // width the label would like — one line, at the panel's full 830 px. Give it the same width from both
+    // ends and its size hint can only be the shape it will really be laid out in: three lines of 460 px,
+    // three lines of height. The sentence reads as a centred paragraph rather than a rule across the page.
+    m_emptyText->setFixedWidth(kEmptyTextMaxWidthPx);
     i18nText(m_emptyText, QStringLiteral("history.empty"));
-    emptyBox->addWidget(m_emptyText, 0, Qt::AlignHCenter);
+    emptyBox->addWidget(m_emptyText);
 
     emptyBox->addStretch(1);
     m_body->addWidget(empty);

@@ -1,6 +1,5 @@
 #include "SettingsPage.h"
 
-#include "DownloadDialog.h"
 #include "LanguageManager.h"
 #include "Settings.h"
 #include "StrategyParser.h"
@@ -73,7 +72,6 @@ constexpr int kCommitGapPx = 6;
 // baked pixmap cannot recolour itself.
 const char kFolderGlyph[] = "folder";
 const char kSearchGlyph[] = "search";
-const char kDownloadGlyph[] = "download-cloud";
 } // namespace
 
 SettingsPage::SettingsPage(Settings &settings, QWidget *parent)
@@ -171,9 +169,6 @@ void SettingsPage::build()
     m_detectButton = makePathTool(general.frame, QLatin1String(kSearchGlyph),
                                   QStringLiteral("settings.autodetect"),
                                   QStringLiteral("settings.autodetect_tip"));
-    m_downloadButton = makePathTool(general.frame, QLatin1String(kDownloadGlyph),
-                                    QStringLiteral("action.download_zapret"),
-                                    QStringLiteral("action.download_zapret_tip"));
 
     auto *pathRow = new QHBoxLayout;
     pathRow->setContentsMargins(0, 0, 0, 0);
@@ -182,9 +177,8 @@ void SettingsPage::build()
     // The alignment is spelled out rather than left to the layout. A fixed-size widget in a taller row is
     // centred by Qt today, but that is QWidgetItem's arithmetic and not a promise: a row whose height is
     // set by a font this file cannot see would otherwise place the icons by whichever default the platform
-    // picks, and a field with two buttons dangling off its vertical centre stops reading as one control.
+    // picks, and a field with an icon dangling off its vertical centre stops reading as one control.
     pathRow->addWidget(m_detectButton, 0, Qt::AlignVCenter);
-    pathRow->addWidget(m_downloadButton, 0, Qt::AlignVCenter);
 
     general.form->addRow(rowLabel(general.frame, QStringLiteral("settings.path")), pathRow);
 
@@ -364,7 +358,6 @@ void SettingsPage::build()
     // dialog, so there is one path to a folder and not two.
     connect(m_browseAction, &QAction::triggered, this, &SettingsPage::browse);
     connect(m_detectButton, &QToolButton::clicked, this, &SettingsPage::autoDetect);
-    connect(m_downloadButton, &QToolButton::clicked, this, &SettingsPage::downloadZapret);
     connect(m_pathEdit, &QLineEdit::textChanged, this, &SettingsPage::revalidatePath);
 }
 
@@ -615,21 +608,6 @@ void SettingsPage::autoDetect()
         return;
     }
     m_pathEdit->setText(QDir::toNativeSeparators(found.first().path));
-}
-
-void SettingsPage::downloadZapret()
-{
-    DownloadDialog dialog(this);
-    connect(&dialog, &DownloadDialog::installed, this, [this](const QString &path) {
-        m_pathEdit->setText(QDir::toNativeSeparators(path));
-        // Said out loud rather than left to the textChanged handler: setText is a no-op when the field
-        // already reads exactly this path, and the fresh tree still has to be described.
-        revalidatePath();
-    });
-    dialog.startFetch();
-    dialog.exec();
-    // Nothing reaches Settings until Save is pressed: a download that lands in the field and a path the
-    // application will actually use are two decisions, and this page owns the second.
 }
 
 } // namespace zapret

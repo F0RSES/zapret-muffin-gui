@@ -277,7 +277,7 @@ void Motion::fadeIn(QWidget *widget, int durationMs)
 
 // ---- a row rising into place -----------------------------------------------
 
-void Motion::riseIn(QWidget *widget, int delayMs, int durationMs)
+void Motion::riseIn(QWidget *widget, int delayMs, int durationMs, int liftPx)
 {
     // Where the layout wants the row, read before anything is moved. The animation ends on this value
     // and the row is left exactly here: one that had risen and stayed parked 14 px low until the next
@@ -289,7 +289,7 @@ void Motion::riseIn(QWidget *widget, int delayMs, int durationMs)
 
     // Hidden before its first pixel and dropped at the same moment, so a row is never drawn at its
     // resting place only to fall out of it.
-    const QPoint below = rest + QPoint(0, kCardLiftPx);
+    const QPoint below = rest + QPoint(0, qMax(0, liftPx));
     widget->move(below);
 
     QPropertyAnimation *fade = opacityAnim(effect, 0.0, 1.0, durationMs);

@@ -29,6 +29,12 @@ public:
     // A page appears rather than arrives: long enough to read as movement, short enough that nobody
     // waits on it. Somewhere around 180 ms is where a fade stops looking like a lag.
     static constexpr int kPageFadeMs = 180;
+    // A page of the main stack now arrives the way a row does — a fade with a short rise beside it — and
+    // that is what these two numbers are for. Enough travel to read as coming forward rather than being
+    // switched on, short enough that nobody waits on a navigation, and eased out so the last pixels
+    // decelerate into place instead of stopping dead.
+    static constexpr int kPageMoveMs = 220;
+    static constexpr int kPageLiftPx = 12;
     // A profile row rises into its place. Longer than the page because it carries distance with it, and
     // a distance that crosses the screen faster than the eye can follow reads as a jump, not a slide.
     static constexpr int kCardRiseMs = 220;
@@ -67,13 +73,16 @@ public:
     // avoid.
     static void fadeIn(QWidget *widget, int durationMs = kPageFadeMs);
 
-    // Rise a row into its place: starting `delayMs` from now, over `durationMs`, from kCardLiftPx below
-    // the position its layout gave it, fading in as it travels.
+    // Rise a row into its place: starting `delayMs` from now, over `durationMs`, from `liftPx` below the
+    // position its layout gave it, fading in as it travels. The default lift is the one a list of rows
+    // wants; a page of the main stack passes its own, because a page travels further than a row and must
+    // not look like the list reflowed.
     //
     // The row is made invisible before its first pixel rather than after it. Where a layout will put a
     // widget is not known until the layout has run, so a row drawn at its resting place that then dropped
     // and climbed back would read as a glitch rather than as an entrance.
-    static void riseIn(QWidget *widget, int delayMs = 0, int durationMs = kCardRiseMs);
+    static void riseIn(QWidget *widget, int delayMs = 0, int durationMs = kCardRiseMs,
+                       int liftPx = kCardLiftPx);
 
     // Put an endless opacity breath on `widget` — the "this process is alive" pulse. Installing it
     // replaces any effect the widget already had, so a widget that owns one of its own (a painted halo,

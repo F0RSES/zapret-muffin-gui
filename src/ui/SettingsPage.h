@@ -88,7 +88,6 @@ public:
     QLineEdit *pathField() const { return m_pathEdit; }
     QAction *browseAction() const { return m_browseAction; }
     QToolButton *autoDetectButton() const { return m_detectButton; }
-    QToolButton *downloadButton() const { return m_downloadButton; }
     // The interface's language. The rail's flag button used to be the only way to change it, which left
     // this page claiming to hold the interface settings while the one setting that decides what language
     // the page itself is written in lived somewhere else entirely.
@@ -118,10 +117,6 @@ signals:
 private slots:
     void browse();
     void autoDetect();
-    // Fetch a release into the managed install and put the resulting path in the field. The second icon
-    // beside the field because the first two assume zapret is already on this disk — and the third way to
-    // fill it is to own no copy of it at all.
-    void downloadZapret();
     void revalidatePath();
 
 private:
@@ -172,10 +167,11 @@ private:
     // draws it, positions it, and hides it behind the text when the field is too narrow — which is exactly
     // why the row no longer needs a wide "Обзор…" beside it.
     QAction *m_browseAction = nullptr;
-    // The two icons beside it, 32x32 and wordless. The row is about a path, and a row of which the path is
-    // the subject should not spend more width on three verbs than on the field they fill.
+    // The icon beside it, 32x32 and wordless. The row is about a path, and a row of which the path is
+    // the subject should not spend more width on verbs than on the field they fill. Fetching a release is
+    // not one of them: that belongs where the empty result is visible — the profiles page, whose
+    // placeholder says so when there are no strategies to list.
     QToolButton *m_detectButton = nullptr;
-    QToolButton *m_downloadButton = nullptr;
 
     QCheckBox *m_startLastCheck = nullptr;
     QCheckBox *m_trayCheck = nullptr;

@@ -488,6 +488,13 @@ public:
     // The shell itself. A hook for the same reason powerButton() is one: the rounded silhouette is the
     // window's claim about its own shape, and a suite cannot read the pixels of a widget it cannot name.
     QFrame *windowFrame() const { return m_windowFrame; }
+    // The header's title label, and the text it currently claims. Exposed because "the header names the
+    // section you are in" is a claim about a pixel string, and a suite cannot check one it cannot read.
+    QLabel *appTitleLabel() const { return m_appTitle; }
+    QString appTitleText() const;
+    // The section word is the nav glyph's own tooltip key, spelled once in the catalog: the rail, the
+    // header and the accessible names then cannot disagree about what a page is called.
+    static QString headerTitleFor(int page);
 
     // ---- the release check --------------------------------------------------------------
     //
@@ -651,16 +658,12 @@ protected:
     // rotation that left the user with nothing running.
     virtual void performWatchdogRotation(const QString &fromId, const QString &nextId);
 
-    // ---- the selection change's seams -------------------------------------------
+    // ---- the selection change's cost, and how it is paid ----------------------
     //
-    // Moving the pill has one possible cost: a live subsystem has to come down first. Split the same
-    // way the watchdog's rotation is — the question here, the acts in the slots — so a suite can
-    // answer it by hand instead of blocking on a modal nobody out there can click.
-    //
-    // `from` and `to` are whole selections. The box shows what each of them adds up to
-    // (ModeToggle::describe) in its informative line, so the seven translations of the question never
-    // carry the name of a half.
-    virtual bool confirmStopAndSwitch(ModeSelection from, ModeSelection to);
+    // Moving the pill can take a live subsystem down. It used to ASK first; the ask is gone, because it
+    // was one modal per press on the control the whole interface is built around, for a consequence the
+    // pill had just shown by moving itself. The cost is paid rather than negotiated: strandsAHeldSubsystem
+    // says whether there is one and stopHeldForSelectionChange pays it, both of them pure and tested.
 
     // ---- the acts the one button performs ----------------------------------------
     //
@@ -888,6 +891,9 @@ private:
     // does nothing while no rotation is waiting, and the id it consumes it consumes once.
     void continueWatchdogRotation();
     void updateStatusUi();
+    // Re-derive the header's "Muffin • Раздел" from the page the stack is on. Called from the page switch
+    // and from the language pass, because both can change the string and neither should own half of it.
+    void updateHeaderTitle();
     // Record a selection as the current one: the window's own pair, the pill, both Settings keys, the
     // tunnel's polling and one repaint. This is the only writer of m_selection, and it never starts or
     // stops anything — a programmatic move (the startup seed, an availability clamp, snapping the halves
@@ -960,6 +966,11 @@ private:
     // shape is drawn by — neither the window nor the canvas holding it paints a background (see
     // buildCentral(), and QMainWindow#mainWindow / QWidget#rootCanvas in both sheets).
     QFrame *m_windowFrame = nullptr;
+    // The header's own title, and the profiles page's fetch icon. The first is the widget the dynamic
+    // "Muffin • Раздел" claim is made on; the second is the download affordance that moved here from the
+    // settings page, where it was one of three icons beside a path field.
+    QToolButton *m_fetchButton = nullptr;
+    QLabel *m_appTitle = nullptr;
     QWidget *m_sidebar = nullptr;          // the rail: brand, the page glyphs, settings and version
     QFrame *m_mainArea = nullptr;          // header, page stack, footer
     QStackedWidget *m_pages = nullptr;     // dashboard <-> profiles <-> logs <-> history <-> settings

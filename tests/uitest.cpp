@@ -1978,46 +1978,44 @@ static void testSettingsPageCards(QApplication &app)
     check(browse && !browse->text().isEmpty(), "…and named, for anything reading the screen");
 
     QToolButton *detect = page.autoDetectButton();
-    QToolButton *download = page.downloadButton();
     check(detect && detect->size() == QSize(32, 32), "auto-detect is a 32x32 icon button");
-    check(download && download->size() == QSize(32, 32), "…and so is the download");
-    check(detect && download
-                  && detect->objectName() == QLatin1String("pathToolButton")
-                  && download->objectName() == QLatin1String("pathToolButton"),
-          "both are styled by the same object name, so one sheet rule draws the pair");
+    check(detect && detect->objectName() == QLatin1String("pathToolButton"),
+          "…styled by the sheet's one rule for a field's icon actions");
     check(detect && !detect->icon().isNull() && detect->text().isEmpty(),
-          "the pair is glyphs and nothing else");
+          "the row's one appendage is a glyph and nothing else");
     check(detect && !detect->toolTip().isEmpty() && !detect->accessibleName().isEmpty(),
           "a wordless button still says what it does, to the pointer and to the accessibility tree");
-    check(download && !download->toolTip().isEmpty() && !download->accessibleName().isEmpty(),
-          "…and so does the second one");
-    check(detect && download && detect->toolTip() != download->toolTip()
-                  && detect->accessibleName() != download->accessibleName(),
-          "the two say different things — one searches the disk, the other fetches a tree");
-    check(detect && download && detect->parentWidget() == field->parentWidget()
-                  && download->parentWidget() == field->parentWidget(),
-          "field and both icons are one row, not a row each");
-    if (general && field && detect && download) {
+
+    // Fetching zapret is no longer one of this row's actions. A field about a path cannot answer the
+    // question the icon existed for — "I have no zapret at all, how do I get it?" — which is asked one
+    // page away, where an empty folder is visible as an empty list. Asserted by what the buttons are
+    // NAMED, so a control that had merely moved within the page would still be caught here.
+    const QString fetchName = LanguageManager::tr(QStringLiteral("action.download_zapret"));
+    int fetchActions = 0;
+    for (QToolButton *b : page.findChildren<QToolButton *>())
+        if (b->accessibleName() == fetchName)
+            ++fetchActions;
+    check(fetchActions == 0,
+          "nothing on the settings page offers to download zapret any more");
+    check(detect && field && detect->parentWidget() == field->parentWidget(),
+          "field and its one icon are still one row, not a row each");
+
+    if (general && field && detect) {
         // The row's own geometry, in the card's coordinates — every widget in it is a direct child of the
         // card, so y() and x() compare without mapping. The numbers travel with the verdict, because a
-        // check that only says "not centred" cannot be read from a CI log: it is the values that tell an
-        // unaligned row (off by half the difference of the two heights) from a rounding artefact.
+        // check that only says "not centred" cannot be read from a CI log.
         const int fieldMid = field->y() + field->height() / 2;
         const int detectMid = detect->y() + detect->height() / 2;
-        const int downloadMid = download->y() + download->height() / 2;
         // One pixel of slack, and the reason is arithmetic rather than indulgence: an even control centred
-        // in an odd row lands half a pixel out, and which way that rounds is the layout's business. A row
-        // that is not centred is off by half the height difference — 6 px for a 44 px field beside a
-        // 32 px button — which this still catches.
-        check(qAbs(detectMid - fieldMid) <= 1 && qAbs(downloadMid - fieldMid) <= 1,
-              QStringLiteral("…centred on the field's line, so the row reads as one control with two "
-                             "appendages (field y=%1 h=%2 mid=%3 | search mid=%4 | cloud mid=%5)")
-                  .arg(field->y()).arg(field->height()).arg(fieldMid)
-                  .arg(detectMid).arg(downloadMid));
-        check(detect->x() >= field->x() + field->width() && download->x() > detect->x(),
-              QStringLiteral("…and to the right of the field, in the order search then cloud "
-                             "(field ends %1, search at %2, cloud at %3)")
-                  .arg(field->x() + field->width()).arg(detect->x()).arg(download->x()));
+        // in an odd row lands half a pixel out, and which way that rounds is the layout's business.
+        check(qAbs(detectMid - fieldMid) <= 1,
+              QStringLiteral("…centred on the field's line, so the row reads as one control with one "
+                             "appendage (field y=%1 h=%2 mid=%3 | search mid=%4)")
+                  .arg(field->y()).arg(field->height()).arg(fieldMid).arg(detectMid));
+        check(detect->x() >= field->x() + field->width(),
+              QStringLiteral("…and to the right of the field, where the field puts the things that act on "
+                             "it (field ends %1, search at %2)")
+                  .arg(field->x() + field->width()).arg(detect->x()));
     }
 
     // What the redesign removed. Three wide text buttons used to share this row's width with the field,
@@ -2155,9 +2153,9 @@ static void testSettingsPageCards(QApplication &app)
                   && browse->property("glyphPx").toInt() == 16,
           "the folder glyph declares the name and size applyTheme() must re-bake it at");
     check(detect && detect->property("glyph").toString() == QLatin1String("search"),
-          "auto-detect declares its magnifier…");
-    check(download && download->property("glyph").toString() == QLatin1String("download-cloud"),
-          "…and the download its cloud");
+          "auto-detect declares its magnifier");
+    // The cloud it used to be paired with is not this page's any more; its glyph declaration is checked
+    // with the profiles page's own corner, where the button now lives.
 
     // ---- the light sheet ----
     // A card whose surface equals its page's is not a card, and the dark sheet is the only one where that
@@ -3317,6 +3315,37 @@ static void testHistoryPage()
     check(page.successRate() == -1, "with no number to show");
     check(!page.clearButton()->isEnabled(), "and nothing to clear, so the button says so");
 
+    // ---- the empty state, measured rather than eyeballed ----
+    //
+    // The report was that the sentence rides over the clock icon or gets cut. Both are geometry, so both
+    // are read as geometry: the two labels' rects in the empty page's own coordinates, and the height the
+    // word-wrapped label asks for at the width it was given. A stack page that is shorter than its own
+    // content is the usual cause of the second one, and it is invisible to every other check here.
+    {
+        QWidget *empty = page.findChild<QWidget *>(QStringLiteral("historyEmpty"));
+        QLabel *glyph = empty ? empty->findChild<QLabel *>(QStringLiteral("historyEmptyGlyph")) : nullptr;
+        QLabel *text = empty ? empty->findChild<QLabel *>(QStringLiteral("placeholder")) : nullptr;
+        check(empty && glyph && text,
+              "the empty state is an icon and a sentence, both reachable by name");
+        if (empty && glyph && text) {
+            page.resize(880, 620);
+            page.show();
+            QTest::qWait(40);
+            const QRect g(QRect(glyph->mapTo(empty, QPoint(0, 0)), glyph->size()));
+            const QRect t(text->mapTo(empty, QPoint(0, 0)), text->size());
+            check(t.top() >= g.bottom(),
+                  QStringLiteral("the sentence starts below the icon, not across it (icon ends %1, text "
+                                 "starts %2)").arg(g.bottom()).arg(t.top()));
+            const int wanted = text->heightForWidth(t.width());
+            check(t.height() >= wanted,
+                  QStringLiteral("…and the label is given the height its own wrapping asks for "
+                                 "(%1 px wanted, %2 given)").arg(wanted).arg(t.height()));
+            check(!text->text().isEmpty() && text->isVisible(),
+                  "…and there is a visible sentence to measure, so the two readings above are not a "
+                  "comparison between two empty rectangles");
+        }
+    }
+
     // Timestamps spelled out rather than left to the store's "stamp it now": the ordering checks below
     // are about which row the page picks first, and two appends inside the same millisecond would make
     // that a race instead of a fact.
@@ -4266,11 +4295,20 @@ static void testWatchdog()
 
         Motion::setEnabled(true);
         window.setCurrentPage(MainWindow::PageDashboard);
-        check(Motion::isMoving(window.currentPageWidget()),
-              "opening a page fades the widget the stack is now showing, not the index it was given");
-        QTest::qWait(Motion::kPageFadeMs + 120);
-        check(!Motion::isMoving(window.currentPageWidget())
-                  && window.currentPageWidget()->graphicsEffect() == nullptr,
+        QWidget *shown = window.currentPageWidget();
+        const QPoint risen = shown->pos();
+        check(Motion::isMoving(shown),
+              "opening a page animates the widget the stack is now showing, not the index it was given");
+        QTest::qWait(Motion::kPageMoveMs + 120);
+        // The rise, measured rather than assumed: a page that only faded would be at its resting place at
+        // both samples, and one that had risen and not come back would not be at it at the second.
+        check(risen.y() == shown->pos().y() + Motion::kPageLiftPx
+                  && risen.x() == shown->pos().x(),
+              QStringLiteral("…and it arrives from %1 px below, travelling only on the vertical axis "
+                             "(started at %2, ended at %3)")
+                  .arg(Motion::kPageLiftPx).arg(risen.x()).arg(risen.y())
+                  .arg(shown->pos().x()).arg(shown->pos().y()));
+        check(!Motion::isMoving(shown) && shown->graphicsEffect() == nullptr,
               "…which ends by itself and takes the effect off, so a page that appeared once stops "
               "paying for it on every later repaint");
 
@@ -4296,7 +4334,7 @@ static void testWatchdog()
 
         // The pulse is the window's claim about a backend state, so it is checked through the window.
         window.setCurrentPage(MainWindow::PageDashboard);
-        QTest::qWait(Motion::kPageFadeMs + 60);
+        QTest::qWait(Motion::kPageMoveMs + 60);
         PowerButton *power = window.powerButton();
         check(power != nullptr, "the window exposes the button the pulse belongs to");
         window.renderStatusFor(IZapretBackend::State::Running);
@@ -4507,7 +4545,6 @@ public:
     // scenarios' claims and connectWarp() is the act those sequences already spell as the enrolment it
     // delegates to. What this counter adds is the name the report used: one press, both halves.
     int connectCalls = 0;
-    int confirmations = 0;
     int installsOffered = 0;
     int setupsOpened = 0;
     // Whether the bypass is up for the wait's guard. A press records the request; this is what the
@@ -4537,12 +4574,6 @@ protected:
     {
         ++connectCalls;
         MainWindow::connectWarp();   // the base is the thing under test; only the ask is counted here
-    }
-
-    bool confirmStopAndSwitch(ModeSelection, ModeSelection) override
-    {
-        ++confirmations;
-        return true;   // no modal anywhere in this suite — nothing out here could answer one
     }
 
     void offerWarpInstall() override
@@ -4868,8 +4899,9 @@ static void testWarpEnrolmentWiring()
         // window's private writer — a programmatic move would be the window answering itself.
         f.window->modeToggle()->setSelection(ModeSelection{true, false});
         check(f.window->selection() == ModeSelection{true, false}, "the tunnel half went dark");
-        check(f.window->confirmations == 0,
-              "and darkening a half that holds nothing asks no consent question about it");
+        check(!store.useWarp(),
+              "…the change was applied, not asked about: there is no modal between a press on the pill "
+              "and the selection the store is being written");
         f.warp->answerFinished(true);
         check(f.warp->startCalls == 0,
               "a successful enrolment is no licence to connect a tunnel the user just turned off");
@@ -5020,6 +5052,116 @@ static void testWarpEnrolmentWiring()
                       .contains(LanguageManager::tr(QStringLiteral("warp.zapret_kept"))),
               "the keeping is said, because a journal that passes over a bypass still running after an "
               "install leaves the user to work out whether Muffin means to stop it");
+    }
+
+    // ---- a switch that takes a HELD half down pays the cost without asking ----
+    //
+    // The case the modal used to interrupt: the tunnel is up, the user turns its half dark. The pill
+    // moves, the held subsystem is taken down through the window's own teardown, and nothing waits for
+    // an answer — which is what the check reads, because the seam the question had is gone.
+    {
+        EnrolmentFixture f(store);
+        f.warp->emitState(WarpManager::State::Connected);
+        const int stopsBefore = f.warp->stopCalls;
+        f.window->modeToggle()->setSelection(ModeSelection{true, false});
+        check(f.window->selection() == ModeSelection{true, false},
+              "the pill lands where the user put it, in one gesture");
+        check(f.warp->stopCalls == stopsBefore + 1,
+              "…and the held tunnel is brought down by that same gesture: asking is not what makes the "
+              "stop safe, ordering is");
+        f.warp->emitState(WarpManager::State::Disconnected);
+    }
+
+    // ---- where fetching zapret is offered now ----
+    //
+    // Two forms of one affordance, and the pair is the point: the loud one is the placeholder a user with
+    // no zapret at all is looking at, and the quiet one is the corner of a page that already lists
+    // profiles and might be out of date. Both are on the page that shows the result of the fetch, which is
+    // the reason they left the path field on the settings page.
+    {
+        EnrolmentFixture f(store);
+        QToolButton *fetch = nullptr;
+        const auto tools = f.window->findChildren<QToolButton *>();
+        for (QToolButton *t : tools) {
+            if (t->property("role").toString() == QLatin1String("download"))
+                fetch = t;
+        }
+        check(fetch != nullptr, "the profiles page carries the fetch icon");
+        check(fetch && fetch->property("glyph").toString() == QLatin1String("download-cloud")
+                      && fetch->property("glyphPx").toInt() == 16,
+              "…declaring the glyph and size applyTheme() re-bakes it at, like the icons it replaced");
+        check(fetch && fetch->objectName() == QLatin1String("pathToolButton")
+                      && fetch->size() == QSize(32, 32)
+                      && fetch->focusPolicy() == Qt::TabFocus,
+              "…and drawn, sized and reachable as the settings page's path icons are, so one sheet rule "
+              "and one Tab order cover all of them");
+        check(fetch && !fetch->toolTip().isEmpty() && !fetch->accessibleName().isEmpty(),
+              "…and wordless is not the same as unlabelled");
+        // The corner gained an icon in a row that already carries a back button, a title and two text
+        // buttons, in a window of a fixed width. Overflow there clips one of them with no warning to
+        // anybody, so it is measured: both corner icons have to be inside the page they are laid into.
+        QWidget *cornerHost = fetch ? fetch->parentWidget() : nullptr;
+        QPushButton *refreshBtn = nullptr;
+        if (cornerHost) {
+            const auto buttons = cornerHost->findChildren<QPushButton *>();
+            for (QPushButton *b : buttons) {
+                if (b->property("glyph").toString() == QLatin1String("refresh"))
+                    refreshBtn = b;
+            }
+        }
+        // Positions only mean anything after the layout has run, and the layout only runs for a widget
+        // that has been shown — measuring a hidden page would have been a check of (0,0).
+        f.window->setCurrentPage(MainWindow::PageProfiles);
+        f.window->show();
+        QTest::qWait(80);
+        check(fetch && cornerHost && refreshBtn
+                      && fetch->x() + fetch->width() <= cornerHost->width()
+                      && refreshBtn->x() + refreshBtn->width() <= cornerHost->width(),
+              QStringLiteral("…and both corner controls fit the row, so nothing was clipped to make room "
+                             "for the new one (fetch ends %1, refresh ends %2, page is %3)")
+                  .arg(fetch ? fetch->x() + fetch->width() : -1)
+                  .arg(refreshBtn ? refreshBtn->x() + refreshBtn->width() : -1)
+                  .arg(cornerHost ? cornerHost->width() : -1));
+
+        QPushButton *bigFetch = nullptr;
+        if (QWidget *placeholder = f.window->findChild<QWidget *>(QStringLiteral("placeholderPage"))) {
+            const auto buttons = placeholder->findChildren<QPushButton *>();
+            for (QPushButton *b : buttons) {
+                if (b->text() == LanguageManager::tr(QStringLiteral("action.download_zapret")))
+                    bigFetch = b;
+            }
+        }
+        check(bigFetch != nullptr,
+              "…and the empty list itself offers the download as a primary button, which is where the "
+              "affordance belongs: nothing to show is the moment a user needs a way to get something");
+        check(bigFetch && bigFetch->objectName() == QLatin1String("primaryButton"),
+              "…styled as the page's primary action, not as one of its quiet ones");
+    }
+
+    // ---- the header names the section the stack is on ----
+    {
+        EnrolmentFixture f(store);
+        MainWindow *w = f.window;
+        check(w->appTitleText() == QStringLiteral("Muffin"),
+              "the dashboard is the window itself, so the header carries the brand and nothing else");
+        const struct { int page; const char *key; } sections[] = {
+            {MainWindow::PageProfiles, "nav.profiles"},
+            {MainWindow::PageLogs, "nav.logs"},
+            {MainWindow::PageHistory, "nav.history"},
+            {MainWindow::PageSettings, "nav.settings"},
+        };
+        for (const auto &s : sections) {
+            w->setCurrentPage(s.page);
+            const QString want = LanguageManager::tr(QStringLiteral("header.title"))
+                                     .arg(LanguageManager::tr(QLatin1String(s.key)));
+            check(w->appTitleText() == want,
+                  QStringLiteral("the header reads '%1' on the %2 page — the section word is the rail's "
+                                 "own key, so the two cannot name it differently")
+                      .arg(want, QLatin1String(s.key)));
+        }
+        w->setCurrentPage(MainWindow::PageDashboard);
+        check(w->appTitleText() == QStringLiteral("Muffin"),
+              "…and goes back to the bare brand on the way home");
     }
 
     // The store is left exactly as the section found it: a run that ended with the WARP half lit would
