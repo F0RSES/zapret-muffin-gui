@@ -17,13 +17,13 @@ class WarpInstaller;
 // The setup wizard: one window that walks a machine from "no WARP at all" to "tunnel up", saying which
 // step it is on and what each step printed.
 //
-// Why this exists when the automatic path already does the same five things. That path (WarpInstaller,
+// Why this exists when the automatic path already does the same things. That path (WarpInstaller,
 // then WarpManager::ensureRegistered(), then prepareEnvironment(), then connect) is correct and
 // invisible, which is exactly the problem: when it stops halfway — warp-cli not on PATH yet after an
-// install, a polkit prompt nobody noticed behind this window, a daemon that needed a restart — the user
-// is left with a lit toggle, a power ring belonging to the other subsystem, and no account of what
-// happened. A wizard trades that invisibility for a list: five named steps, a bar, and the commands' own
-// output.
+// install, a daemon that was never started, a polkit prompt nobody noticed behind this window, a
+// service that needed a restart — the user is left with a lit toggle, a power ring belonging to the
+// other subsystem, and no account of what happened. A wizard trades that invisibility for a list: six
+// named steps, a bar, and the commands' own output.
 //
 // What it deliberately reuses rather than restates:
 //
@@ -59,7 +59,7 @@ public:
     int stepCount() const { return m_steps.size(); }
     // Which step is in flight: -1 before the first and after the last.
     int currentStepIndex() const { return m_index; }
-    // The status line as the user reads it — "Шаг 2 из 5: Регистрация устройства…". Pure and static so a
+    // The status line as the user reads it — "Шаг 3 из 6: Регистрация устройства…". Pure and static so a
     // test can pin the wording and the numbering without building a dialog.
     static QString stepStatusText(int oneBasedIndex, int count, const QString &stepTitle);
     // The sentence for one step id, from the catalog. Empty for an id this build does not know, which is
@@ -161,6 +161,11 @@ private:
     // opened twice must not answer the first run's signal into the second run's log.
     QMetaObject::Connection m_registrationWatcher;
     QMetaObject::Connection m_managerLogWatcher;
+    // The reason behind the manager's last error-level journal line, kept only for the length of an
+    // enrolment step. registrationFinished() carries a bool and nothing else, so without this the wizard
+    // reports a failure whose cause it was told about and then threw away — and a refusal that names the
+    // daemon never reaches the classifier that would have turned it into a command the user can run.
+    QString m_lastManagerError;
 
     QLabel *m_title = nullptr;
     QLabel *m_intro = nullptr;

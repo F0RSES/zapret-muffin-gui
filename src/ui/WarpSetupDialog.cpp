@@ -103,9 +103,9 @@ void WarpSetupDialog::build()
     m_progress->setObjectName(QStringLiteral("setupProgress"));
     m_progress->setRange(0, qMax(1, m_steps.size()));
     m_progress->setValue(0);
-    // No percentage inside the bar: five steps make every value a multiple of twenty, and a number that
-    // can only be 0, 20, 40, 60, 80 or 100 is a step counter wearing a disguise. The status line already
-    // says which step this is.
+    // No percentage inside the bar: with a handful of steps every value is a step count wearing a
+    // disguise, and the status line already says which step this is. The range is the plan's own length,
+    // read when the dialog was built, so the bar cannot disagree with the numbering beside it.
     m_progress->setTextVisible(false);
     m_progress->setFixedHeight(6);
     m_progress->hide();
@@ -176,6 +176,8 @@ QString WarpSetupDialog::stepTitle(const QString &stepId)
     // forgotten in the catalog.
     if (stepId == QLatin1String("install"))
         return LanguageManager::tr(QStringLiteral("warp.setup.step.install"));
+    if (stepId == QLatin1String("daemon"))
+        return LanguageManager::tr(QStringLiteral("warp.setup.step.daemon"));
     if (stepId == QLatin1String("register"))
         return LanguageManager::tr(QStringLiteral("warp.setup.step.register"));
     if (stepId == QLatin1String("protocol"))
@@ -396,11 +398,22 @@ bool WarpSetupDialog::beginRegistrationStep(QString *error)
     // ensureRegistered() reads the device first, deletes a conflicting enrolment, and only then enrols.
     // Doing it by hand here would mean a second key for a device that already has one.
     disconnect(m_registrationWatcher);
+    // The manager answers an enrolment on two channels: registrationFinished() carries the verdict and
+    // nothing else, while the reason goes to its journal. Held here so a failure the wizard reports is
+    // the daemon's own sentence rather than the step's title — and so a refusal that names the daemon
+    // can be recognised as one by failStep() instead of being quoted at the user unread.
+    m_lastManagerError.clear();
     m_registrationWatcher = connect(&m_manager, &WarpManager::registrationFinished, this,
-                                    [this](bool ok) { stepAnswered(ok, QString()); });
+                                    [this](bool ok) {
+                                        stepAnswered(ok, ok ? QString() : m_lastManagerError);
+                                    });
     disconnect(m_managerLogWatcher);
     m_managerLogWatcher = connect(&m_manager, &WarpManager::logMessage, this,
-                                  [this](const QString &line, int) { appendLog(line); });
+                                  [this](const QString &line, int level) {
+                                      appendLog(line);
+                                      if (level == 2)
+                                          m_lastManagerError = line;
+                                  });
     if (!m_manager.ensureRegistered(error)) {
         disconnect(m_registrationWatcher);
         disconnect(m_managerLogWatcher);
@@ -426,6 +439,20 @@ void WarpSetupDialog::commandAnswered(int exitCode, const QString &output, bool 
             ? (crashed ? QStringLiteral("the command was killed or crashed")
                        : QStringLiteral("exit %1 with no output").arg(exitCode))
             : output.right(kErrorDetailChars);
+        // A command the plan marked non-fatal is one whose refusal is an answer rather than a verdict,
+        // and only the daemon step has them: `sc start` on a service that is already running exits 1056,
+        // and a refused pkexec still leaves an enrolment worth attempting on a daemon somebody else
+        // started. The output goes in the pane uncoloured — the chain survives it, and the failure that
+        // matters is the one the next step reports in red — and the step moves on to its next command.
+        const bool fatal = m_commandIndex < step.commands.size()
+                               ? step.commands.at(m_commandIndex).fatal
+                               : true;
+        if (!fatal) {
+            appendLog(detail);
+            ++m_commandIndex;
+            runStepCommand(step);
+            return;
+        }
         stepAnswered(false, detail);
         return;
     }
@@ -489,13 +516,24 @@ void WarpSetupDialog::advance()
 void WarpSetupDialog::failStep(const QString &detail)
 {
     m_running = false;
-    const QString title = m_index >= 0 && m_index < m_steps.size()
-                              ? stepTitle(m_steps.at(m_index).id)
-                              : QString();
+    const bool haveStep = m_index >= 0 && m_index < m_steps.size();
+    const QString stepId = haveStep ? m_steps.at(m_index).id : QString();
+    const QString title = haveStep ? stepTitle(stepId) : QString();
     const QString sentence = LanguageManager::tr(QStringLiteral("warp.setup.error"))
                                  .arg(m_index + 1)
                                  .arg(detail.isEmpty() ? title : detail);
     appendError(sentence);
+    // The one diagnosis worth adding to a failure, because it is the one the user can act on without
+    // reading a transcript. A warp-cli with no daemon behind its socket refuses every verb the same way,
+    // and its own wording for it — "Missing registration. Try running: 'warp-cli registration new' /
+    // Maybe the daemon is not running?" — lands under a step titled "Регистрация устройства", which is a
+    // sentence about the service in a place that reads like a verdict about the device. The step that
+    // was supposed to bring the daemon up counts as well, since a command that could not even be
+    // composed (no systemctl, no pkexec) produces no output for the classifier to read.
+    if (WarpManager::daemonLooksDown(detail) || stepId == QLatin1String("daemon")) {
+        appendError(LanguageManager::tr(QStringLiteral("warp.setup.daemon_down"))
+                        .arg(WarpManager::serviceStartHint(ZapretSource::hostPlatform())));
+    }
     m_status->setText(sentence);
     setStatusCode(QStringLiteral("setupStatusFailed"));
     // The primary button comes back as a retry of THIS step, and Cancel is offered again: after a failure

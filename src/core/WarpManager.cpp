@@ -400,6 +400,69 @@ QStringList WarpManager::serviceRestartArgs()
     return { QStringLiteral("restart"), serviceUnit() };
 }
 
+QStringList WarpManager::systemdEnableStartArgs()
+{
+    // `enable --now` rather than a bare `start`: the second brings the daemon up until the next boot
+    // and the first keeps it there, and a tunnel that quietly stops existing after a reboot is a
+    // support request nobody can connect back to the wizard that set it up. Both halves are idempotent,
+    // so a host whose unit is already enabled and running answers this with exit 0 and nothing to do —
+    // which is what lets the step run unconditionally instead of after a state check of its own.
+    return { QStringLiteral("enable"), QStringLiteral("--now"), serviceUnit() };
+}
+
+QStringList WarpManager::windowsServiceQueryArgs()
+{
+    return { QStringLiteral("query"), serviceUnit() };
+}
+
+QStringList WarpManager::windowsServiceStopArgs()
+{
+    return { QStringLiteral("stop"), serviceUnit() };
+}
+
+QStringList WarpManager::windowsServiceStartArgs()
+{
+    return { QStringLiteral("start"), serviceUnit() };
+}
+
+bool WarpManager::daemonLooksDown(const QString &output)
+{
+    const QString t = output.toLower();
+    // Silence is not a diagnosis. An empty answer leaves the caller's own sentence as the failure,
+    // because guessing "the daemon is down" out of nothing at all is how a network refusal ends up
+    // telling the user to restart a service that was never the problem.
+    if (t.trimmed().isEmpty())
+        return false;
+
+    // The client's own vocabulary for "the socket had nobody behind it". Deliberately narrow: every
+    // marker names the daemon or the unit, so a refusal about the network, about an enrolment, or about
+    // a flag this build does not know is left to the sentence that quoted it.
+    static const char *const kMarkers[] = {
+        "daemon is not running",
+        "daemon isn't running",
+        "daemon not running",
+        "maybe the daemon",
+        "is the daemon running",
+        "connect to the daemon",     // "failed to connect to the daemon", "couldn't connect to…"
+        "connection to the daemon",
+        "daemon is unavailable",
+        "warp-svc is not running",
+        "warp-svc failed",
+    };
+    for (const char *marker : kMarkers) {
+        if (t.contains(QString::fromLatin1(marker)))
+            return true;
+    }
+    return false;
+}
+
+QString WarpManager::serviceStartHint(Strategy::Platform platform)
+{
+    if (platform == Strategy::Platform::Windows)
+        return QStringLiteral("sc start %1").arg(serviceUnit());
+    return QStringLiteral("sudo systemctl start %1").arg(serviceUnit());
+}
+
 QStringList WarpManager::ipv6CheckArgs()
 {
     // `-n` prints the value alone, which is what parseIpv6State() reads. Asking rather than setting:
@@ -547,6 +610,13 @@ QList<WarpManager::SetupStep> WarpManager::setupSteps(Strategy::Platform platfor
     //   install  — nothing else can be asked of a client that is not on the disk. Skipped when one is
     //              here, because a package manager run over a working install is how a tunnel gets
     //              removed rather than repaired.
+    //   daemon   — the socket every later verb is addressed to. A package that was just unpacked does
+    //              not promise warp-svc was started, and a daemon that is down answers an enrolment
+    //              with "Missing registration … Maybe the daemon is not running?", which is a sentence
+    //              about the service and reads like one about the device. Before the enrolment, and
+    //              only where the plan enrols: an already-enrolled machine is brought up by the restart
+    //              below just as surely, and a second root prompt in one run is a cost with nothing
+    //              behind it.
     //   register — a connect against an unenrolled device is refused by the daemon. Delegated to
     //              ensureRegistered() rather than spelled as `registration new` here: that function
     //              reads first and deletes a conflicting enrolment before making a new one, while a
@@ -556,7 +626,8 @@ QList<WarpManager::SetupStep> WarpManager::setupSteps(Strategy::Platform platfor
     //   service  — the daemon's state goes stale when it came up while a zapret queue was already
     //              rewriting the routing, and only a restart clears it. After the protocol, because the
     //              restart is what makes that setting belong to the daemon now running rather than to
-    //              the next one somebody starts by hand.
+    //              the next one somebody starts by hand — and after the enrolment, because a daemon
+    //              restarted mid `registration new` loses the key that call is obtaining.
     //   connect  — last, and only after all of the above. It is the verb that used to be issued first
     //              and then never answered, which is the whole reason this chain exists.
     QList<SetupStep> steps;
@@ -576,6 +647,32 @@ QList<WarpManager::SetupStep> WarpManager::setupSteps(Strategy::Platform platfor
     }
 
     if (registration != Registration::Registered) {
+        if (knownPlatform) {
+            // Every command here is non-fatal, and that is a decision rather than an oversight. What
+            // this step wants is a daemon that answers, and the enrolment that follows is the only
+            // judge of whether it got one: a refused pkexec, a host with no systemd at all (a container,
+            // where the daemon may still be running under something else) and a Windows service that
+            // was already up — which `sc start` reports as the error 1056 — all land here, and only the
+            // last of those is a success. Stopping the wizard on a refusal it cannot interpret would
+            // strand a machine the next step could have enrolled; continuing costs one warp-cli call
+            // and ends in the enrolment's own words, which is the sentence the hint is written for.
+            SetupStep daemon;
+            daemon.id = QStringLiteral("daemon");
+            if (platform == Strategy::Platform::Linux) {
+                daemon.commands.append({ QStringLiteral("systemctl"), systemdEnableStartArgs(),
+                                         /*privileged=*/true, kServiceTimeoutMs, /*fatal=*/false });
+            } else {
+                // Query, then start. The query is what puts the service's state in the pane, so "it was
+                // already running" is something the user reads rather than infers from a refusal, and a
+                // service that is not there at all is named before anything tries to start it.
+                daemon.commands.append({ QStringLiteral("sc"), windowsServiceQueryArgs(),
+                                         /*privileged=*/false, kProtocolTimeoutMs, /*fatal=*/false });
+                daemon.commands.append({ QStringLiteral("sc"), windowsServiceStartArgs(),
+                                         /*privileged=*/true, kProtocolTimeoutMs, /*fatal=*/false });
+            }
+            steps.append(daemon);
+        }
+
         SetupStep reg;
         reg.id = QStringLiteral("register");
         reg.kind = SetupKind::Registration;
@@ -602,11 +699,9 @@ QList<WarpManager::SetupStep> WarpManager::setupSteps(Strategy::Platform platfor
         // service left stopped by a wizard that reported success is worse than a wizard that said so.
         SetupStep service;
         service.id = QStringLiteral("service");
-        service.commands.append({ QStringLiteral("sc"),
-                                  QStringList{ QStringLiteral("stop"), serviceUnit() },
+        service.commands.append({ QStringLiteral("sc"), windowsServiceStopArgs(),
                                   /*privileged=*/true, kProtocolTimeoutMs });
-        service.commands.append({ QStringLiteral("sc"),
-                                  QStringList{ QStringLiteral("start"), serviceUnit() },
+        service.commands.append({ QStringLiteral("sc"), windowsServiceStartArgs(),
                                   /*privileged=*/true, kProtocolTimeoutMs });
         steps.append(service);
     }
@@ -677,6 +772,12 @@ WarpManager::Registration WarpManager::parseRegistration(const QString &raw, int
         || t.contains(QStringLiteral("not enrolled"))
         || t.contains(QStringLiteral("not registered"))
         || t.contains(QStringLiteral("no registration"))
+        // The spelling the field report arrived in: `Error: Missing registration. Try running:
+        // "warp-cli registration new"`, exit 1. A client that names the verb which would fix it is
+        // giving the clearest negative it has, and answering Unknown to it is the one reading that
+        // makes the wizard useless — needsEnrollment() excludes Unknown on purpose, so the enrolment is
+        // never attempted and every retry fails on the same sentence with the daemon perfectly healthy.
+        || t.contains(QStringLiteral("missing registration"))
         || t.contains(QStringLiteral("client is not enrolled"))
         || t.contains(QStringLiteral("unregistered"))) {
         return Registration::NotRegistered;

@@ -50,6 +50,7 @@
 #include "WarpSetupDialog.h"
 #include "ZapretDownloader.h"
 #include "ZapretPaths.h"
+#include "ZapretSource.h"
 
 #include <QApplication>
 #include <QBrush>
@@ -4346,6 +4347,9 @@ public:
     void answerPreparation(bool ok) { emit preparationFinished(ok); }
     // The stage announcements, handed out the same way the two verdicts are.
     void answerStage(Stage stage) { emit stageChanged(stage); }
+    // The journal channel, for the scenarios where the reason behind a verdict is the thing under test:
+    // registrationFinished() carries a bool and nothing else, so a failure's own words arrive here.
+    void answerLog(const QString &line, int level) { emit logMessage(line, level); }
     // The daemon's own answer, for a scenario that needs the window to repaint from a state rather than
     // to cause one. Emitted here because a signal of another object cannot be raised from outside it.
     void emitState(State s) { reported = s; emit stateChanged(s); }
@@ -4753,7 +4757,7 @@ static void testWarpEnrolmentWiring()
         window.modeToggle()->setSelection(ModeSelection{true, true});
         check(window.setupsOpened == 1,
               "…while lighting that half is answered with the wizard, because on a machine with no "
-              "client an install is the first of five steps and not the last");
+              "client an install is the first of six steps and not the last");
         check(window.installsOffered == 0,
               "…and not with the install-only offer, which would do that first step and then leave the "
               "device unenrolled, unswitched and unconnected with nothing on screen to say so");
@@ -4815,6 +4819,11 @@ public:
     // Shared with the control, so one log carries the order the chain actually ran in — which is the
     // whole claim when the question is "was the host re-asked before the enrolment".
     ActLog *acts = nullptr;
+    // Whether the enrolment step is the real one rather than a record. Off by default, because a
+    // scenario driving the chain from outside wants a step it answers rather than a pair of signals it
+    // has to arrange; on for the scenario watching what the manager's own channels do to the sentence a
+    // failure is reported with, which cannot be observed through a stub.
+    bool delegateRegistration = false;
 
 protected:
     bool launchCommand(const WarpManager::SetupCommand &command, QString *error) override
@@ -4833,7 +4842,8 @@ protected:
     }
     bool beginRegistrationStep(QString *error) override
     {
-        Q_UNUSED(error);
+        if (delegateRegistration)
+            return WarpSetupDialog::beginRegistrationStep(error);
         ++registerBegun;
         if (acts)
             acts->record(QStringLiteral("register"));
@@ -4874,7 +4884,7 @@ static void testWarpSetupDialog()
           "…and the three are distinguishable, so the last line cannot be mistaken for a middle one");
 
     // A control that reports a machine with no client and no enrolment reading, which is the case the
-    // wizard exists for and the one whose plan is the full five steps.
+    // wizard exists for and the one whose plan is the full six steps.
     CountingWarpManager manager;
     manager.available = false;
     manager.registration = WarpManager::Registration::Unknown;
@@ -4888,7 +4898,7 @@ static void testWarpSetupDialog()
             ids << s.id;
         check(ids == WarpManager::setupStepIds(Strategy::Platform::Linux),
               "the dialog walks the same plan the core spells, rather than a second copy of it");
-        check(dialog.stepCount() == 5, "…which on a bare Linux host is five steps");
+        check(dialog.stepCount() == 6, "…which on a bare Linux host is six steps");
         bool allTitled = !steps.isEmpty();
         for (const WarpManager::SetupStep &s : steps)
             if (WarpSetupDialog::stepTitle(s.id).isEmpty())
@@ -4938,28 +4948,44 @@ static void testWarpSetupDialog()
               "…and the status line is drawn in the running colour, not merely named after it");
 
         dialog.stepAnswered(true, QString());
-        check(dialog.registerBegun == 1 && dialog.currentStepIndex() == 1,
+        check(dialog.currentStepIndex() == 1 && dialog.commands.size() == 1
+                      && dialog.commands.at(0)
+                             .contains(QStringLiteral("enable --now warp-svc")),
+              "then the daemon is asked to come up, and before anything is asked OF it: a warp-cli verb "
+              "is a client talking to warp-svc over a socket, and a socket with nobody behind it refuses "
+              "the enrolment with a sentence that reads like a verdict about the device");
+        check(dialog.statusLabel()->text()
+                      == WarpSetupDialog::stepStatusText(
+                             2, dialog.stepCount(),
+                             WarpSetupDialog::stepTitle(QStringLiteral("daemon"))),
+              "…announced as a step of its own, so the root prompt it is about to raise has a sentence "
+              "attached to it rather than arriving over a line about registration");
+
+        dialog.commandAnswered(0, QStringLiteral("Created symlink /etc/systemd/system/multi-user.target"
+                                                 ".wants/warp-svc.service"), false);
+        check(dialog.registerBegun == 1 && dialog.currentStepIndex() == 2,
               "the enrolment is next, and it is the manager's — a bare `registration new` here would be "
               "a second key for a device that may already hold one");
 
         dialog.stepAnswered(true, QString());
-        check(dialog.currentStepIndex() == 2 && dialog.commands.size() == 1
-                      && dialog.commands.at(0).contains(QStringLiteral("tunnel protocol set MASQUE")),
+        check(dialog.currentStepIndex() == 3 && dialog.commands.size() == 2
+                      && dialog.commands.at(1).contains(QStringLiteral("tunnel protocol set MASQUE")),
               "then the transport is switched, with the argv the core spelled rather than a second copy");
 
         dialog.commandAnswered(0, QStringLiteral("Success"), false);
-        check(dialog.currentStepIndex() == 3 && dialog.commands.size() == 2
-                      && dialog.commands.at(1).contains(QStringLiteral("systemctl restart warp-svc")),
+        check(dialog.currentStepIndex() == 4 && dialog.commands.size() == 3
+                      && dialog.commands.at(2).contains(QStringLiteral("systemctl restart warp-svc")),
               "then the service is restarted — the step that clears the daemon a connect used to hang "
-              "against");
+              "against, and one that comes after the enrolment because a daemon restarted mid "
+              "`registration new` loses the key that call is obtaining");
         check(dialog.logView()->toPlainText().contains(QStringLiteral("systemctl restart warp-svc")),
               "…and the pane shows the command that was run, not only the plan's idea of it");
 
         dialog.commandAnswered(0, QString(), false);
-        check(dialog.currentStepIndex() == 4 && dialog.commands.size() == 3
-                      && dialog.commands.at(2).contains(QStringLiteral("connect")),
+        check(dialog.currentStepIndex() == 5 && dialog.commands.size() == 4
+                      && dialog.commands.at(3).contains(QStringLiteral("connect")),
               "and only then is the tunnel asked for");
-        check(dialog.progressBar()->value() == 4,
+        check(dialog.progressBar()->value() == 5,
               "the bar counts finished steps, so it is not full while one is still running");
 
         dialog.commandAnswered(0, QString(), false);
@@ -5007,6 +5033,11 @@ static void testWarpSetupDialog()
         check(manager.rescans == rescansBefore + 1,
               "a successful install is followed by a rescan of the host, because everything after this "
               "step is a verb against a client that did not exist a moment ago");
+        check(dialog.commands.size() == 1
+                      && dialog.commands.at(0).contains(QStringLiteral("enable --now warp-svc")),
+              "…and what that rescan unblocks is the daemon step, the next thing the plan runs and the "
+              "first thing that needs the client the package manager just put down");
+        dialog.commandAnswered(0, QString(), false);
         check(acts.acts == (QStringList{QStringLiteral("install"),
                                         QStringLiteral("rescanAvailability"),
                                         QStringLiteral("register")}),
@@ -5045,11 +5076,12 @@ static void testWarpSetupDialog()
         QSignalSpy finished(&dialog, &WarpSetupDialog::setupFinished);
         dialog.startSetup();
         dialog.stepAnswered(true, QString());                 // install
+        dialog.commandAnswered(0, QString(), false);          // daemon
         dialog.stepAnswered(true, QString());                 // enrolment
         const int commandsBefore = dialog.commands.size();
         dialog.commandAnswered(1, QStringLiteral("warp-cli: unrecognized option"), false);
 
-        check(dialog.currentStepIndex() == 2, "the chain stops at the step that failed");
+        check(dialog.currentStepIndex() == 3, "the chain stops at the step that failed");
         check(dialog.statusLabel()->objectName() == QLatin1String("setupStatusFailed"),
               "…and the status line is styled as the failure it is, not left in its running colour");
         check(paintsColor(dialog.statusLabel(), failedColour),
@@ -5069,11 +5101,85 @@ static void testWarpSetupDialog()
         check(dialog.cancelButton()->isEnabled(), "…and stopping is the other one");
         check(!dialog.succeeded() && finished.count() == 1 && !finished.at(0).at(0).toBool(),
               "a failed chain is announced as failed, once");
+        check(!dialog.logView()->toPlainText()
+                      .contains(LanguageManager::tr(QStringLiteral("warp.setup.daemon_down"))
+                                    .arg(WarpManager::serviceStartHint(
+                                        ZapretSource::hostPlatform()))),
+              "…and a client that merely disliked the question is not blamed on the service: the "
+              "manual-start sentence belongs to a refusal that names the daemon, and printing it for "
+              "every failure would teach the user to restart a service that was never the problem");
 
         dialog.startSetup();
-        check(dialog.currentStepIndex() == 2 && dialog.commands.size() == commandsBefore + 1,
+        check(dialog.currentStepIndex() == 3 && dialog.commands.size() == commandsBefore + 1,
               "and the retry repeats the step that failed rather than installing and enrolling again — "
               "a second enrolment would be a second key with the first one orphaned");
+        dialog.hide();
+    }
+
+    // ---- a daemon step that is refused does not end the chain ----
+    //
+    // Its commands are the only non-fatal ones in the plan, and this is why: three different machines all
+    // answer it with a non-zero exit — a host with no systemd at all, a pkexec prompt the user declined,
+    // and a Windows service that was already running, which `sc start` reports as the error 1056. Only
+    // the enrolment that follows can tell those apart, so a refusal here is written down and walked past
+    // rather than reported as the failure of the whole setup.
+    {
+        ProbeSetupDialog dialog(manager);
+        dialog.show();
+        dialog.startSetup();
+        dialog.stepAnswered(true, QString());        // the install reports success
+        check(dialog.currentStepIndex() == 1, "the daemon is the step the install hands over to");
+        dialog.commandAnswered(1, QStringLiteral("pkexec: Unexpected response"), false);
+        check(dialog.currentStepIndex() == 2 && dialog.registerBegun == 1,
+              "…and a refusal of it is survived: the enrolment is still asked for, because a machine "
+              "whose daemon somebody else started has nothing to gain from the wizard stopping here");
+        check(dialog.logView()->toPlainText().contains(QStringLiteral("pkexec: Unexpected response")),
+              "the refusal is in the pane rather than swallowed on the way past — a chain that quietly "
+              "skipped a step would be a chain nobody could explain afterwards");
+        check(!dialog.logView()->toPlainText()
+                      .contains(LanguageManager::tr(QStringLiteral("warp.setup.daemon_down"))
+                                    .arg(WarpManager::serviceStartHint(
+                                        ZapretSource::hostPlatform()))),
+              "…and it is not dressed as the failure it is not: the manual-start sentence belongs to a "
+              "chain that stopped, and printing it over a step that went on to work would be a red line "
+              "the user learns to ignore");
+        dialog.hide();
+    }
+
+    // ---- the refusal whose cause the user can fix ----
+    //
+    // The report the daemon step was added for, driven through the manager's real channels rather than
+    // through the stub, because what is under test is what the dialog does with what the manager says:
+    // registrationFinished() carries a bool and nothing else, and the reason arrives beside it on the
+    // journal channel — which the dialog used to relay and then forget.
+    {
+        ProbeSetupDialog dialog(manager);
+        dialog.delegateRegistration = true;
+        dialog.show();
+        dialog.startSetup();
+        dialog.stepAnswered(true, QString());          // install
+        dialog.commandAnswered(0, QString(), false);   // daemon
+        manager.answerLog(QStringLiteral("WarpManager: Missing registration. Try running: 'warp-cli "
+                                         "registration new'\nMaybe the daemon is not running?"), 2);
+        manager.answerFinished(false);
+
+        const QString pane = dialog.logView()->toPlainText();
+        check(pane.contains(QStringLiteral("Maybe the daemon is not running?")),
+              "the daemon's own sentence reaches the pane…");
+        check(pane.contains(LanguageManager::tr(QStringLiteral("warp.setup.daemon_down"))
+                                .arg(WarpManager::serviceStartHint(ZapretSource::hostPlatform()))),
+              "…with the one command that would fix it underneath, which is the difference between a "
+              "refusal the user can act on and one they can only read");
+        check(dialog.statusLabel()->text().contains(QStringLiteral("Missing registration")),
+              "the status line quotes the reason instead of the step's title, because the words for what "
+              "went wrong are about the service and the title says \"registration\"");
+        check(dialog.statusLabel()->objectName() == QLatin1String("setupStatusFailed"),
+              "…styled as the failure it is, so what comes next cannot read as a step still running");
+        check(dialog.startButton() && dialog.startButton()->isVisibleTo(&dialog)
+                      && dialog.startButton()->text()
+                             == LanguageManager::tr(QStringLiteral("warp.setup.retry")),
+              "and the way to try again is on screen: starting the service by hand and pressing it is the "
+              "whole recovery, so a dialog offering neither is one that has to be killed");
         dialog.hide();
     }
 

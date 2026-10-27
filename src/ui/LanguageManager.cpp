@@ -606,11 +606,14 @@ const QVector<Row> &catalog()
         ROW("warp.setup.step", "Шаг %1 из %2: %3", "Step %1 of %2: %3", "Paso %1 de %2: %3",
             "Schritt %1 von %2: %3", "第 %1 步，共 %2 步：%3", "Étape %1 sur %2 : %3",
             "चरण %1 / %2: %3"),
-        // The five steps' own sentences, keyed by the id the plan in WarpManager::setupSteps() carries
+        // The steps' own sentences, keyed by the id the plan in WarpManager::setupSteps() carries
         // so a step can never be announced by the wrong words.
         ROW("warp.setup.step.install", "Установка пакета…", "Installing the package…",
             "Instalando el paquete…", "Paket wird installiert…", "正在安装软件包…",
             "Installation du paquet…", "पैकेज इंस्टॉल हो रहा है…"),
+        ROW("warp.setup.step.daemon", "Запуск службы WARP…", "Starting the WARP service…",
+            "Iniciando el servicio de WARP…", "WARP-Dienst wird gestartet…", "正在启动 WARP 服务…",
+            "Démarrage du service WARP…", "WARP सेवा शुरू हो रही है…"),
         ROW("warp.setup.step.register", "Регистрация устройства…", "Registering the device…",
             "Registrando el dispositivo…", "Gerät wird registriert…", "正在注册设备…",
             "Enregistrement de l'appareil…", "डिवाइस पंजीकृत हो रहा है…"),
@@ -631,6 +634,23 @@ const QVector<Row> &catalog()
         ROW("warp.setup.error", "Ошибка на шаге %1: %2", "Step %1 failed: %2",
             "Error en el paso %1: %2", "Fehler in Schritt %1: %2", "第 %1 步出错：%2",
             "Échec à l'étape %1 : %2", "चरण %1 विफल: %2"),
+        // ---- the one failure whose cause the user can fix with a single command ----
+        //
+        // %1 is the service manager's own verb for this platform, composed by
+        // WarpManager::serviceStartHint() rather than written here: a catalog that spelled "systemctl"
+        // into seven languages is a catalog that would keep saying it to a Windows user. Shown under a
+        // refusal that names the daemon, and under a failure of the step that was meant to start it —
+        // because "Missing registration. Try running: 'warp-cli registration new'" is what a healthy
+        // client prints when its daemon is dead, and read at its word it sends the user to enrol a
+        // device that cannot be enrolled.
+        ROW("warp.setup.daemon_down",
+            "Не удалось запустить службу WARP. Попробуйте выполнить '%1' вручную.",
+            "The WARP service could not be started. Try running '%1' by hand.",
+            "No se pudo iniciar el servicio de WARP. Pruebe a ejecutar '%1' manualmente.",
+            "Der WARP-Dienst konnte nicht gestartet werden. Versuchen Sie, '%1' manuell auszuführen.",
+            "无法启动 WARP 服务。请尝试手动执行 '%1'。",
+            "Le service WARP n'a pas pu être démarré. Essayez d'exécuter '%1' manuellement.",
+            "WARP सेवा शुरू नहीं हो सकी। '%1' स्वयं चलाने का प्रयास करें।"),
         ROW("warp.setup.done", "WARP успешно настроен и подключен!",
             "WARP is set up and connected!", "¡WARP está configurado y conectado!",
             "WARP ist eingerichtet und verbunden!", "WARP 已设置并连接成功！",

@@ -325,6 +325,43 @@ public:
     static QStringList serviceRestartArgs();
     static QString serviceUnit();
 
+    // ---- the daemon's own start, spelled once per service manager ----
+    //
+    // Every warp-cli verb is a client talking to warp-svc over a local socket, so a daemon that is not
+    // running refuses all of them — including the enrolment the setup wizard has to settle before it can
+    // do anything else. A package manager putting the unit on the disk is not a promise that it was
+    // started, and a machine that had it stopped by hand does not start it again by itself.
+    //
+    // systemd's answer is one idempotent verb: `enable --now` starts a unit that is stopped, leaves a
+    // unit that is running alone, and keeps it up across a boot besides — a client that is started but
+    // not enabled comes back down at the next login and takes the tunnel with it, which is the same bug
+    // reported a week later with no wizard anywhere in it.
+    static QStringList systemdEnableStartArgs();
+    // A service control manager has no `--now` and no idempotent start: `sc start` on a service the MSI
+    // already started refuses with 1056. Windows' half is therefore a query the journal can quote the
+    // state of, plus a start the plan marks non-fatal — see SetupCommand::fatal.
+    static QStringList windowsServiceQueryArgs();
+    static QStringList windowsServiceStopArgs();
+    static QStringList windowsServiceStartArgs();
+
+    // Whether one of warp-cli's answers says the daemon was not there to be asked. Worth reading the
+    // client's own wording literally, because this is the one refusal whose cause a user can fix with a
+    // single command: "Missing registration. Try running: 'warp-cli registration new'" followed by
+    // "Maybe the daemon is not running?" is what a healthy client with a dead daemon prints, and taking
+    // the first of those two lines at its word would have the interface offer an enrolment that cannot
+    // be issued. Pure and static for the reason every parser here is: the text arrives from a vendor's
+    // build tree, so a runner has to be able to hand over the transcript of a machine whose daemon is
+    // down without having to reproduce one.
+    static bool daemonLooksDown(const QString &output);
+
+    // The command a user is told to run by hand when it was not. The sentence belongs to the catalog and
+    // the command to the core, so the two cannot drift into naming different service managers: sudo on
+    // Linux because the reader is sitting at a terminal, bare `sc` on Windows because this process
+    // already holds the administrator token its manifest asked for and an elevated console is where that
+    // verb works. A platform this file cannot name gets the systemd spelling, which is the one the two
+    // distributions this application ships for use.
+    static QString serviceStartHint(Strategy::Platform platform);
+
     // The IPv6 question, asked rather than answered: reading one sysctl value needs no root and
     // changes nothing, and an IPv6-less host is worth naming in the journal because MASQUE is much
     // less likely to come up there. Deliberately not `sysctl -w` — see prepareEnvironment().
@@ -351,14 +388,22 @@ public:
     // link), and a sequence written as calls inside a dialog is a sequence no runner can check without
     // running a package manager.
     //
-    // One command a step runs. Most steps have one; Windows' service step has two, because there is no
-    // `restart` verb for a service control manager and no shell is allowed to invent one.
+    // One command a step runs. Most steps have one; the two Windows steps have two each, because there
+    // is no `restart` verb for a service control manager and no shell is allowed to invent one.
     struct SetupCommand
     {
         QString program;         // resolved by the runner, never guessed
         QStringList args;        // already split — nothing here is a command line to be parsed
         bool privileged = false; // needs root/admin; see composePrivilegedCommand()
         int timeoutMs = 0;       // a step that never answers must not hold a modal window open forever
+        // Whether this command's refusal ends the step. True — the default, and what every command but
+        // the daemon step's carries — for a command whose non-zero exit is a fact about the machine.
+        // False where a refusal is the answer we were hoping for: `sc start` on a service the MSI
+        // already started exits 1056, and a wizard that stopped there would be a wizard that fails on
+        // every healthy Windows host. The runner still puts the output in the pane, because "the service
+        // said it was already running" is worth more than silence; it just does not stop the chain.
+        // Mirrors PreparationStep::fatal, which is the same question in the automatic path.
+        bool fatal = true;
     };
 
     // Which of the three ways a step gets done. Kept explicit rather than inferred from an empty
@@ -377,7 +422,7 @@ public:
 
     struct SetupStep
     {
-        QString id;              // "install" | "register" | "protocol" | "service" | "connect"
+        QString id;              // "install" | "daemon" | "register" | "protocol" | "service" | "connect"
         SetupKind kind = SetupKind::Command;
         QList<SetupCommand> commands;
         // Whether the user may walk away mid-step. False for the package manager and nothing else: an

@@ -5027,13 +5027,64 @@ int main(int argc, char **argv)
         // plan rather than as a run, because the alternative is a test that installs a package and
         // restarts a service on whatever machine the suite happens to be on.
         check(WarpManager::setupStepIds(Strategy::Platform::Linux)
-                      == (QStringList{QStringLiteral("install"), QStringLiteral("register"),
-                                      QStringLiteral("protocol"), QStringLiteral("service"),
-                                      QStringLiteral("connect")}),
-              "a bare Linux host gets all five steps, in the order that works");
+                      == (QStringList{QStringLiteral("install"), QStringLiteral("daemon"),
+                                      QStringLiteral("register"), QStringLiteral("protocol"),
+                                      QStringLiteral("service"), QStringLiteral("connect")}),
+              "a bare Linux host gets all six steps, in the order that works");
         check(WarpManager::setupStepIds(Strategy::Platform::Windows).last()
                           == QStringLiteral("connect"),
               "and Windows ends on the connect too, whatever it does about the service in between");
+
+        // ---- the daemon, before anything is asked of it ----
+        //
+        // The claim this step exists for, as an index comparison rather than as a run: every warp-cli
+        // verb is a client talking to warp-svc over a local socket, so a daemon that is not up refuses an
+        // enrolment with "Missing registration. Try running: 'warp-cli registration new' / Maybe the
+        // daemon is not running?" — a sentence about the service, printed under a step whose title names
+        // the device, which is exactly how it came to be read as an enrolment problem.
+        {
+            const QStringList ids = WarpManager::setupStepIds(Strategy::Platform::Linux);
+            const int daemon = ids.indexOf(QStringLiteral("daemon"));
+            check(daemon >= 0 && daemon < ids.indexOf(QStringLiteral("register")),
+                  "the daemon is started before the device is enrolled");
+            check(ids.indexOf(QStringLiteral("install")) < daemon,
+                  "…and after the package that puts the unit on the disk, which is the only thing that "
+                  "can be asked of a client that is not installed yet");
+            check(ids.indexOf(QStringLiteral("register")) < ids.indexOf(QStringLiteral("service")),
+                  "the restart still comes after the enrolment, because a daemon restarted mid "
+                  "`registration new` loses the key that call is obtaining");
+        }
+        {
+            const auto steps = WarpManager::setupSteps(Strategy::Platform::Linux, /*installed=*/false,
+                                                       WarpManager::Registration::Unknown);
+            const WarpManager::SetupStep *daemon = nullptr;
+            for (const WarpManager::SetupStep &s : steps)
+                if (s.id == QLatin1String("daemon"))
+                    daemon = &s;
+            check(daemon && daemon->commands.size() == 1
+                          && daemon->commands.at(0).program == QStringLiteral("systemctl")
+                          && daemon->commands.at(0).args == WarpManager::systemdEnableStartArgs(),
+                  "the step is systemd's own idempotent verb, so a unit that is already running is left "
+                  "alone and one that is not comes up");
+            check(daemon && daemon->commands.at(0).args
+                          == (QStringList{QStringLiteral("enable"), QStringLiteral("--now"),
+                                          WarpManager::serviceUnit()}),
+                  "…spelled `enable --now`, which is also what keeps the tunnel alive across the next "
+                  "boot: a client that is started but not enabled comes back down at the next login");
+            check(daemon && daemon->commands.at(0).privileged,
+                  "…needing root, so it goes through the same pkexec gate every other privileged command "
+                  "in this plan goes through");
+            check(daemon && daemon->commands.at(0).timeoutMs > 0,
+                  "…with the deadline of a step a human may have to authorise, so a prompt nobody noticed "
+                  "ends instead of holding a modal window open");
+            check(daemon && !daemon->commands.at(0).fatal,
+                  "and a refusal does not end the chain: no systemd at all, a declined prompt and a "
+                  "service that was already up all answer non-zero, and only the enrolment that follows "
+                  "can tell those three apart");
+            check(daemon && daemon->cancellable,
+                  "…though the step may still be walked away from — unlike a package manager, a systemctl "
+                  "interrupted halfway leaves no database to repair");
+        }
         {
             const auto steps = WarpManager::setupSteps(Strategy::Platform::Linux, /*installed=*/true,
                                                        WarpManager::Registration::Registered);
@@ -5060,6 +5111,46 @@ int main(int argc, char **argv)
                       .isEmpty(),
               "a platform this application cannot name gets no commands at all, rather than a guess at "
               "somebody else's package manager");
+        {
+            const auto steps = WarpManager::setupSteps(Strategy::Platform::Windows, false,
+                                                       WarpManager::Registration::Unknown);
+            const WarpManager::SetupStep *daemon = nullptr;
+            int daemonAt = -1;
+            int registerAt = -1;
+            for (int i = 0; i < steps.size(); ++i) {
+                if (steps.at(i).id == QLatin1String("daemon")) {
+                    daemon = &steps.at(i);
+                    daemonAt = i;
+                }
+                if (steps.at(i).id == QLatin1String("register"))
+                    registerAt = i;
+            }
+            check(daemonAt >= 0 && daemonAt < registerAt,
+                  "Windows brings its own service up before the enrolment too");
+            check(daemon && daemon->commands.size() == 2
+                          && daemon->commands.at(0).args == WarpManager::windowsServiceQueryArgs()
+                          && daemon->commands.at(1).args == WarpManager::windowsServiceStartArgs(),
+                  "…as a query and a start, because a service control manager has no idempotent verb and "
+                  "no shell is allowed to invent one");
+            check(daemon && !daemon->commands.at(1).fatal,
+                  "…and the start is the non-fatal half: `sc start` on a service the MSI already started "
+                  "exits 1056, so a wizard that stopped there would fail on every healthy Windows host");
+            check(daemon && daemon->commands.at(1).privileged && !daemon->commands.at(0).privileged,
+                  "starting a service needs the administrator the manifest already asked for; asking one "
+                  "what state it is in does not");
+        }
+        {
+            const auto enrolled = WarpManager::setupSteps(Strategy::Platform::Linux,
+                                                          /*installed=*/true,
+                                                          WarpManager::Registration::Registered);
+            bool daemonInEnrolled = false;
+            for (const WarpManager::SetupStep &s : enrolled)
+                daemonInEnrolled = daemonInEnrolled || s.id == QLatin1String("daemon");
+            check(!daemonInEnrolled,
+                  "an already-enrolled machine gets no daemon step of its own: the restart it does get "
+                  "starts a stopped unit as surely as it restarts a running one, and a second root prompt "
+                  "in one run is a cost with nothing behind it");
+        }
         {
             const auto steps = WarpManager::setupSteps(Strategy::Platform::Windows, false,
                                                        WarpManager::Registration::Unknown);
@@ -5111,6 +5202,38 @@ int main(int argc, char **argv)
             check(connect && connect->commands.size() == 1
                           && connect->commands.at(0).args == WarpManager::connectArgs(),
                   "and the last step is the ordinary connect, with nothing extra invented for it");
+        }
+
+        // ---- the refusal whose cause a user can fix with one command ----
+        {
+            const QString reported = QStringLiteral(
+                "Missing registration. Try running: 'warp-cli registration new'\n"
+                "Maybe the daemon is not running?");
+            check(WarpManager::daemonLooksDown(reported),
+                  "the answer a healthy client gives when its daemon is dead is recognised as one — this "
+                  "is the transcript the daemon step was added for, and its first line read on its own is "
+                  "an enrolment problem that no enrolment can fix");
+            check(WarpManager::daemonLooksDown(QStringLiteral(
+                      "WarpManager: failed to connect to the daemon")),
+                  "so is a client that says plainly that it could not reach the socket");
+            check(!WarpManager::daemonLooksDown(QStringLiteral(
+                      "2024-11-20T10:00:00.000Z warp-cli [INFO] Disconnected")),
+                  "a status answer is not a complaint about the service");
+            check(!WarpManager::daemonLooksDown(
+                      QStringLiteral("warp-cli: unrecognized option '--accept-tosss'")),
+                  "…and neither is a client that did not like the question, which is a refusal about the "
+                  "spelling: blaming the service for it would send the user to restart something that was "
+                  "never down");
+            check(!WarpManager::daemonLooksDown(QString()),
+                  "silence is not a diagnosis — an empty answer leaves the caller's own sentence as the "
+                  "failure rather than guessing at a service");
+            check(WarpManager::serviceStartHint(Strategy::Platform::Linux)
+                          == QStringLiteral("sudo systemctl start warp-svc"),
+                  "the command Linux is told to run by hand is the one that works at a terminal");
+            check(WarpManager::serviceStartHint(Strategy::Platform::Windows)
+                          == QStringLiteral("sc start warp-svc"),
+                  "…and Windows gets its own service manager's verb: the sentence around it is translated "
+                  "seven ways, the command is composed, and neither can drift into naming the other's tool");
         }
 
         // ---- the privilege gate every privileged command shares ----
@@ -5285,6 +5408,17 @@ int main(int argc, char **argv)
                       "2024-11-20T10:00:00.000Z warp-cli [INFO] Not registered"), 0)
                       == Reg::NotRegistered,
                   "`Not registered` is NotRegistered even on a zero exit");
+            check(WarpManager::parseRegistration(QStringLiteral(
+                      "Error: Missing registration. Try running: \"warp-cli registration new\""), 1)
+                      == Reg::NotRegistered,
+                  "the build this was reported against spells an unenrolled device as `Missing "
+                  "registration` and names the verb that would fix it — read as Unknown instead, the "
+                  "wizard refuses to enrol a device that is asking to be, and fails on the same sentence "
+                  "however often it is retried");
+            check(WarpManager::needsEnrollment(WarpManager::parseRegistration(
+                      QStringLiteral("Error: Missing registration. Try running: \"warp-cli registration "
+                                     "new\""), 1)),
+                  "…so the enrolment it recommends is the one that actually gets run");
 
             // The collisions, as checks of their own rather than as a by-product of the three above:
             // every negative answer contains words from the positive side, and "Client registration does

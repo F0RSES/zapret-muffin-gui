@@ -490,8 +490,8 @@ QLabel#setupStatusDone {
     background-color: transparent;
     color: #34D399; font-size: 10pt; font-weight: 700;
 }
-/* The bar is a step counter, not a percentage: five steps make every value a multiple of twenty, so the
-   number is hidden in code and the thread is all there is to read. Same cyan as the download's, because
+/* The bar is a step counter, not a percentage: the plan has a handful of steps, so the number is hidden
+   in code and the thread is all there is to read. Same cyan as the download's, because
    this is the same kind of wait — something being fetched or installed while the user watches. */
 QProgressBar#setupProgress {
     border: none; border-radius: 3px; background-color: #0F1116;
