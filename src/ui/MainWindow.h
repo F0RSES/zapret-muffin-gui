@@ -17,6 +17,7 @@
 
 class QAction;
 class QCloseEvent;
+class QEvent;
 class QFrame;
 class QHBoxLayout;
 class QJsonObject;
@@ -530,11 +531,32 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    // Minimize, restore, maximize — the one moment this window repaints all of itself rather than the part
+    // of itself that a window manager said was exposed. See refreshWindowSurface().
+    void changeEvent(QEvent *event) override;
     // The window is frameless (see the constructor), so its own header is the only thing to grab: a press
     // there drags the whole window. A press anywhere else falls through to the usual widget behaviour.
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+
+    // What a window-state change owes the surface: every graphics effect this window is carrying told to
+    // drop its cached source, then a repaint of the whole surface rather than of the exposed region.
+    //
+    // Why anything is owed. This window is frameless and WA_TranslucentBackground, so the pixels no widget
+    // paints are the desktop showing through, and its canvas carries a QGraphicsDropShadowEffect for the
+    // life of the window — which means the canvas is drawn through an offscreen pixmap the compositor
+    // keeps between paints. A control that is still working is drawn the same way: a Busy power button
+    // breathes on a QGraphicsOpacityEffect whose animation has no end, so it is rendered through such a
+    // pixmap for as long as the tunnel is coming up. A minimize/restore is exactly the moment a cache like
+    // that can outlive the frame it was taken from, and what is left on the screen then is the previous
+    // frame's copy of a widget, sitting where the previous frame had put it — the report this answers was
+    // a second power button floating beside the real one, unclickable, after a restore.
+    //
+    // Virtual for the reason the watchdog's seams are: the claim worth testing is that a state change asks
+    // for this and that nothing else does, and neither half is observable from outside a window that a
+    // real window manager has actually minimized.
+    virtual void refreshWindowSurface();
 
     // ---- the watchdog's three seams ---------------------------------------------------
     //

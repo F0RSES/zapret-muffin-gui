@@ -30,9 +30,11 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QFile>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
+#include <QGraphicsEffect>
 #include <QGridLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -3917,6 +3919,40 @@ void MainWindow::requestQuit()
         m_manager->stop();
     hide();
     qApp->quit();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() != QEvent::WindowStateChange)
+        return;
+    refreshWindowSurface();
+}
+
+void MainWindow::refreshWindowSurface()
+{
+    // The cached sources first, and invalidated rather than detached. QGraphicsEffect::update() drops the
+    // pixmap the effect was rendering from and schedules a re-render of the widget as it is now; taking the
+    // effect off would clear the same cache, and Motion does exactly that — but a fade Motion installed is
+    // a transition with an end, while the canvas's shadow IS the window's look. A restore that detached it
+    // would restore a window with no shadow, and re-attaching a fresh one per restore is a flicker plus
+    // everything the old effect owned. Hence the whole subtree is walked: the shadow is one of the effects
+    // a restore can find stale, and a breathing control's is the other.
+    const QList<QWidget *> children = findChildren<QWidget *>();
+    for (QWidget *child : children) {
+        if (QGraphicsEffect *effect = child->graphicsEffect())
+            effect->update();
+    }
+
+    // Then the whole surface. update() and not repaint(): a state change arrives while the window is still
+    // settling into the geometry that goes with it, and a synchronous paint here would be a paint of the
+    // size the window is on its way out of. update() coalesces into the next turn of the event loop — after
+    // the resize has landed — and asks for every pixel rather than the region an expose named, which is the
+    // half that matters on a translucent surface: a pixel nobody repaints keeps whatever the previous
+    // frame left in it, and on this window the previous frame is what the desktop is seen through.
+    if (QWidget *canvas = centralWidget())
+        canvas->update();
+    update();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

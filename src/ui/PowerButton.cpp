@@ -278,6 +278,16 @@ void PowerButton::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    // No clip of its own, and the reason is written down because "the glow escapes the widget and survives
+    // a minimize" is a plausible-sounding reading of a stale frame: a widget paints into its own rect and
+    // Qt clips it there, so nothing below can reach a pixel of the parent's — and the widget is sized to
+    // carry the bloom rather than to have it cut off, which is what setDiameter()'s kHaloMargin is for
+    // (38 px of margin against a glow that reaches 11 px past the rim at its widest pass, and a focus ring
+    // that reaches 7). A setClipRect(rect()) here would be a second copy of a clip that already exists.
+    // The claim is read as pixels rather than left as an argument: testPowerButton() renders this button
+    // inside a parent of a known colour and compares every pixel outside its geometry against that colour.
+    // What a restore CAN leave behind is a cached effect source, and that is MainWindow::changeEvent()'s
+    // to invalidate — see refreshWindowSurface().
 
     const QColor tint = modeColor(m_mode, m_palette);
     const QPointF center(width() / 2.0, height() / 2.0);

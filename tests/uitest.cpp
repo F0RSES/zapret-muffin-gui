@@ -821,6 +821,59 @@ static void testPowerButton()
     check(button.width() == 120 + 2 * PowerButton::kHaloMargin, "and resizes the widget");
     button.setDiameter(0);
     check(button.diameter() == 48, "a zero diameter is clamped, not obeyed");
+
+    // ---- nothing the button paints lands outside the button ----
+    //
+    // A ghost duplicate of this circle, floating beside the window after a minimize/restore, reads like a
+    // glow that escaped its widget and was then left on the surface. This is the measurement of that
+    // claim rather than an argument about it: the button is put inside a parent, at its brightest —
+    // Active, glow at the ceiling setGlow() allows — and every pixel of the parent outside the button's
+    // geometry is compared against the colour the parent painted there. One leaked pixel fails.
+    //
+    // It passes for two reasons that hold independently: the widget carries kHaloMargin of its own space
+    // on every side, which is more than the widest glow pass reaches past the rim, and a widget paints
+    // into its own rect with Qt clipping it there — which is also why a setClipRect(rect()) inside
+    // paintEvent() would be a second copy of a clip that already exists rather than a fix.
+    {
+        QWidget host;
+        host.setAutoFillBackground(true);
+        host.resize(button.width() + 60, button.height() + 60);
+        auto *bright = new PowerButton(&host);
+        bright->setMode(PowerButton::Mode::Active);
+        bright->setGlow(1.0);
+        bright->move(30, 30);
+        const QImage img = host.grab().toImage();
+        const QRect inside(bright->pos(), bright->size());
+        // The ground is read out of the grab rather than named as a literal: a sheet is live on this
+        // QApplication, and what the parent actually painted is the only honest baseline to compare to.
+        const QColor ground = img.pixelColor(0, 0);
+        int leaked = 0;
+        QPoint first;
+        for (int y = 0; y < img.height(); ++y) {
+            for (int x = 0; x < img.width(); ++x) {
+                if (inside.contains(x, y) || img.pixelColor(x, y) == ground)
+                    continue;
+                if (leaked == 0)
+                    first = QPoint(x, y);
+                ++leaked;
+            }
+        }
+        check(leaked == 0,
+              leaked == 0
+                  ? QStringLiteral("at full glow and the brightest tint, not one pixel outside the "
+                                     "button's %1x%2 geometry carries any of it")
+                        .arg(bright->width())
+                        .arg(bright->height())
+                  : QStringLiteral("%1 pixels outside the button carry its glow, the first at (%2,%3)")
+                        .arg(leaked)
+                        .arg(first.x())
+                        .arg(first.y()));
+        check(img.width() == host.width() && img.height() == host.height()
+                      && inside.width() == bright->width()
+                      && img.pixelColor(inside.center()) != ground,
+              "…and the reading covered the whole parent around a button that really did paint, so the "
+              "silence above is a measurement and not a grab that missed the edges");
+    }
 }
 
 // --------------------------------------------------------------- ModeToggle ----
@@ -5345,6 +5398,23 @@ static void testUpdateNotice()
 // against a #F3F4F6 shell, so a leaked corner is a grey pixel outside the arc, while the dark sheet paints
 // both #0B0C10 and hides the mistake in a matching colour. Every reading below therefore runs in both
 // themes, against the colours each sheet declares rather than colours written here.
+// The window with its surface refresh counted. The refresh itself is left to the base, deliberately: a
+// probe that only counted would let the real implementation rot, and what the scenario has to prove is
+// that the event asks for the work — not that a test can watch itself ask.
+class SurfaceProbe : public MainWindow
+{
+public:
+    using MainWindow::MainWindow;
+    int refreshes = 0;
+
+protected:
+    void refreshWindowSurface() override
+    {
+        ++refreshes;
+        MainWindow::refreshWindowSurface();
+    }
+};
+
 static void testWindowFrame()
 {
     std::printf("\n[Rounded shell]\n");
@@ -5387,6 +5457,54 @@ static void testWindowFrame()
     store.setStartLastOnLaunch(false);   // nothing may start itself while its corners are being read
     store.setLastStrategyId(QString());
     store.setZapretPath(root);
+
+    // ---- a window-state change owes the surface a full refresh ----
+    //
+    // The window is frameless and translucent, and its canvas carries a drop shadow for the life of the
+    // window — so the canvas is drawn through a pixmap the compositor keeps between paints, exactly as a
+    // Busy power button is (Motion's breath is an opacity effect with no end). A minimize/restore is the
+    // moment such a cache can outlive the frame it was taken from, and what is left on screen is the
+    // previous frame's copy of a widget where the previous frame put it: the reported ghost was a second
+    // power button, unclickable, beside the real one.
+    {
+        SurfaceProbe probe;
+        probe.show();
+        QTest::qWait(60);
+        QWidget *canvas = probe.findChild<QWidget *>(QStringLiteral("rootCanvas"));
+        auto *shadowBefore =
+            canvas ? qobject_cast<QGraphicsDropShadowEffect *>(canvas->graphicsEffect()) : nullptr;
+        check(shadowBefore != nullptr, "the window under test is the one carrying the shadow");
+
+        // Read against the count the probe arrived at rather than against zero: showing a window can hand
+        // it a state change of its own, and the claim is about the events this scenario sends.
+        const int before = probe.refreshes;
+        QEvent stateChange(QEvent::WindowStateChange);
+        QCoreApplication::sendEvent(&probe, &stateChange);
+        check(probe.refreshes == before + 1,
+              "a window-state change asks for the whole surface to be refreshed, because that is the one "
+              "moment a translucent window and the effects it carries can be left holding a frame nobody "
+              "is going to repaint");
+
+        QEvent activation(QEvent::ActivationChange);
+        QCoreApplication::sendEvent(&probe, &activation);
+        QEvent fontChange(QEvent::FontChange);
+        QCoreApplication::sendEvent(&probe, &fontChange);
+        check(probe.refreshes == before + 1,
+              "…and nothing else asks: an activation and a font change are not a surface whose geometry "
+              "just moved, and repainting the whole window for either would be a full refresh per event");
+
+        auto *shadowAfter =
+            canvas ? qobject_cast<QGraphicsDropShadowEffect *>(canvas->graphicsEffect()) : nullptr;
+        check(shadowAfter == shadowBefore
+                      && shadowAfter->blurRadius() == MainWindow::kWindowShadowBlurPx
+                      && shadowAfter->offset() == QPointF(0, MainWindow::kWindowShadowOffsetYpx),
+              "the refresh invalidates the shadow's cached source instead of taking the effect off — a "
+              "restore that detached it would restore a window with no shadow, and re-attaching a fresh "
+              "one per restore is a flicker plus everything the old effect owned");
+        check(probe.centralWidget() == canvas && canvas != nullptr,
+              "…and the canvas it repaints is still the window's own, not a replacement");
+        probe.hide();
+    }
 
     {
         MainWindow window;
