@@ -57,6 +57,12 @@ constexpr int kTableInsetPx = 4;
 // How wide the empty-state sentence is allowed to get before it wraps. Below the panel's own width on
 // purpose: a bounded label reads as a centred sentence, an unbounded one as a rule across the page.
 constexpr int kEmptyTextMaxWidthPx = 460;
+// The empty state's clock, and the gap under it. The same two numbers reappear below the sentence as the
+// mirror that centres it — see build() — which is why they are named here rather than written inline: the
+// balance has to be the same measurement as the thing it balances, and a literal on each side of that
+// promise is two chances to be wrong about one number.
+constexpr int kEmptyGlyphPx = 34;
+constexpr int kEmptyGlyphGapPx = 14;
 
 // The three counts' colour band, stamped the same way and for the same reason: "neutral" is a number that
 // is not a problem, "danger" the checks that never connected, "warning" the certificates that came back
@@ -416,15 +422,26 @@ void HistoryPage::build()
     empty->setObjectName(QStringLiteral("historyEmpty"));
     auto *emptyBox = new QVBoxLayout(empty);
     emptyBox->setContentsMargins(24, 40, 24, 40);
-    emptyBox->setSpacing(14);
-    emptyBox->addStretch(1);
+    // Spacing zero, and every gap written out: the block has to be centred on its *sentence*, and the
+    // arithmetic of that only closes when the distances are the ones this function states rather than a
+    // layout default that lands between items nobody counted. A mirror spacing below the text then balances
+    // the icon above it exactly — see the two addSpacing calls, which are the same three numbers in the
+    // other order.
+    emptyBox->setSpacing(0);
+
+    // Named spacers rather than addStretch(): the claim being made is that the block hangs from two equal
+    // forces, one above and one below, and a QSpacerItem at each end says that in the layout itself.
+    auto *lift = new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding);
+    auto *hold = new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding);
+    emptyBox->addItem(lift);
 
     m_emptyGlyph = new QLabel(empty);
     m_emptyGlyph->setObjectName(QStringLiteral("historyEmptyGlyph"));
     m_emptyGlyph->setAlignment(Qt::AlignCenter);
-    m_emptyGlyph->setPixmap(Theme::icon(QStringLiteral("clock"), Theme::mutedText(), 34)
-                                .pixmap(34, 34));
+    m_emptyGlyph->setPixmap(Theme::icon(QStringLiteral("clock"), Theme::mutedText(), kEmptyGlyphPx)
+                                .pixmap(kEmptyGlyphPx, kEmptyGlyphPx));
     emptyBox->addWidget(m_emptyGlyph, 0, Qt::AlignHCenter);
+    emptyBox->addSpacing(kEmptyGlyphGapPx);
 
     m_emptyText = new QLabel(empty);
     m_emptyText->setObjectName(QStringLiteral("placeholder"));
@@ -451,7 +468,13 @@ void HistoryPage::build()
     i18nText(m_emptyText, QStringLiteral("history.empty"));
     emptyBox->addWidget(m_emptyText);
 
-    emptyBox->addStretch(1);
+    // …and the mirror: the same gap, then the icon's own height, below the sentence. That is what makes the
+    // pair balance on the words rather than on the pair — the two expanding spacers then leave equal space
+    // above the icon and below this margin, so the sentence lands on the panel's centre line with the clock
+    // floating the right distance over it. Without it the block is centred and the sentence still reads as
+    // having slid half an icon down, which is exactly what was reported.
+    emptyBox->addSpacing(kEmptyGlyphGapPx + kEmptyGlyphPx);
+    emptyBox->addItem(hold);
     m_body->addWidget(empty);
 
     column->addWidget(m_body, 1);
@@ -602,8 +625,8 @@ void HistoryPage::retheme()
     // The tint and the status colour come from Theme::, and a model caches nothing, so the rows only have
     // to be painted again. The placeholder glyph, on the other hand, is a baked pixmap and must be
     // re-taken from the new tokens or it keeps the old theme's ink.
-    m_emptyGlyph->setPixmap(Theme::icon(QStringLiteral("clock"), Theme::mutedText(), 34)
-                               .pixmap(34, 34));
+    m_emptyGlyph->setPixmap(Theme::icon(QStringLiteral("clock"), Theme::mutedText(), kEmptyGlyphPx)
+                               .pixmap(kEmptyGlyphPx, kEmptyGlyphPx));
     if (QTableView *t = m_table)
         t->viewport()->update();
     // The bar's band is chosen from colours the sheet paints with, and the property has not moved — so

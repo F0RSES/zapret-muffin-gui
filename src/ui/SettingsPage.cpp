@@ -411,6 +411,17 @@ QLabel *SettingsPage::rowLabel(QFrame *card, const QString &key)
     // ragged. A fixed width makes every card share one left edge for its fields.
     label->setMinimumWidth(kRowLabelPx);
     label->setMaximumWidth(kRowLabelPx);
+    // Vertically, the same argument one axis further: the row's own centre line. A QFormLayout sizes a row
+    // from its field and leaves a shorter label at that row's TOP — the form's labelAlignment governs where
+    // a label sits *within the space it was given*, and the space it is given is its own sizeHint, so
+    // AlignVCenter centred nothing. A 28 px word beside a 32 px combo therefore sat two pixels above the
+    // control's middle, and four above a 35 px spin box: each row's offset its own, which is what read as
+    // "Тема and Язык have slid". Taking the row's height and centring the text inside it is the pair that
+    // fixes every row at once, whatever the font's metrics or the field's.
+    QSizePolicy policy = label->sizePolicy();
+    policy.setVerticalPolicy(QSizePolicy::Expanding);
+    label->setSizePolicy(policy);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     return i18nText(label, key);
 }
 

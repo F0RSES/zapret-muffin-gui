@@ -1960,6 +1960,52 @@ static void testSettingsPageCards(QApplication &app)
     check(page.pathField()->mapTo(&page, QPoint(0, 0)).x() == fieldX,
           "…and so does the path field in the first one");
 
+    // ---- one centre line per row ----
+    //
+    // The report was that "Тема" and "Язык" had slid. Horizontally the two columns already agree — that is
+    // what the checks above measure — so what had moved is the vertical relation between a label and the
+    // thing it names: a QFormLayout sizes a row from its field and leaves a shorter label at the row's top,
+    // which sits a 28 px word two pixels above a 32 px combo and four above a 35 px spin box. Two pixels
+    // are invisible as a measurement and unmistakable as a page: the labels stop sharing a line with the
+    // controls they belong to, and each row's offset is its own. Every labelled row is therefore read as
+    // geometry here, in the page's own coordinates.
+    {
+        auto labelFor = [&page](const QString &key) -> QLabel * {
+            const QString text = LanguageManager::tr(key);
+            const auto labels = page.findChildren<QLabel *>(QStringLiteral("settingsRowLabel"));
+            for (QLabel *l : labels)
+                if (l->text() == text)
+                    return l;
+            return nullptr;
+        };
+        const struct { const char *key; QWidget *field; } rows[] = {
+            { "settings.theme", page.themeField() },
+            { "settings.language", page.languageField() },
+            { "settings.ping", page.pingIntervalField() },
+            { "settings.watchdog", page.watchdogIntervalField() },
+            { "settings.path", page.pathField() },
+        };
+        for (const auto &r : rows) {
+            QLabel *label = labelFor(QLatin1String(r.key));
+            check(label != nullptr && r.field != nullptr,
+                  QStringLiteral("the %1 row has both halves to measure").arg(QLatin1String(r.key)));
+            if (!label || !r.field)
+                continue;
+            const int labelCentre = label->mapTo(&page, QPoint(0, 0)).y() + label->height() / 2;
+            const int fieldCentre = r.field->mapTo(&page, QPoint(0, 0)).y() + r.field->height() / 2;
+            check(qAbs(labelCentre - fieldCentre) <= 1,
+                  QStringLiteral("%1's label shares its field's centre line (%2 vs %3)")
+                      .arg(QLatin1String(r.key))
+                      .arg(labelCentre)
+                      .arg(fieldCentre));
+            check(label->mapTo(&page, QPoint(0, 0)).x()
+                          == page.findChildren<QLabel *>(QStringLiteral("settingsRowLabel")).first()
+                                 ->mapTo(&page, QPoint(0, 0)).x(),
+                  QStringLiteral("…and starts at the same left edge as every other row label (%1)")
+                      .arg(QLatin1String(r.key)));
+        }
+    }
+
     // ---- the path row ----
     QLineEdit *field = page.pathField();
     check(field != nullptr, "the path row is one text field");
@@ -3355,6 +3401,23 @@ static void testHistoryPage()
             check(!text->text().isEmpty() && text->isVisible(),
                   "…and there is a visible sentence to measure, so the two readings above are not a "
                   "comparison between two empty rectangles");
+
+            // ---- the sentence is centred on its own middle, not on the pair's ----
+            //
+            // The report was that the sentence had slid down, and the arithmetic explains why it read
+            // that way while the block was technically centred: the block is an icon above a sentence, and
+            // a pair centred as one unit leaves its *text* half an icon-plus-gap below the middle of the
+            // panel — twenty-four pixels on this page, which is exactly "somewhere in the lower half".
+            // What the eye is looking for is the sentence, so the sentence is what gets measured against
+            // the panel's centre line.
+            {
+                const int panelCentre = empty->rect().center().y();
+                check(qAbs(t.center().y() - panelCentre) <= 3,
+                      QStringLiteral("the empty-state sentence sits on the panel's centre line "
+                                     "(sentence %1, panel %2)")
+                          .arg(t.center().y())
+                          .arg(panelCentre));
+            }
         }
     }
 
