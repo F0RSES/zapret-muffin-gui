@@ -77,6 +77,7 @@
 #include <QImage>
 #include <QPainter>
 #include <QLabel>
+#include <QShortcut>
 #include <QLayout>
 #include <QLineEdit>
 #include <QMenu>
@@ -5309,6 +5310,80 @@ static void testWarpEnrolmentWiring()
         w->setCurrentPage(MainWindow::PageDashboard);
         check(w->appTitleText() == QStringLiteral("Muffin"),
               "…and goes back to the bare brand on the way home");
+    }
+
+    // ---- one heading per page: the header band is it ----
+    //
+    // Each full-screen page used to open with a "← Muffin" button and its own large name, one band below
+    // a header that already says "Muffin • Профили". Three of the four have since dropped both, and what
+    // this pins is the shape that is left: the header is the only place a page is named, the rows the
+    // headings shared keep their controls, and the way out is the one every page has always had.
+    {
+        EnrolmentFixture f(store);
+        MainWindow *w = f.window;
+        const int pages[] = {MainWindow::PageProfiles, MainWindow::PageLogs,
+                             MainWindow::PageHistory, MainWindow::PageSettings};
+        for (int page : pages) {
+            w->setCurrentPage(page);
+            QWidget *current = w->currentPageWidget();
+            check(current
+                      && current->findChildren<QLabel *>(QStringLiteral("pageTitle"),
+                                                        Qt::FindChildrenRecursively)
+                             .isEmpty(),
+                  QStringLiteral("page %1 carries no heading of its own under the window's header")
+                      .arg(page));
+        }
+        w->setCurrentPage(MainWindow::PageDashboard);
+
+        // By glyph rather than by text: the words were in seven languages and the arrow was the one thing
+        // all seven shared, so a leftover button is catchable whatever the language under the suite.
+        int arrows = 0;
+        const auto buttons = w->findChildren<QPushButton *>();
+        for (QPushButton *b : buttons)
+            if (b->text().startsWith(QString::fromUtf8("\xe2\x86\x90")))
+                ++arrows;
+        check(arrows == 0,
+              "nothing in the window offers a '←' way back any more: the rail and Esc are the way out");
+
+        // …and Esc is that way out, still registered on the window. Checked as a registration rather than
+        // as a key event, because an offscreen window is not the active window and a posted Escape would
+        // prove the platform rather than the application.
+        bool escapeArmed = false;
+        const auto shortcuts = w->findChildren<QShortcut *>();
+        for (QShortcut *s : shortcuts)
+            if (s->key() == QKeySequence(Qt::Key_Escape))
+                escapeArmed = true;
+        check(escapeArmed, "Esc is registered as the way back, which is what the visible buttons could go");
+        check(w->currentPage() == MainWindow::PageDashboard, "…and the page it returns to is the dashboard");
+
+        // The actions those rows used to carry are still on their pages: clearing the record, measuring
+        // the services, checking the bypass, and the journal's own filter and tools.
+        w->setCurrentPage(MainWindow::PageProfiles);
+        int profilesActions = 0;
+        const auto profilesButtons = w->currentPageWidget()->findChildren<QPushButton *>(
+            QStringLiteral("ghostButton"));
+        for (QPushButton *b : profilesButtons)
+            if (!b->text().isEmpty())
+                ++profilesActions;
+        check(profilesActions >= 3,
+              "the profiles row still carries its measurements — dropping the headings dropped nothing");
+        w->setCurrentPage(MainWindow::PageHistory);
+        check(w->historyPage() && w->historyPage()->clearButton()
+                  && w->historyPage()->clearButton()->objectName() == QLatin1String("dangerButton"),
+              "…and the history page still carries the one destructive thing it can do");
+        w->setCurrentPage(MainWindow::PageLogs);
+        check(w->logPanel() && w->logPanel()->view() != nullptr,
+              "…and the journal starts where its text starts");
+        w->setCurrentPage(MainWindow::PageSettings);
+        QPushButton *save = nullptr;
+        const auto settingsButtons = w->currentPageWidget()->findChildren<QPushButton *>(
+            QStringLiteral("primaryButton"));
+        for (QPushButton *b : settingsButtons)
+            if (b->isVisibleTo(w))
+                save = b;
+        check(save != nullptr,
+              "…and the form still closes with the Save button that commits it");
+        w->setCurrentPage(MainWindow::PageDashboard);
     }
 
     // The store is left exactly as the section found it: a run that ended with the WARP half lit would

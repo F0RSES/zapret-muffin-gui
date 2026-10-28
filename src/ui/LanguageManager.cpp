@@ -146,13 +146,6 @@ const QVector<Row> &catalog()
             "Impossible d'ouvrir la page des versions dans le navigateur",
             "ब्राउज़र में रिलीज़ पृष्ठ खोलने में असमर्थ"),
 
-        // ---- pages: shared chrome ----
-        ROW("page.back", "←  Muffin", "←  Muffin", "←  Muffin",
-            "←  Muffin", "←  Muffin", "←  Muffin", "←  Muffin"),
-        ROW("page.back_tip", "Вернуться на главный экран (Esc)",
-            "Back to the main screen (Esc)", "Volver a la pantalla principal (Esc)",
-            "Zurück zur Hauptansicht (Esc)", "返回主界面（Esc）",
-            "Retour à l'écran principal (Échap)", "मुख्य स्क्रीन पर लौटें (Esc)"),
         ROW("common.ok", "OK", "OK", "Aceptar", "OK", "确定", "OK", "ठीक है"),
         ROW("common.cancel", "Отмена", "Cancel", "Cancelar", "Abbrechen", "取消", "Annuler",
             "रद्द करें"),
@@ -734,9 +727,6 @@ const QVector<Row> &catalog()
             "Bypass-check statistics and history", "Estadísticas e historial de las comprobaciones",
             "Statistik und Verlauf der Bypass-Prüfungen", "绕过检查统计与历史",
             "Statistiques et historique des contrôles", "बाईपास जाँच के आँकड़े और इतिहास"),
-        ROW("history.title", "Статистика и История", "Statistics & History",
-            "Estadísticas e historial", "Statistik & Verlauf", "统计与历史",
-            "Statistiques et historique", "आँकड़े और इतिहास"),
         ROW("history.headline", "Успешных проверок: %1%", "Successful checks: %1%",
             "Comprobaciones exitosas: %1 %", "Erfolgreiche Prüfungen: %1 %", "检查成功率：%1%",
             "Contrôles réussis : %1 %", "उत्तीर्ण जाँच: %1%"),

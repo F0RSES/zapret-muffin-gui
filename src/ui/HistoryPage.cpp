@@ -268,14 +268,16 @@ void HistoryPage::build()
     column->setContentsMargins(0, 0, 0, 0);
     column->setSpacing(12);
 
-    // ---- the head: the page's name, and the one destructive thing it can do ----
+    // ---- the one destructive thing this page can do ----
+    //
+    // The page's name used to lead this row, in the same big type the window's header uses. It is gone:
+    // the header band above every page already says "Muffin • Статистика и История", and a second heading
+    // one band below the first is a page answering itself — the same duplication the profiles list and
+    // the settings form have given up. What the row keeps is the only control it has ever owned, and it
+    // keeps it on the right, where the other pages' actions sit.
     auto *head = new QHBoxLayout;
     head->setContentsMargins(0, 0, 0, 0);
     head->setSpacing(10);
-
-    auto *title = new QLabel(this);
-    title->setObjectName(QStringLiteral("pageTitle"));
-    i18nText(title, QStringLiteral("history.title"));
 
     m_clearButton = new QPushButton(this);
     m_clearButton->setObjectName(QStringLiteral("dangerButton"));
@@ -291,7 +293,6 @@ void HistoryPage::build()
     i18nTip(m_clearButton, QStringLiteral("history.clear_tip"));
     connect(m_clearButton, &QPushButton::clicked, this, &HistoryPage::askClear);
 
-    head->addWidget(title);
     head->addStretch(1);
     head->addWidget(m_clearButton);
     column->addLayout(head);

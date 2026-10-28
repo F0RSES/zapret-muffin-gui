@@ -912,10 +912,16 @@ QWidget *MainWindow::buildDashboardPage()
 }
 
 // The profiles page — one horizontal row per strategy, each carrying the services it exists to unblock
-// and a menu for what can be done to the entry itself. Reached from the dashboard's route pill, with its
-// own way back, and holding the two actions this page is for: rescan the folder, and measure the
-// services now. Fetching zapret is not one of them — a page that lists profiles has nothing to say about
-// where the folder came from, and the settings page and the empty-list placeholder both already offer it.
+// and a menu for what can be done to the entry itself. Reached from the rail and left the same way (Esc,
+// or the rail's dashboard glyph), and holding the actions this page is for: rescan the folder, measure the
+// services now, and check the bypass. Fetching zapret is not one of them — a page that lists profiles has
+// nothing to say about where the folder came from, and the settings page and the empty-list placeholder
+// both already offer it.
+//
+// The row carries controls and nothing else. The page's own name used to sit at its head, beside a
+// "← Muffin" button, and both have gone: the window's header already says which page is up, a name
+// repeated one band below itself is two claims about one thing, and a second way back is a second thing
+// to keep in step with the first.
 QWidget *MainWindow::buildProfilesPage()
 {
     auto *page = new QWidget(m_pages);
@@ -923,24 +929,12 @@ QWidget *MainWindow::buildProfilesPage()
     page->setObjectName(QStringLiteral("profilesPage"));
 
     auto *box = new QVBoxLayout(page);
-    box->setContentsMargins(28, 22, 28, 22);
+    box->setContentsMargins(28, 14, 28, 22);
     box->setSpacing(12);
 
     auto *head = new QHBoxLayout;
     head->setContentsMargins(0, 0, 0, 0);
     head->setSpacing(10);
-
-    auto *back = new QPushButton(page);
-    back->setObjectName(QStringLiteral("ghostButton"));
-    back->setCursor(Qt::PointingHandCursor);
-    back->setAutoDefault(false);
-    i18nText(back, QStringLiteral("page.back"));
-    i18nTip(back, QStringLiteral("page.back_tip"));
-    connect(back, &QPushButton::clicked, this, &MainWindow::showDashboard);
-
-    auto *title = new QLabel(page);
-    title->setObjectName(QStringLiteral("pageTitle"));
-    i18nText(title, QStringLiteral("nav.profiles"));
 
     // The manual measurement, beside the name of the page it acts on. The rows below it carry numbers
     // that only move while their own profile is running, so the page has to offer the one press that
@@ -1011,10 +1005,6 @@ QWidget *MainWindow::buildProfilesPage()
     i18nAcc(m_fetchButton, QStringLiteral("action.download_zapret"));
     connect(m_fetchButton, &QToolButton::clicked, this, &MainWindow::downloadZapret);
 
-    head->addWidget(back);
-    head->addSpacing(6);
-    head->addWidget(title);
-    head->addSpacing(12);
     head->addWidget(m_pingTestButton);
     head->addWidget(m_blockcheckButton);
     head->addStretch(1);
@@ -1092,49 +1082,31 @@ QWidget *MainWindow::buildProfilesPage()
 // The settings page. Unlike the other three this owns its whole form: it reads the stored values on
 // construction and writes them back through Settings on Save, which fires changed() and re-points the
 // manager and the theme from onSettingsChanged(). The page only has to exist in the stack, be re-tinted
-// with everything else, and offer the way back — what buildSettingsPage adds around the widget is the
-// header row the other full-screen pages carry and nothing more.
+// with everything else, and nothing more: the widget is the page, and the window's header already says
+// which one is up.
 QWidget *MainWindow::buildSettingsPage()
 {
     auto *page = new QWidget(m_pages);
     page->setObjectName(QStringLiteral("settingsPageHost"));
 
     auto *box = new QVBoxLayout(page);
-    box->setContentsMargins(0, 14, 0, 0);
+    box->setContentsMargins(0, 0, 0, 0);
     box->setSpacing(10);
 
-    // The way back lives here rather than inside SettingsPage so the page widget stays purely the form and
-    // a test can build it without the navigation chrome. Esc and the rail's settings glyph dismiss it too;
-    // this is just the visible one, matching the journal and the profiles list.
-    auto *head = new QHBoxLayout;
-    head->setContentsMargins(28, 0, 28, 0);
-    head->setSpacing(10);
-
-    auto *back = new QPushButton(page);
-    back->setObjectName(QStringLiteral("ghostButton"));
-    back->setCursor(Qt::PointingHandCursor);
-    back->setAutoDefault(false);
-    i18nText(back, QStringLiteral("page.back"));
-    i18nTip(back, QStringLiteral("page.back_tip"));
-    connect(back, &QPushButton::clicked, this, &MainWindow::showDashboard);
-
-    auto *title = new QLabel(page);
-    title->setObjectName(QStringLiteral("pageTitle"));
-    i18nText(title, QStringLiteral("nav.settings"));
-    head->addWidget(back);
-    head->addSpacing(6);
-    head->addWidget(title);
-    head->addStretch(1);
-    box->addLayout(head);
-
+    // The "← Muffin" button and the page's own name used to sit above the form, in a header row the other
+    // full-screen pages copied. Both are gone: the window's title band names the page the rail is on, so
+    // the row was a second heading one band below the first, and Esc plus the rail's settings glyph are
+    // the way back the rest of the application uses. SettingsPage keeps its own margins, which is what
+    // puts the cards where every other page's content starts.
     m_settingsPage = new SettingsPage(*m_settings, page);
     box->addWidget(m_settingsPage, 1);
     return page;
 }
 
 // The journal gets the whole canvas, which is what a 5000-line ring buffer of aligned timestamps
-// actually wants. Filtering, copying and saving are LogPanel's own; the page adds nothing above them but
-// the way back, because a header naming a box of logs says what the box already shows.
+// actually wants. Filtering, copying and saving are LogPanel's own; the page adds nothing above them at
+// all now — not a header (a box of logs names itself), and not a way back, which is the rail's and Esc's
+// job on every page alike.
 QWidget *MainWindow::buildLogsPage()
 {
     auto *page = new QWidget(m_pages);
@@ -1145,24 +1117,18 @@ QWidget *MainWindow::buildLogsPage()
     box->setContentsMargins(28, 14, 28, 22);
     box->setSpacing(10);
 
-    auto *back = new QPushButton(page);
-    back->setObjectName(QStringLiteral("ghostButton"));
-    back->setCursor(Qt::PointingHandCursor);
-    back->setAutoDefault(false);
-    i18nText(back, QStringLiteral("page.back"));
-    i18nTip(back, QStringLiteral("page.back_tip"));
-    connect(back, &QPushButton::clicked, this, &MainWindow::showDashboard);
-    box->addWidget(back, 0, Qt::AlignLeft);
-
     m_log = new LogPanel(page);
     box->addWidget(m_log, 1);
     return page;
 }
 
-// The record of every check, with the arithmetic above it. The window contributes the way back and the
-// page's place in the stack; everything else — the summary, the rows, the placeholder, the destructive
-// button and the confirmation in front of it — belongs to HistoryPage, which is why the page can be
-// built and filled by a test without a window at all.
+// The record of every check, with the arithmetic above it. The window contributes the page's place in the
+// stack and nothing else; everything else — the summary, the rows, the placeholder, the destructive button
+// and the confirmation in front of it — belongs to HistoryPage, which is why the page can be built and
+// filled by a test without a window at all.
+//
+// It used to add a "← Muffin" button as well. That is the rail's job and Esc's, and the window's header
+// already carries the page's name, which is what HistoryPage's own heading below it duplicated.
 //
 // The store is handed over rather than copied: it is the one owner of the rows, it says when they move,
 // and a page holding a second copy of a bounded log would be a page that can be wrong.
@@ -1174,15 +1140,6 @@ QWidget *MainWindow::buildHistoryPage()
     auto *box = new QVBoxLayout(page);
     box->setContentsMargins(28, 14, 28, 22);
     box->setSpacing(10);
-
-    auto *back = new QPushButton(page);
-    back->setObjectName(QStringLiteral("ghostButton"));
-    back->setCursor(Qt::PointingHandCursor);
-    back->setAutoDefault(false);
-    i18nText(back, QStringLiteral("page.back"));
-    i18nTip(back, QStringLiteral("page.back_tip"));
-    connect(back, &QPushButton::clicked, this, &MainWindow::showDashboard);
-    box->addWidget(back, 0, Qt::AlignLeft);
 
     box->addWidget(m_historyPage, 1);
     return page;
