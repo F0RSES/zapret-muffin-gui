@@ -686,6 +686,28 @@ public:
     // sentence about a no-op is noise that teaches nobody to read the log.
     bool guiSuppressionChangedAnything() const { return m_guiChanged; }
 
+    // Whether bringing the tunnel up this time owes the machine the preparation above.
+    //
+    // Two answers, and both are about *this* machine rather than about the tunnel:
+    //
+    //   * an enrolment that is not `Registered` — never enrolled, or enrolled so recently that the
+    //     sequence below is the first thing to run against it — has never been through the setup, and
+    //     the hang the MASQUE switch exists for is exactly what an unprepared client meets on its first
+    //     connect;
+    //   * a machine the caller has not prepared yet, which is the same claim seen from the other side and
+    //     the one that survives a restart of the application: the chain costs seconds and can sit behind a
+    //     root prompt, so paying it on every flip of a toggle that is already set up is charging the user
+    //     for a fix that is already applied. The caller stores the answer, clears it when a tunnel fails
+    //     (that is the recovery path), and does not clear it on a reboot: a daemon that started with the
+    //     machine cannot be the one that came up behind a running queue.
+    //
+    // `Registered` beside `alreadyPrepared` is the only combination that answers no, and it is the fast
+    // path a user who set WARP up yesterday should feel: one verb to the daemon, no restart, no prompt.
+    // Unknown keeps its yes deliberately — refusing to prepare a device that cannot be read is how a
+    // half-set-up machine gets a connect that never comes up, which is the failure this whole step was
+    // written against.
+    static bool needsPreparation(Registration r, bool alreadyPrepared);
+
     // ---- current view ---------------------------------------------------------
     // Virtual for the same reason the verbs below are: the state is what a caller reads to decide
     // what a press means, and a suite that wants to watch that decision has to be able to hand out a

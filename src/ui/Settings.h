@@ -90,6 +90,23 @@ public:
     bool hideWarpGui() const;
     void setHideWarpGui(bool on);
 
+    // ---- the WARP tunnel's setup state ----
+    // Whether this machine has already been made ready for a tunnel: the transport set to the protocol
+    // that survives a blocking provider, and warp-svc restarted once so that a daemon which came up
+    // while a zapret queue was rewriting the routing does not answer every connect with silence.
+    //
+    // Stored rather than kept in a member, because it is a fact about the machine and not a wish: the
+    // chain costs seconds and can sit behind a root prompt, and paying that on every flip of the toggle
+    // is what made turning WARP on feel broken to a user who had already set it up once. Off by default,
+    // which is what a machine that has never been through it means.
+    //
+    // Cleared when a tunnel fails — that is the recovery path, and the next press pays the full chain
+    // again. Deliberately not cleared by a reboot: a daemon that started with the machine cannot be the
+    // one that came up behind a running queue, so the condition the restart fixes has not had a chance
+    // to occur.
+    bool warpEnvironmentPrepared() const;
+    void setWarpEnvironmentPrepared(bool on);
+
     // ---- motion ----
     // Whether the interface may move at all: page fades, card entrances, the power button's breath. On
     // by default, because the design was drawn moving; the switch exists for the machines the movement

@@ -1060,6 +1060,16 @@ bool WarpManager::needsDeleteFirst(Registration r)
     return r == Registration::Conflict;
 }
 
+bool WarpManager::needsPreparation(Registration r, bool alreadyPrepared)
+{
+    // The fast path is the only way out, and it takes both halves: a device that is enrolled *and* a
+    // machine that has been made ready once. Anything else pays the chain, including the Unknown reading
+    // — a device nobody can read is a device whose setup cannot be assumed, and an unprepared machine is
+    // one where the MASQUE switch has not been thrown yet, which is the difference between a tunnel that
+    // comes up and one that is accepted and then never answers.
+    return r != Registration::Registered || !alreadyPrepared;
+}
+
 QStringList WarpManager::installCandidatePaths(const QString &programFilesRoot)
 {
     // An empty root is not a directory to look in. Every non-Windows caller passes exactly that,

@@ -1563,11 +1563,20 @@ void MainWindow::onWarpRegistrationFinished(bool ok)
                               LogPanel::Warn);
         return;
     }
-    // The enrolment settled, so the machine is now made ready for a tunnel: the protocol that gets
-    // WARP through where its default is blocked, and a restart of a daemon whose state goes stale when
-    // it came up while zapret was already rewriting the routing. Both before the connect and never
-    // after a failed one — a connect issued against a stuck warp-svc is answered forever.
-    prepareWarpEnvironment();
+    // The enrolment settled. Whether the machine is now made ready for a tunnel is a separate question,
+    // and its answer is what the user feels: the preparation is a protocol verb, a sysctl read and a
+    // service restart that can sit behind a polkit prompt, and paying all of that on every flip of a
+    // switch that was set up days ago is the difference between "instant" and "Muffin hangs when I turn
+    // WARP on". It runs on a device that is not enrolled yet, on a machine that has never been through
+    // it, and again after a failure clears that flag — see WarpManager::needsPreparation().
+    if (WarpManager::needsPreparation(m_warp->registrationState(),
+                                      m_settings && m_settings->warpEnvironmentPrepared())) {
+        prepareWarpEnvironment();
+        return;
+    }
+    // Registered, and prepared once already. The tunnel is asked for straight away: one short-lived
+    // warp-cli, no root, no restart, no settle.
+    startWarpTunnel();
 }
 
 // The middle step of bringing the tunnel up, and the reason it is a step of its own: WarpManager runs
@@ -1645,6 +1654,16 @@ void MainWindow::onWarpPreparationFinished(bool ok)
     if (!ok && m_log)
         m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.prepare_failed")),
                           LogPanel::Warn);
+    // The flag records what the chain just did to this machine, not what the window hoped for: a
+    // preparation that finished is the machine being ready, and one that was refused or died halfway is
+    // not — so the next press pays it again rather than taking a fast path over a host nobody fixed.
+    // Written on both answers for that reason: a refusal that arrived while the flag still said
+    // "prepared" must not survive it.
+    if (m_settings) {
+        m_applyingSettings = true;
+        m_settings->setWarpEnvironmentPrepared(ok);
+        m_applyingSettings = false;
+    }
     startWarpTunnel();
 }
 
@@ -2944,6 +2963,17 @@ void MainWindow::onSelectionChanged(bool zapretOn, bool warpOn)
 
 void MainWindow::onWarpStateChanged(WarpManager::State state)
 {
+    // An Error is the machine saying the preparation did not hold, or never ran: the daemon refused, the
+    // connect was accepted and died, or a verb could not be carried out at all. Whatever the reason, this
+    // is the moment the stored "already prepared" stops being a description of the machine, so it is
+    // dropped — and the next press pays the full chain again (protocol, restart, settle) rather than
+    // taking the fast path over a host that has just proved it is not ready. A Connected answer puts it
+    // back, in onWarpPreparationFinished.
+    if (state == WarpManager::State::Error && m_settings && m_settings->warpEnvironmentPrepared()) {
+        m_applyingSettings = true;
+        m_settings->setWarpEnvironmentPrepared(false);
+        m_applyingSettings = false;
+    }
     // Only repaint when the tunnel is part of the selection; a poll that lands after the user turned
     // the half dark should not overwrite the zapret chip with tunnel news nobody is looking at.
     if (m_selection.warp)

@@ -4859,6 +4859,76 @@ static void testWarpEnrolmentWiring()
               "stay distinguishable after the fact");
     }
 
+    // ---- a tunnel that is already set up comes up without being prepared again ----
+    //
+    // The report this answers: turning WARP on is slow, every time, because the chain restarts warp-svc
+    // behind a polkit prompt and then waits for the daemon to re-open its socket. That is what a *first*
+    // setup costs; on a device that is enrolled and a machine that has been through the chain once, all
+    // of it is a pause in front of a single verb. The preparation is therefore gated on both halves of
+    // that fact, and the gate is what these three scenarios pin.
+    {
+        const bool savedPrepared = store.warpEnvironmentPrepared();
+        store.setWarpEnvironmentPrepared(true);
+        EnrolmentFixture f(store);
+        f.warp->registration = WarpManager::Registration::Registered;
+        f.press();
+        check(f.warp->ensureCalls == 1, "the enrolment is still read — that check is one short verb");
+        f.warp->answerFinished(true);
+        check(f.warp->prepareCalls == 0,
+              "a registered device on a machine that has been prepared once is not prepared again");
+        check(f.warp->startCalls == 1,
+              "…and the connect is issued inside the same answer, which is what makes the toggle feel "
+              "instant rather than patient");
+        check(f.log.acts == (QStringList{QStringLiteral("startBypass"),
+                                         QStringLiteral("ensureRegistered"),
+                                         QStringLiteral("start")}),
+              "three acts, in that order, with no restart and no settle between the enrolment and the "
+              "tunnel");
+        store.setWarpEnvironmentPrepared(savedPrepared);
+    }
+
+    // ---- the first tunnel a machine is asked for pays the whole chain ----
+    {
+        const bool savedPrepared = store.warpEnvironmentPrepared();
+        store.setWarpEnvironmentPrepared(false);
+        EnrolmentFixture f(store);
+        f.warp->registration = WarpManager::Registration::Registered;
+        f.warp->preparationAnswersImmediately = false;
+        f.press();
+        f.warp->answerFinished(true);
+        check(f.warp->prepareCalls == 1,
+              "an enrolled device is not the same claim as a prepared machine: the protocol switch and "
+              "the daemon restart are still owed once");
+        check(f.warp->startCalls == 0, "…and the tunnel waits for them, as it always has");
+        check(!f.window->settingsModel()->warpEnvironmentPrepared(),
+              "the machine is not marked ready while the chain is still in flight");
+        f.warp->answerPreparation(true);
+        check(f.window->settingsModel()->warpEnvironmentPrepared(),
+              "a preparation that finished is recorded as the machine being ready, and the next press "
+              "takes the fast path without ever being told");
+        store.setWarpEnvironmentPrepared(savedPrepared);
+    }
+
+    // ---- a tunnel that fails puts the preparation back on the table ----
+    {
+        const bool savedPrepared = store.warpEnvironmentPrepared();
+        store.setWarpEnvironmentPrepared(false);   // so the press below really does owe the chain
+        EnrolmentFixture f(store);
+        f.warp->registration = WarpManager::Registration::Registered;
+        f.press();
+        f.warp->answerFinished(true);
+        check(f.warp->prepareCalls == 1 && f.window->settingsModel()->warpEnvironmentPrepared(),
+              "the first press prepared the machine and said so");
+        // The daemon's own verdict, arrived at rather than assumed: an Error is the tunnel saying it did
+        // not come up, which makes the stored "ready" a description of a machine that just contradicted
+        // it. Nothing may be taken on the strength of a flag the host has disproved.
+        f.warp->emitState(WarpManager::State::Error);
+        check(!f.window->settingsModel()->warpEnvironmentPrepared(),
+              "an Error clears the flag, so the next press pays the full chain again instead of taking a "
+              "fast path over a host that has just proved it is not ready");
+        store.setWarpEnvironmentPrepared(savedPrepared);
+    }
+
     // ---- the header speaks for the tunnel while the tunnel half is lit ----
     //
     // The reported bug was "the WARP button is blue but nothing connects, and the terminal says

@@ -28,6 +28,7 @@ const QString kUseWarp           = QStringLiteral("ui/useWarp");
 // never written again — see the comment on useWarp().
 const QString kWarpMode          = QStringLiteral("ui/warpMode");
 const QString kHideWarpGui       = QStringLiteral("ui/hideWarpGui");
+const QString kWarpPrepared       = QStringLiteral("warp/environmentPrepared");
 
 constexpr int kPingIntervalDefault = 5;
 constexpr int kPingIntervalMin     = 3;
@@ -183,6 +184,11 @@ void Settings::setUseWarp(bool on) { write(kUseWarp, on); }
 // user's choice to have both; see WarpInstaller::closesWarpGui() for the decision this feeds.
 bool Settings::hideWarpGui() const { return read<bool>(kHideWarpGui, true); }
 void Settings::setHideWarpGui(bool on) { write(kHideWarpGui, on); }
+
+// Off by default: the state is earned, not assumed. See the header for why it is stored at all — and
+// note that this is the one value on this page that no control writes; the tunnel's own chain does.
+bool Settings::warpEnvironmentPrepared() const { return read<bool>(kWarpPrepared, false); }
+void Settings::setWarpEnvironmentPrepared(bool on) { write(kWarpPrepared, on); }
 
 // Default on: zapret is a background service, so closing the window should keep it running.
 // MainWindow refuses to hide when the platform has no system tray, so this can never strand the app.

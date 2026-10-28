@@ -5497,6 +5497,35 @@ int main(int argc, char **argv)
             check(!WarpManager::needsDeleteFirst(Reg::Unknown),
                   "Unknown is never deleted either — that is the whole point of the fallback");
         }
+
+        // ---- whether this press owes the machine the preparation ----
+        //
+        // The gate the toggle's speed hangs on, stated as data so the whole policy is readable at once:
+        // the chain runs unless the device is enrolled *and* the machine has already been made ready.
+        // Everything else — including the reading nobody could parse — pays it, because the cost of
+        // preparing a machine that did not need it is one pause, and the cost of skipping it on a machine
+        // that did is a connect the daemon never answers.
+        {
+            using Reg = WarpManager::Registration;
+            check(!WarpManager::needsPreparation(Reg::Registered, true),
+                  "an enrolled device on a prepared machine is the only fast path");
+            check(WarpManager::needsPreparation(Reg::Registered, false),
+                  "an enrolled device is not the same claim as a prepared machine: the restart and the "
+                  "protocol switch are still owed once");
+            check(WarpManager::needsPreparation(Reg::NotRegistered, true),
+                  "a device that has just been enrolled has never been through the setup, whatever the "
+                  "machine's flag says");
+            check(WarpManager::needsPreparation(Reg::Conflict, true),
+                  "…and neither has one whose enrolment was replaced");
+            check(WarpManager::needsPreparation(Reg::Unknown, true),
+                  "an unread device is prepared rather than trusted — the same rule that keeps "
+                  "ensureRegistered() from enrolling on a guess");
+            // The recovery half: a failure clears the caller's stored flag, which is what routes the next
+            // press back through here. The predicate's answer flips with it, so recovery needs no second
+            // mechanism and no state a window could forget to clear.
+            check(WarpManager::needsPreparation(Reg::Registered, false),
+                  "a cleared flag puts the chain back on the table for a device that is still enrolled");
+        }
     }
 
     // [WarpManager: what is installed] — the detection that has to happen before an install is offered.
