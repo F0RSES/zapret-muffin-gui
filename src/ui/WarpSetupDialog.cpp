@@ -296,8 +296,14 @@ void WarpSetupDialog::runStep()
     // here either talked to Cloudflare (the enrolment) or to this machine (the protocol verb, the service
     // restart), and the connect that follows rides the tunnel itself — so a window that started zapret to
     // get the package and the key past a blocked CDN takes it back down here, and not under a live verb.
-    if (step.id == QLatin1String("connect"))
+    if (step.id == QLatin1String("connect")) {
         emit bypassReleaseRequested();
+        // And the vendor's window is taken down before the verb that summons it, not after: this chain
+        // runs `warp-cli connect` itself rather than going through WarpManager::start(), so the mask the
+        // automatic path applies there has to be applied here too or the wizard — the one route a fresh
+        // install always takes — would be the one route that leaves a "Cloudflare One Client" window open.
+        m_manager.suppressWarpGui();
+    }
     paintStatus();
 
     // Cancel is offered only where it can be honoured: a step whose work is a package manager cannot be

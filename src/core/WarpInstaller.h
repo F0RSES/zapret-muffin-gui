@@ -216,9 +216,10 @@ public:
     // by pid, which is the only handle available on a GUI another account started.
     static QStringList taskkillArgs(const QString &image);
 
-    // Whether this platform has a WARP GUI to close at all. Linux's package installs a daemon and a CLI
-    // and nothing else, so a promise to keep that window hidden is a promise nothing can keep; macOS is
-    // not a platform this application builds for.
+    // Whether this platform's WARP package puts a window on screen at all. Both of the ones this
+    // application ships for do: Windows by its tray application, Linux by warp-taskbar, whose window a
+    // `warp-cli connect` maps. Delegated to WarpManager, which owns the consequence and so owns the
+    // answer — see closeWindowsGui() for who closes which.
     static bool platformHasWarpGui(Strategy::Platform platform);
 
     // The single-window policy's own decision, pure: it can mean something only where there is a GUI to
@@ -227,10 +228,17 @@ public:
     // installed and never will.
     static bool closesWarpGui(bool hideWarpGuiSetting, Strategy::Platform platform, bool installed);
 
-    // Best effort: close whatever WARP GUI is open, and report the image names that were actually
+    // Best effort: close whatever Windows WARP GUI is open, and report the image names that were actually
     // running. A taskkill answering "no such process" is the normal case, not an error — that is what
     // "nothing is in the way" sounds like. Two callers need exactly this and share it: the last step of
     // an install, and MainWindow's single-window policy on startup.
+    //
+    // The Linux half of the same promise is not here: warp-taskbar is not simply a process to kill but a
+    // user unit with Restart=always and a D-Bus activation entry behind it, so killing it answers with a
+    // respawn. That policy belongs to the class that has to keep it — WarpManager::suppressWarpGui() —
+    // which is why this function names Windows only and why closeGuiAndVerify() finds nothing to do on a
+    // Linux host: the install path's own caller asks the manager after it, see
+    // MainWindow::onWarpInstallationFinished().
     static QStringList closeWindowsGui();
 
     // ---- the check every install ends with ----

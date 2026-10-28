@@ -199,6 +199,11 @@ MainWindow::MainWindow(WarpManager *warp, QWidget *parent)
     m_warp = warp ? warp : new WarpManager(this);
     if (warp)
         m_warp->setParent(this);
+    // The single-window policy, handed over at once rather than read by the manager: WARP's own window is
+    // something this class decides about, the store owns the decision, and the core takes it as an input —
+    // the same shape as the installer's copy of the same flag below. It is re-handed on every settings
+    // change, so a switch flipped mid-session applies to the next connect rather than the next launch.
+    m_warp->setHideWarpGui(m_settings->hideWarpGui());
 
     // The installer lives beside the tunnel control rather than inside it, for the same reason the
     // tunnel control lives beside ZapretManager: putting software on a machine and driving a daemon
@@ -3180,6 +3185,12 @@ void MainWindow::onWarpInstallationFinished(bool success, const QString &error)
         // that asked for this install, so nothing here has to move the mode to honour it.
         if (m_warp)
             m_warp->rescanAvailability();
+        // The package has just landed, and with it the window this path is now expected to keep away. The
+        // suppression comes *after* the rescan above on purpose: until that ran, isInstalled() was still
+        // answering about the machine as it was before the install, and the policy's own gate would have
+        // turned the request away — leaving a fresh install free to open a second window.
+        if (m_warp)
+            m_warp->suppressWarpGui();
         return;
     }
 
@@ -4196,6 +4207,15 @@ void MainWindow::onSettingsChanged()
 {
     if (m_applyingSettings)
         return;
+
+    // The single-window policy is read by two objects and owned by neither: the installer applies it at
+    // the end of a package run, the tunnel's manager applies it at every connect. Both are re-handed here,
+    // or a switch flipped on the settings page would be honoured only by whichever of the two the user
+    // happens to use next — and the other would keep doing what the last session's value said.
+    if (m_warp)
+        m_warp->setHideWarpGui(m_settings->hideWarpGui());
+    if (m_warpInstaller)
+        m_warpInstaller->setHideWarpGui(m_settings->hideWarpGui());
 
     const QString path = m_settings->zapretPath();
     if (path != m_manager->zapretDir())

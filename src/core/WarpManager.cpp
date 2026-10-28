@@ -5,6 +5,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -53,6 +54,22 @@ constexpr int kServiceSettleMs = 1500;
 // means. The daemon's own handshake on a working host is a couple of seconds; the case worth
 // naming is the one where it never finishes because the provider is interfering with the transport.
 constexpr int kConnectDeadlineMs = 15000;
+
+// ---- the window suppression's own clocks ----
+//
+// Two of the three commands are a conversation with the caller's own systemd manager and normally
+// answer in tens of milliseconds; the third is a process-table lookup. The deadline exists for the
+// case none of them can produce on a healthy host — a session manager that has stopped answering —
+// and it is generous enough that one wedged command costs a late line in the journal instead of a
+// window nobody ever closed.
+constexpr int kGuiCommandTimeoutMs = 10000;
+// How much of a refused command is worth quoting. systemctl's own complaint is a sentence, and the
+// journal already carries the rest of the run.
+constexpr int kGuiDetailChars = 200;
+// How much of a desktop entry is read before deciding what it is. An `Exec=` line belongs near the
+// top of a file that never runs to a megabyte, and the whole point of reading it is to refuse to
+// decide from a file name alone.
+constexpr int kAutostartReadChars = 4096;
 
 } // namespace
 
@@ -371,6 +388,193 @@ QStringList WarpManager::registrationDeleteArgs()
 QByteArray WarpManager::termsAnswer()
 {
     return QByteArrayLiteral("y\n");
+}
+
+// ---- the vendor's own window ----
+
+QString WarpManager::warpGuiProcessName()
+{
+    // The image the Linux package's own unit execs (/bin/warp-taskbar, a symlink into
+    // /usr/lib/warp/warp-taskbar). Not "cloudflare", not "warp-gui": the first matches nothing and the
+    // second has never existed, and both are the sort of name invented from the window's *title*
+    // ("Cloudflare One Client") rather than from its process table.
+    return QStringLiteral("warp-taskbar");
+}
+
+QString WarpManager::warpGuiUserUnit()
+{
+    // The unit file the package installs under /usr/lib/systemd/user, wanted by
+    // graphical-session.target. Spelled with its suffix because that is how systemctl names it, and a
+    // verb aimed at "warp-taskbar" alone would be answered about something else.
+    return QStringLiteral("warp-taskbar.service");
+}
+
+QString WarpManager::warpGuiBusName()
+{
+    // The bus name the unit is declared against (Type=dbus / BusName=) and the one its activation file
+    // publishes. Named here because it is the mechanism: a client that asks this name for nothing still
+    // gets the unit started, which is why a stop alone does not hold.
+    return QStringLiteral("com.cloudflare.WarpTaskbar");
+}
+
+QStringList WarpManager::systemctlUserArgs(const QStringList &verbs)
+{
+    QStringList args{ QStringLiteral("--user") };
+    args += verbs;
+    return args;
+}
+
+QStringList WarpManager::userUnitDisableArgs()
+{
+    // Untangling the unit from graphical-session.target, so the window does not come back at the next
+    // login for a mask that has since been undone — by an update, or by the user.
+    return systemctlUserArgs({ QStringLiteral("disable"), warpGuiUserUnit() });
+}
+
+QStringList WarpManager::userUnitMaskArgs()
+{
+    // `mask --now`, both halves needed and measured rather than assumed: `mask` alone redirects the unit
+    // to /dev/null but leaves a running instance running, and `stop` alone is a job the next activation
+    // request can cancel. Together they take the window down and close the door behind it.
+    return systemctlUserArgs({ QStringLiteral("mask"), QStringLiteral("--now"), warpGuiUserUnit() });
+}
+
+QStringList WarpManager::userUnitUnmaskArgs()
+{
+    // The door opened again, and nothing more: unmasking does not start the unit, which is what lets the
+    // enable below decide whether it should be running.
+    return systemctlUserArgs({ QStringLiteral("unmask"), warpGuiUserUnit() });
+}
+
+QStringList WarpManager::userUnitEnableArgs()
+{
+    // `enable`, deliberately without `--now`. A user who turned the single-window policy off has asked to
+    // have the tray application back, and the honest reading of that is "start it with my session again" —
+    // not "Muffin launches somebody else's window at me, now, in the middle of a settings change". The
+    // mask is what was in the way; taking it off and putting the unit back on graphical-session.target
+    // returns the machine to the state the user's own package manager left it in.
+    return systemctlUserArgs({ QStringLiteral("enable"), warpGuiUserUnit() });
+}
+
+QList<WarpManager::GuiSuppressionCommand> WarpManager::guiRestorationCommands(
+    Strategy::Platform platform)
+{
+    if (platform != Strategy::Platform::Linux)
+        return {};
+    // Unmask first, then put the unit back: the reverse order asks a masked unit to be enabled and is
+    // answered with an error about a unit that cannot be run, which is a refusal about the order rather
+    // than about the machine. No kill in either list-position here, and no autostart sweep — see the
+    // declaration for why a change of mind is not a licence to rename files back.
+    return {
+        { QStringLiteral("unmask"), QStringLiteral("systemctl"), userUnitUnmaskArgs() },
+        { QStringLiteral("reautoenable"), QStringLiteral("systemctl"), userUnitEnableArgs() },
+    };
+}
+
+QStringList WarpManager::pkillArgs(const QString &processName)
+{
+    // -x, never -f: see the declaration. A name is matched against the image, so warp-svc and a
+    // half-finished warp-cli verb cannot be reached by this command.
+    return { QStringLiteral("-x"), processName };
+}
+
+QList<WarpManager::GuiSuppressionCommand> WarpManager::guiSuppressionCommands(
+    Strategy::Platform platform)
+{
+    if (platform != Strategy::Platform::Linux)
+        return {};
+
+    // The order is the measurement above. disable first, because it is the only command here that touches
+    // the *next* session; mask --now, because it is the one that holds against this session's activation
+    // traffic; pkill last, because by then the service manager has been told and what is left is an
+    // instance it does not own — started by hand, or by a session that beat us to the unit.
+    return {
+        { QStringLiteral("unautoenable"), QStringLiteral("systemctl"), userUnitDisableArgs() },
+        { QStringLiteral("mask"), QStringLiteral("systemctl"), userUnitMaskArgs() },
+        { QStringLiteral("kill"), QStringLiteral("pkill"), pkillArgs(warpGuiProcessName()) },
+    };
+}
+
+bool WarpManager::platformHasWarpGui(Strategy::Platform platform)
+{
+    // Both of the platforms this application ships for have a window to keep away — Windows by its own
+    // tray application, Linux by warp-taskbar. That is a correction rather than a preference: this
+    // function used to answer "only Windows" on the belief that the Linux package installs a daemon, a
+    // CLI and nothing to look at. It does not. It installs a Flutter desktop application, enables a user
+    // unit for it, and maps that unit's window in answer to a tunnel transition.
+    //
+    // Unknown is the one honest no: a host this file cannot name has no client to own a window, and a yes
+    // there would have the settings page promise to close something on a machine nobody installed WARP on.
+    return platform == Strategy::Platform::Windows || platform == Strategy::Platform::Linux;
+}
+
+QStringList WarpManager::autostartDirectories(const QString &homePath, const QString &xdgConfigDirs)
+{
+    // The user's own first: it is the only one this process may write, and an entry a user dropped there
+    // is theirs to have moved aside without a password. Then one per $XDG_CONFIG_DIRS entry, with the
+    // spec's own fallback of /etc/xdg when the variable is unset or empty — a list that *is* set replaces
+    // the default rather than adding to it, which is why the fallback lives here and not in the split.
+    // Every path is suffixed autostart/, the directory entries are looked in: /etc/xdg alone is the
+    // config root, not the entry directory, and a sweep of it would walk a thousand unrelated files.
+    QStringList dirs;
+    const QString home = QDir::fromNativeSeparators(homePath).trimmed();
+    if (!home.isEmpty())
+        dirs << home + QStringLiteral("/.config/autostart");
+
+    const QString configured = xdgConfigDirs.trimmed();
+    const QStringList roots = configured.isEmpty()
+        ? QStringList{ QStringLiteral("/etc/xdg") }
+        : configured.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+    for (const QString &root : roots) {
+        const QString one = QDir::fromNativeSeparators(root).trimmed();
+        if (!one.isEmpty())
+            dirs << one + QStringLiteral("/autostart");
+    }
+    dirs.removeAll(QString());
+    dirs.removeDuplicates();
+    return dirs;
+}
+
+bool WarpManager::autostartNamesWarpGui(const QString &fileName, const QString &contents)
+{
+    // Already moved aside. Saying no here is what makes the sweep idempotent: a second pass over a
+    // directory it has already cleared of WARP entries must not rename `x.desktop.disabled` into
+    // `x.desktop.disabled.disabled`, which is a file no session reads and no user recognises.
+    if (fileName.endsWith(QStringLiteral(".disabled"), Qt::CaseInsensitive))
+        return false;
+
+    const QString text = contents.toLower();
+    // An entry a session is already told to skip is not the window coming back. Renaming it would bury the
+    // fact that somebody else disabled it, and hidden entries cannot autostart in the first place.
+    if (text.contains(QStringLiteral("hidden=true")))
+        return false;
+
+    // The line that cannot drift with a vendor's file-naming habits: what would actually run. Read line by
+    // line so a `Comment=` mentioning the taskbar cannot qualify an entry that is about something else.
+    const QString guiName = warpGuiProcessName().toLower();
+    for (const QString &line : text.split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.startsWith(QStringLiteral("exec=")))
+            continue;
+        const QString exec = trimmed.mid(QStringLiteral("exec=").size());
+        if (exec.contains(guiName) || exec.contains(QStringLiteral("warp_taskbar")))
+            return true;
+    }
+
+    // The file name alone, accepted only where it is unmistakably the window's own. Deliberately narrower
+    // than "mentions cloudflare": the same package ships com.cloudflare.warp.desktop, whose Exec is
+    // `warp-cli registration token %u` — the deep-link handler for an enrolment link, not a tray program.
+    // Moving *that* aside would break browser enrolment over a window that was never in the way, which is
+    // exactly the over-eager sweep this function exists to refuse.
+    const QString lowered = fileName.toLower();
+    return lowered.contains(guiName)
+           || lowered.contains(QStringLiteral("warptaskbar"))
+           || lowered.contains(QStringLiteral("cloudflare-one-client"));
+}
+
+QString WarpManager::disabledAutostartName(const QString &fileName)
+{
+    return fileName + QStringLiteral(".disabled");
 }
 
 // ---- the preparation, as data ----
@@ -943,6 +1147,14 @@ WarpManager::~WarpManager()
         m_probeProcess->kill();
         m_probeProcess->waitForFinished(200);
     }
+    if (m_guiProcess) {
+        // The same unwiring as the other two side chains, and for the same reason: a systemctl still
+        // running when this object goes away would answer into a deleted `this`. The command itself is
+        // idempotent, so killing it mid-run leaves the machine no worse than it found it.
+        m_guiProcess->disconnect(this);
+        m_guiProcess->kill();
+        m_guiProcess->waitForFinished(200);
+    }
 }
 
 bool WarpManager::refreshProgramPath()
@@ -1218,6 +1430,233 @@ void WarpManager::stopInstallationProbe()
     proc->deleteLater();
 }
 
+// ---- the window suppression ----
+
+void WarpManager::suppressWarpGui()
+{
+    // The switch is the user's, and it is the only difference between this ask and the reverse one below:
+    // a host where they asked for the tray application is a host whose window nobody may close.
+    if (!m_hideWarpGui)
+        return;
+    beginGuiPolicy(/*restoring=*/false);
+}
+
+void WarpManager::restoreWarpGui()
+{
+    beginGuiPolicy(/*restoring=*/true);
+}
+
+void WarpManager::beginGuiPolicy(bool restoring)
+{
+    const Strategy::Platform platform = ZapretSource::hostPlatform();
+
+    // Two gates, cheapest first, and each rules out a host where the run below would be a fork with
+    // nothing behind it: a platform with no WARP window has no process for these commands to name, and a
+    // machine with no client at all is a machine this class must not go poking the process table or the
+    // session manager of. isInstalled() rather than isAvailable(), because a packaged-but-unrunnable
+    // client still owns a tray program and a user unit.
+    if (!platformHasWarpGui(platform) || !isInstalled())
+        return;
+    // Already on its way. A second mask — or a second unmask — of one unit is the same command asked
+    // twice, and the run in flight will reach it anyway. Two runs in parallel would also be two writers
+    // to one queue, which is how a restore ends up executing a suppression's argument list.
+    if (m_guiRunning)
+        return;
+
+    m_guiRestoring = restoring;
+    m_guiQueue = restoring ? guiRestorationCommands(platform) : guiSuppressionCommands(platform);
+    m_guiChanged = false;
+    m_guiRunning = true;
+    if (m_guiQueue.isEmpty()) {
+        // Nothing to command, but still worth ending properly: the sweep belongs to a run whether or not
+        // the platform had commands, and m_guiRunning has to come back down through one path.
+        finishGuiSuppression(QString());
+        return;
+    }
+    runNextGuiSuppression();
+}
+
+void WarpManager::runNextGuiSuppression()
+{
+    while (!m_guiQueue.isEmpty()) {
+        const GuiSuppressionCommand command = m_guiQueue.takeFirst();
+        // Resolved now rather than stored: where systemctl lives is a fact about the host at the moment
+        // the run asks, not about its platform. A tool that is not there is named and skipped — unlike a
+        // missing installation probe, whose absence settles the question, the next command here may still
+        // land, and stopping at the first missing binary would leave the window up on a host whose pkill
+        // somebody moved.
+        const QString program = QStandardPaths::findExecutable(command.program);
+        if (program.isEmpty()) {
+            emit logMessage(QStringLiteral("WarpManager: %1 is not available on this host — skipping "
+                                            "the %2 step for the WARP window")
+                                .arg(command.program, command.id), 1);
+            continue;
+        }
+
+        auto *proc = new QProcess(this);
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+        proc->setProgram(program);
+        proc->setArguments(command.args);
+        m_currentGuiCommand = command;
+
+        connect(proc, &QProcess::finished, this,
+                [this, proc, command](int exitCode, QProcess::ExitStatus status) {
+            if (m_guiProcess != proc)
+                return;
+            m_guiProcess = nullptr;
+            const QString out = QString::fromUtf8(proc->readAll()).trimmed();
+            proc->deleteLater();
+            onGuiSuppressionAnswered(command, exitCode, status == QProcess::CrashExit, out);
+        });
+        connect(proc, &QProcess::errorOccurred, this, [this, proc, command](QProcess::ProcessError e) {
+            // FailedToStart is the only error that never produces finished(); left alone it would strand
+            // the run with an owner nothing is waiting for.
+            if (e != QProcess::FailedToStart || m_guiProcess != proc)
+                return;
+            m_guiProcess = nullptr;
+            const QString text = proc->errorString();
+            proc->deleteLater();
+            // Not exec'd is the same shape as refused: the chain moves on, because a machine whose
+            // systemctl will not start still has a pkill that can.
+            onGuiSuppressionAnswered(command, -1, true, text);
+        });
+
+        m_guiProcess = proc;
+        proc->start();
+        // Bounded like every other child in this file. A session manager that has stopped answering must
+        // not hold the window policy open forever; the kill lands as CrashExit, and the chain continues.
+        QTimer::singleShot(kGuiCommandTimeoutMs, proc, [this, proc]() {
+            if (m_guiProcess != proc)
+                return;   // it answered on its own
+            proc->kill();
+        });
+        return;   // the answer above carries the chain forward
+    }
+    finishGuiSuppression(QString());
+}
+
+void WarpManager::onGuiSuppressionAnswered(const GuiSuppressionCommand &command, int exitCode,
+                                           bool crashed, const QString &output)
+{
+    // What an answer means is not one rule here, and the difference is the whole of what the journal may
+    // say about it. pkill has a vocabulary of its own: 0 means it matched something, 1 means nothing was
+    // running — the outcome wanted, not a failure — and only codes above that are a complaint about the
+    // command. Reporting the middle one as a problem would have the log claim a window is still up on a
+    // machine where no window was ever started.
+    if (command.id == QLatin1String("kill") && !crashed && exitCode == 1) {
+        runNextGuiSuppression();
+        return;
+    }
+    if (crashed || exitCode != 0) {
+        // Warn, never error, and never fatal to the run. A window that survives is a cosmetic failure on
+        // a machine whose tunnel still works, and the next command may still land: a host whose
+        // systemctl is not the session manager the app guessed still has a process table to sweep.
+        emit logMessage(QStringLiteral("WarpManager: the %1 step for the WARP window did not succeed (%2)")
+                            .arg(command.id,
+                                 output.isEmpty()
+                                     ? QStringLiteral("exit %1").arg(exitCode)
+                                     : output.left(kGuiDetailChars)), 1);
+        runNextGuiSuppression();
+        return;
+    }
+
+    // Success — and only a success that *moved* anything earns a sentence. systemctl prints "Created
+    // symlink …" when it masks and "Removed …" when it untangles a unit, and nothing at all when the unit
+    // was already where it belongs, so the output is the evidence that this connect changed the machine
+    // rather than re-applied a policy that was already in force. pkill's own evidence is a zero exit,
+    // which is the one code that says something had been running.
+    if (command.id == QLatin1String("kill") || !output.trimmed().isEmpty())
+        m_guiChanged = true;
+
+    runNextGuiSuppression();
+}
+
+void WarpManager::finishGuiSuppression(const QString &why)
+{
+    if (!m_guiRunning)
+        return;   // already closed: one end per started run, exactly as the two sequences' finish* keep
+    m_guiRunning = false;
+    m_guiQueue.clear();
+    m_currentGuiCommand = GuiSuppressionCommand();
+    if (m_guiProcess) {
+        QProcess *proc = m_guiProcess;
+        m_guiProcess = nullptr;
+        proc->disconnect(this);
+        proc->kill();
+        proc->deleteLater();
+    }
+
+    // The sweep once per object, on the platform whose sessions read those directories, and only on the
+    // way down: a restore is a change of mind about a policy, not a licence to rename back files that
+    // some other tool — or the user — may have edited since. Done at the end rather than the start
+    // because it is the one part of this that touches files rather than the service manager, and a run
+    // still holding a child has no business starting a directory walk on top of it.
+    if (!m_autostartSwept && !m_guiRestoring
+        && ZapretSource::hostPlatform() == Strategy::Platform::Linux) {
+        m_autostartSwept = true;
+        sweepWarpAutostart();
+    }
+
+    if (m_guiChanged && why.isEmpty()) {
+        // One sentence per direction, because the two runs leave the machine in opposite states and a
+        // single wording would misreport one of them. Both are quiet when nothing moved: systemctl says
+        // "Created symlink …" / "Removed …" only when it changed something, which is the evidence
+        // m_guiChanged is built from.
+        emit logMessage(m_guiRestoring
+                            ? QStringLiteral("WarpManager: the WARP window's session unit was unmasked and "
+                                             "enabled again — the tray application returns with your next "
+                                             "sign-in")
+                            : QStringLiteral("WarpManager: the WARP window was closed and its session unit "
+                                             "masked — Muffin drives the tunnel from here"),
+                        0);
+    }
+    m_guiChanged = false;
+    m_guiRestoring = false;
+}
+
+int WarpManager::sweepWarpAutostart()
+{
+    int moved = 0;
+    const QString configDirs =
+        QProcessEnvironment::systemEnvironment().value(QStringLiteral("XDG_CONFIG_DIRS"));
+    const QStringList dirs = autostartDirectories(QDir::homePath(), configDirs);
+
+    for (const QString &dirPath : dirs) {
+        QDir dir(dirPath);
+        if (!dir.exists())
+            continue;
+        const QStringList entries =
+            dir.entryList(QStringList{ QStringLiteral("*.desktop") }, QDir::Files);
+        for (const QString &entry : entries) {
+            const QString filePath = dir.filePath(entry);
+            QFile file(filePath);
+            if (!file.open(QIODevice::ReadOnly))
+                continue;   // unreadable is not a match: deciding from the name alone is how the
+                            // enrolment deep-link handler gets disabled instead of the tray program
+            const QString contents = QString::fromUtf8(file.read(kAutostartReadChars));
+            file.close();
+            if (!autostartNamesWarpGui(entry, contents))
+                continue;
+            if (QFile::rename(filePath, dir.filePath(disabledAutostartName(entry)))) {
+                ++moved;
+                emit logMessage(QStringLiteral("WarpManager: %1 was moved aside, so the WARP window does "
+                                                "not start with the session")
+                                    .arg(filePath), 0);
+                continue;
+            }
+            // The expected half of this on a normal machine: a system entry belongs to root and its
+            // package owns it. Saying which file refused is the difference between "Muffin tried" and
+            // "Muffin did nothing" — and no password is asked for a boot-time nicety, because the
+            // per-session mask above already holds today, without root.
+            emit logMessage(QStringLiteral("WarpManager: %1 autostarts the WARP window and is owned by "
+                                           "the system, so it was left alone; the session mask keeps the "
+                                           "window away for this session")
+                                .arg(filePath), 1);
+        }
+    }
+    return moved;
+}
+
 bool WarpManager::start(QString *error)
 {
     if (!startVerb(connectArgs(), State::Connecting, true, error))
@@ -1225,6 +1664,12 @@ bool WarpManager::start(QString *error)
     // The request was accepted, which is not the same as the tunnel being up — and the difference is
     // the exact shape of the failure this whole half was written for. Give it a deadline to say so.
     armConnectDeadline();
+    // And take the vendor's window away for the same reason. This is the verb that produces it: the
+    // daemon's status traffic activates com.cloudflare.WarpTaskbar, whose unit answers by mapping a
+    // window titled "Cloudflare One Client" a second or two after the CLI has already said Success.
+    // Asked here rather than after a poll reads Connecting, because by then the window has been on screen
+    // for five seconds — a masked unit cannot be activated, so preventing it beats chasing it.
+    suppressWarpGui();
     return true;
 }
 
@@ -1554,6 +1999,11 @@ void WarpManager::onPreparationStepAnswered(const PreparationStep &step, const Q
         // given the moment it takes to re-open its control socket.
         m_prepRestarted = true;
         emit logMessage(QStringLiteral("WarpManager: %1 was restarted").arg(serviceUnit()), 0);
+        // And the one answer that also brings the vendor's window back with it: a warp-svc that has just
+        // come up re-activates the taskbar over the same bus name a connect does, so the mask has to be
+        // re-asserted here rather than left to the connect that follows — which, on the fast path, may
+        // never come at all.
+        suppressWarpGui();
     }
 
     ++m_prepIndex;

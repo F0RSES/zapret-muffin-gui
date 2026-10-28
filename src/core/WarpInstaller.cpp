@@ -480,10 +480,16 @@ QStringList WarpInstaller::taskkillArgs(const QString &image)
 
 bool WarpInstaller::platformHasWarpGui(Strategy::Platform platform)
 {
-    // Only the Windows package ships a window. Linux gets warp-svc and warp-cli and nothing to look at,
-    // so a policy about that GUI is a policy nothing can keep — and a promise the settings page must not
-    // make on a host where it means nothing. macOS is not a platform this application builds for.
-    return platform == Strategy::Platform::Windows;
+    // Delegated, not duplicated. WarpManager owns the answer because it owns the consequence — it is the
+    // class that has to take the window away every time it moves the tunnel — and a second opinion here
+    // would be a second place to be wrong about which platforms ship one.
+    //
+    // The answer used to be "only Windows", on the belief that the Linux package installs a daemon and a
+    // CLI and nothing to look at. It was wrong: the package ships /usr/lib/warp/warp-taskbar (a Flutter
+    // tray program whose window is titled "Cloudflare One Client"), enables a user unit for it, and that
+    // unit's process maps the window in answer to a tunnel transition. So the settings page now shows its
+    // single-window switch on Linux too, which is the promise it can actually keep there.
+    return WarpManager::platformHasWarpGui(platform);
 }
 
 bool WarpInstaller::closesWarpGui(bool hideWarpGuiSetting, Strategy::Platform platform,

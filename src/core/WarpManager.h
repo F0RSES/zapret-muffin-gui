@@ -520,6 +520,172 @@ public:
     // so both platforms take one code path. Lowercase `y` plus a newline is what the prompt accepts.
     static QByteArray termsAnswer();
 
+    // ---- the vendor's own window --------------------------------------------
+    //
+    // What the Linux client puts on screen, and how to keep it off.
+    //
+    // This half exists because the premise it replaces was wrong. The Linux package ships a desktop
+    // application after all — /usr/lib/warp/warp-taskbar, a Flutter tray program whose window is titled
+    // "Cloudflare One Client" — and it brings that window up in answer to a tunnel transition: on a host
+    // where the taskbar was running, `warp-cli connect` mapped two windows within seconds of the verb's
+    // own "Success". A second window talking about the same tunnel is the one thing this application's
+    // single-window promise cannot survive, so whatever moves the tunnel has to take that window down.
+    //
+    // Killing it is not enough, and the measurements are why the API is shaped as it is. The program runs
+    // under a *user* systemd unit (/usr/lib/systemd/user/warp-taskbar.service) declared `Type=dbus`,
+    // `BusName=com.cloudflare.WarpTaskbar`, `Restart=always`, `RestartSec=5`, and the same bus name is
+    // D-Bus-activatable (/usr/share/dbus-1/services/com.cloudflare.WarpTaskbar.service names that very
+    // unit). On the machine this was reported from:
+    //
+    //   * `pkill -x warp-taskbar` — a new instance was running eight seconds later;
+    //   * `systemctl --user stop warp-taskbar.service` — the stop job was cancelled and the unit was
+    //     active again, the activation arriving from the daemon's side of the socket;
+    //   * `systemctl --user mask warp-taskbar.service` — stayed dead across a subsequent
+    //     `warp-cli connect`, because a masked unit can be neither started nor activated.
+    //
+    // So this is a policy the service manager has to be told about, not a signal to send — and it needs
+    // no root, because the unit belongs to the user's own manager and masking it is one symlink under
+    // ~/.config/systemd/user. The kill stays last for what no unit covers: a taskbar started by hand, or
+    // one a session manager started before we got here.
+    //
+    // The names are data rather than code for the reason every argv in this file is: a Linux runner can
+    // assert them without a client, and a Windows runner without a systemd.
+    static QString warpGuiProcessName();   // "warp-taskbar" — the image the unit execs
+    static QString warpGuiUserUnit();      // "warp-taskbar.service" — what keeps it up
+    static QString warpGuiBusName();       // "com.cloudflare.WarpTaskbar" — what reactivates it
+
+    // One command of the suppression. The same shape as PreparationStep and InstallationProbe, and for
+    // the same reason: the whole policy of what keeping the window away means is then readable at once,
+    // pinnable by a test on a host that owns none of these binaries, and extendable without touching the
+    // runner.
+    struct GuiSuppressionCommand
+    {
+        QString id;        // "unautoenable" | "mask" | "kill" — names itself in the journal
+        QString program;   // "systemctl" | "pkill" — resolved by the runner, never guessed
+        QStringList args;  // already split; no shell composes any of this
+    };
+
+    // The suppression for one platform, in the order it has to run: the unit is told not to be wanted by
+    // the next session, then masked *and stopped* (the order is a finding, not a preference — masking an
+    // active unit does not stop it, and a bare stop job can be cancelled by the activation that follows
+    // it), then the process itself, which catches a taskbar no unit owns.
+    //
+    // Windows answers with an empty list, and that is deliberate rather than unfinished: the Windows half
+    // of the single-window promise already has an owner — WarpInstaller::closeWindowsGui(), which knows
+    // the two image names the vendor has used for its tray program — and a second list of the same
+    // processes here would be a second opinion about what to kill, drifting from the first. Unknown gets
+    // nothing, as everywhere else in this file.
+    static QList<GuiSuppressionCommand> guiSuppressionCommands(Strategy::Platform platform);
+
+    // The inverse list, for the case the switch is turned off: the unit is unmasked and then enabled and
+    // started, which hands the tray application back to the session that was kept away from it. There is
+    // deliberately no kill in it, and no sweep of autostart files either — a restore is a change of mind
+    // about a policy, not a licence to rename back files some other tool or the user may have edited since.
+    static QList<GuiSuppressionCommand> guiRestorationCommands(Strategy::Platform platform);
+    static QStringList userUnitUnmaskArgs();
+    static QStringList userUnitEnableArgs();
+
+    // `systemctl` addressed to the caller's own session manager: `--user` first, then the verbs. Split
+    // out because that one flag is the whole difference between taking a tray program away and stopping
+    // the daemon that holds the tunnel.
+    static QStringList systemctlUserArgs(const QStringList &verbs);
+    static QStringList userUnitDisableArgs();
+    static QStringList userUnitMaskArgs();
+
+    // `pkill -x <name>` — exact image name, and never `-f`. A `-f` sweep matches the *command line*, so
+    // `-f warp` names warp-svc (the daemon holding the tunnel) and every in-flight `warp-cli`, and
+    // `-f cloudflare` reaches the package's crashpad handler and anything else that merely mentions the
+    // vendor; LinuxBackend's own kill list documents the same rule for the same reason. An exact name can
+    // only ever hit the window this is about.
+    static QStringList pkillArgs(const QString &processName);
+
+    // Whether the WARP package on this platform puts a window on screen. Both of the ones this
+    // application ships for do; macOS is not a platform this application builds for, and an Unknown host
+    // has no client to have a window. Asked by the settings page (which must not offer a switch that can
+    // mean nothing) and by the installer's single-window policy, so it is stated once — WarpInstaller
+    // delegates here rather than keeping a second answer that would drift.
+    static bool platformHasWarpGui(Strategy::Platform platform);
+
+    // The directories a desktop session reads for autostart entries, in the order the XDG spec asks them
+    // to be read: the user's own first (writable by this process), then one per `$XDG_CONFIG_DIRS` entry
+    // (root-owned on a normal machine, where a refusal is expected and costs only a journal line). Built
+    // from the two values handed in rather than from the environment, so a runner can pin the spelling of
+    // a directory it does not have — the same reason every path composition in this file takes its input.
+    static QStringList autostartDirectories(const QString &homePath, const QString &xdgConfigDirs);
+
+    // Whether one autostart file *is* the WARP window. Both halves are evidence: the name it ships under
+    // has moved between builds (`com.cloudflare.WarpTaskbar`, `io.github.…`, `warp-taskbar`), and the
+    // `Exec=` line is the one thing that cannot lie about what would start. A file that only mentions
+    // cloudflare in a comment is not an entry for its window, and an entry already marked `Hidden` or
+    // `NoDisplay` cannot start anything — so neither half is trusted alone where the other is missing.
+    static bool autostartNamesWarpGui(const QString &fileName, const QString &contents);
+
+    // The name an autostart entry is moved to. `.disabled` is the suffix the desktop-entry spec reserves
+    // for exactly this — "the file is here, and it is not to be started" — which is reversible by hand and
+    // a smaller lie than deleting a file somebody's package manager owns.
+    static QString disabledAutostartName(const QString &fileName);
+
+    // Take this machine's WARP window away and keep it away: the commands above in order, each on its own
+    // short deadline, then the autostart sweep.
+    //
+    // Asked *before* a tunnel is moved rather than after, because a window that never appears beats a
+    // window that is chased — the activation the daemon sends is what maps those two windows, and a
+    // masked unit cannot answer it. It is asked again after a service restart (the same activation, sent
+    // by a warp-svc that has just come back up) and whenever the tunnel is reported Connected, so a host
+    // somebody set up by hand ends in the same state as one that was not.
+    //
+    // Idempotent and cheap: `systemctl` answering about a unit it has already masked is exit 0 and no
+    // work. It never blocks — the chain runs on its own QProcess, off the verb slot, exactly as the
+    // installation probes do, because a window kill holding that slot would strand a status poll behind
+    // it. A second call while one runs joins the run in flight. A refusal (no systemctl, no pkill, a
+    // session manager that will not answer) is one journal line at warn level and never an error: a
+    // tunnel that works behind a window nobody closed is worth more than a failure the user can do
+    // nothing about.
+    //
+    // Virtual because whether a caller asks for this at the right moment is the claim worth testing, and
+    // no static parser can see it — the same reason ensureRegistered() and prepareEnvironment() are.
+    virtual void suppressWarpGui();
+
+    // The other direction, because a switch that works one way is not a switch.
+    //
+    // Turning the policy off has to give back what turning it on took away: the mask is durable precisely
+    // so that a connect cannot be interrupted by a window, and the same durability means the tray
+    // application stays gone across logins until something unmasks it. So the ask is the pair of commands
+    // that undoes it — unmask, then enable — and it is never a kill and never a start: Muffin takes the
+    // policy off the unit and leaves the launching of Cloudflare's own window to the user's session.
+    //
+    // Asked on the transition from on to off rather than on every read of an off setting: a startup that
+    // found the switch off should leave a machine that was never touched exactly as it is, and a machine
+    // that was masked by an earlier session is corrected the moment the window learns the user's wish.
+    virtual void restoreWarpGui();
+
+    // The single-window switch, handed in rather than read: this class is in the core and Settings
+    // belongs to the UI, which is the same seam WarpInstaller::setHideWarpGui() exists for. Its default
+    // is the store's own default rather than false, because the policy is on unless the user turned it
+    // off — and a manager that never got told still keeps the promise the interface says it makes.
+    //
+    // The one setter in this class that acts: going from on to off hands the tray application back, under
+    // the same gates the suppression runs under.
+    void setHideWarpGui(bool on)
+    {
+        if (m_hideWarpGui == on)
+            return;   // every Settings::changed() arrives here, and an unchanged value asks for nothing
+        const bool wasOn = m_hideWarpGui;
+        m_hideWarpGui = on;
+        if (wasOn)
+            restoreWarpGui();
+    }
+    bool hideWarpGui() const { return m_hideWarpGui; }
+
+    // Whether a suppression run is in flight. Exposed for the reason isPollingEnabled() is: a suite that
+    // hands out answers has to be able to see what it is answering about.
+    bool isSuppressingWarpGui() const { return m_guiRunning; }
+
+    // Whether the run in flight (or the last one) changed anything on this machine. The journal keys off
+    // it, because a policy that has already been applied answers "nothing happened" and a per-connect
+    // sentence about a no-op is noise that teaches nobody to read the log.
+    bool guiSuppressionChangedAnything() const { return m_guiChanged; }
+
     // ---- current view ---------------------------------------------------------
     // Virtual for the same reason the verbs below are: the state is what a caller reads to decide
     // what a press means, and a suite that wants to watch that decision has to be able to hand out a
@@ -759,6 +925,32 @@ private:
     void finishProbe(bool packaged, QString via);
     void stopInstallationProbe();
     void setAvailable(bool available);
+
+    // ---- the window suppression ----
+    //
+    // The same shape as the installation-probe chain it sits beside, and for the same reason: a command
+    // per answer, one owned QProcess that is not the verb slot, and a program that does not resolve is
+    // skipped with a word rather than guessed at another name for. The last difference matters: a probe
+    // whose tool is missing is a machine that has no client, while a suppression whose systemctl is
+    // missing is a machine whose window will not be closed by *this* command — the next one in the list
+    // may still land, so the run continues instead of ending.
+    void runNextGuiSuppression();
+    // Which of the two directions the run in flight is working through — false is "keep the window away",
+    // true is "give it back" — decided once, by the caller that built the queue, and read by the runner
+    // when it picks the sentence to log. Two flags on two paths would be two ways to disagree about what
+    // the machine was just told to do.
+    void beginGuiPolicy(bool restoring);
+    // The answer carries the command's own output, because what a refusal *means* differs per command:
+    // systemctl's complaint is a sentence worth quoting, and pkill's exit 1 is the outcome wanted.
+    void onGuiSuppressionAnswered(const GuiSuppressionCommand &command, int exitCode, bool crashed,
+                                  const QString &output);
+    // Ends the run: clears the flags, and says once what the run did. Idempotent, so a killed command
+    // and a completed one both land here exactly once.
+    void finishGuiSuppression(const QString &why);
+    // The autostart sweep, run once per object rather than once per command: renaming a file that is
+    // already renamed is a no-op, and a second pass over the same directories would be a second list of
+    // rejections to read. Returns how many entries were moved aside.
+    int sweepWarpAutostart();
     // The registry half of a round: read in-process rather than forked out, because QSettings opens a
     // registry key without a helper program and every non-Windows host has no such key to read. False
     // off Windows, so the callers there do not need to know which platform compiled them.
@@ -850,6 +1042,31 @@ private:
     // on verifyCandidate(): the verdict it produces is about the machine, and a poll must not be able
     // to answer it or be refused by it.
     QProcess *m_versionProcess = nullptr;
+
+    // ---- the window-suppression half ----
+    //
+    // The single-window policy, owned by the caller (Settings) and handed in: see setHideWarpGui().
+    bool m_hideWarpGui = true;
+    // True for the whole command list, so a second request joins the run in flight instead of starting a
+    // second mask of a unit that is already masked.
+    bool m_guiRunning = false;
+    // Which direction the run in flight is working: true when it is handing the tray application back
+    // rather than keeping it away. See beginGuiPolicy().
+    bool m_guiRestoring = false;
+    // The list being worked through, snapshotted when the run starts so a command's answer is read
+    // against the command that asked it.
+    QList<GuiSuppressionCommand> m_guiQueue;
+    GuiSuppressionCommand m_currentGuiCommand;
+    // The chain's own process — never m_process, which is the verb slot a status poll needs.
+    QProcess *m_guiProcess = nullptr;
+    // Whether the autostart sweep has been done on this object. One pass is enough for a session: the
+    // files it renames do not come back by themselves, and a per-connect sweep would be a per-connect
+    // directory walk of nobody's home.
+    bool m_autostartSwept = false;
+    // Whether the run in flight moved something. systemctl prints "Created symlink …" / "Removed …" when
+    // it changes a unit and nothing when the unit was already where it belongs, so the answer is the
+    // evidence for one journal line — and pkill's exit 0 is the same evidence for the window itself.
+    bool m_guiChanged = false;
 };
 
 } // namespace zapret

@@ -412,6 +412,12 @@ public:
     // widget alone would leave a test unable to say whether the toggle's colour matches the
     // tunnel it is supposed to represent.
     WarpManager *warpManager() const { return m_warp; }
+    // The WARP installer, exposed beside the manager it shares one setting with. The single-window policy
+    // has two hands — the installer applies it at the end of a package run, the manager at every
+    // connect — and the claim worth checking is that the window has given the current answer to *both*.
+    // Reading only the manager's copy would let the installer keep acting on the value from the last
+    // launch, which is exactly the half-a-setting bug this pair exists to avoid.
+    WarpInstaller *warpInstaller() const { return m_warpInstaller; }
     // Draw the chip and the button for one state, without a manager ever having been in it. The same
     // entry point showStoppingFeedback() uses — and for the same reason: a teardown is a state the
     // backend will not sit still for, so the only way to check what the window draws for it is to ask

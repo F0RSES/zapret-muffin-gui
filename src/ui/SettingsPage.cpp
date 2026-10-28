@@ -206,9 +206,11 @@ void SettingsPage::build()
     m_trayNote->setVisible(!QSystemTrayIcon::isSystemTrayAvailable());
 
     // The WARP window switch, built like the two above and hidden on a host with nothing to hide. The
-    // Linux package installs a daemon and a CLI and no window at all, and a settings row promising to
-    // close a window that cannot exist is a lie the page would tell on every machine that is not
-    // Windows — hence platformHasWarpGui(), which is the same function the install path asks.
+    // Linux package was long believed to install a daemon, a CLI and no window at all — it installs
+    // warp-taskbar, whose window a `warp-cli connect` maps — so the row now shows on both platforms this
+    // application ships for, and the promise it makes is one WarpManager keeps by masking the taskbar's
+    // user unit. platformHasWarpGui() is the same answer the install path asks, so the row and the policy
+    // cannot disagree about which machines have a window.
     i18nText(m_hideWarpCheck = new QCheckBox(general.frame), QStringLiteral("settings.hide_warp"));
     i18nTip(m_hideWarpCheck, QStringLiteral("settings.hide_warp_tip"));
     m_hideWarpCheck->setVisible(

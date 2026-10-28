@@ -46,6 +46,7 @@
 #include "Strategy.h"
 #include "Theme.h"
 #include "UpdateChecker.h"
+#include "WarpInstaller.h"
 #include "WarpManager.h"
 #include "WarpSetupDialog.h"
 #include "ZapretDownloader.h"
@@ -1919,6 +1920,16 @@ static void testSettingsPageCards(QApplication &app)
     check(settingsCardOf(page.themeField()) == ui, "the theme is an interface setting");
     check(settingsCardOf(page.languageField()) == ui, "…and so is the language");
     check(settingsCardOf(page.animationsField()) == ui, "…and so is the motion switch");
+    // The single-window switch, and the promise it makes on THIS host. The row used to be hidden on Linux
+    // on the belief that its package ships a daemon, a CLI and no window; it ships warp-taskbar, whose
+    // window a connect maps, and masking that unit is what keeps the promise — so hiding the row there
+    // was hiding the only control that owns the behaviour. Compared against the answer the core gives
+    // rather than against a platform literal, so the page and the policy cannot drift apart.
+    check(page.hideWarpField() != nullptr, "the page carries the single-window switch");
+    check(page.hideWarpField()
+                  && page.hideWarpField()->isHidden()
+                         != WarpManager::platformHasWarpGui(ZapretSource::hostPlatform()),
+          "…shown on a host that has a WARP window to keep away, and hidden only where there is none");
     check(settingsCardOf(page.pingIntervalField()) == network, "the ping interval is a network setting");
     check(settingsCardOf(page.watchdogIntervalField()) == network,
           "…and so is the interval a live profile is re-asked on");
@@ -4418,6 +4429,14 @@ public:
     int ensureCalls = 0;
     int prepareCalls = 0;
     int rescans = 0;
+    // The vendor's window, counted rather than run — and overriding this one is not a convenience but a
+    // safety requirement: the base asks a real systemd manager to mask a unit and a real pkill to kill a
+    // process, which are the two things a suite must never do to the machine running it. A scenario that
+    // wants the real chain runs it through the statics in coretest instead, where nothing is spawned.
+    int suppressCalls = 0;
+    // The reverse direction, counted for the same reason: the base asks a real systemctl to unmask and
+    // re-enable the taskbar's unit, which is a change to the developer's session made from a test.
+    int restoreCalls = 0;
     // What a rescan "finds". Empty by default, which is the honest answer for a control that has never
     // resolved anything; a scenario that watches the sentence the wizard prints sets it.
     QString programPath;
@@ -4509,6 +4528,21 @@ public:
         Q_UNUSED(error);
         ++refreshCalls;
         return true;
+    }
+
+    // Recorded, never run — see suppressCalls above for what running it would do to this machine.
+    void suppressWarpGui() override
+    {
+        ++suppressCalls;
+        if (log)
+            log->record(QStringLiteral("suppressWarpGui"));
+    }
+
+    void restoreWarpGui() override
+    {
+        ++restoreCalls;
+        if (log)
+            log->record(QStringLiteral("restoreWarpGui"));
     }
 
     // Takes the flag and nothing else. The base's implementation arms a status timer, and a control
@@ -5054,6 +5088,49 @@ static void testWarpEnrolmentWiring()
               "install leaves the user to work out whether Muffin means to stop it");
     }
 
+    // ---- the single-window policy reaches both hands that act on it ----
+    //
+    // The switch on the settings page is one value with two executors: WarpInstaller closes the window at
+    // the end of a package run, WarpManager keeps it closed at every connect. The store owns the answer,
+    // so the window has to carry it to both — once at construction, and again whenever the user moves it.
+    // A hand left holding the value from the last launch is a switch that works sometimes, and the
+    // "sometimes" is whichever subsystem the user happens to reach for first.
+    {
+        const bool savedHide = store.hideWarpGui();
+        store.setHideWarpGui(false);
+        EnrolmentFixture f(store);
+        check(f.window->warpManager() && f.window->warpInstaller(),
+              "both hands exist by the time the window is up");
+        check(!f.window->warpManager()->hideWarpGui(),
+              "a policy read at construction reaches the tunnel's manager");
+        check(!f.window->warpInstaller()->hideWarpGui(),
+              "…and the installer's copy of the same answer, which is the one an install would act on");
+        check(f.warp->restoreCalls == 1,
+              "a policy going from on to off hands the tray application back — the mask Muffin put on the "
+              "unit is not left in place behind the user's own decision, which is what makes the switch "
+              "off mean something");
+
+        // Move the setting the way the settings page moves it — through the window's own store, because
+        // `Settings::changed` is a signal of one object: a second instance pointed at the same file
+        // writes the value without ever telling the window that it did.
+        f.window->settingsModel()->setHideWarpGui(true);
+        check(f.window->warpManager()->hideWarpGui(),
+              "moving the switch re-hands it to the manager, so the next connect uses the answer the "
+              "user just gave rather than the one from the last launch");
+        check(f.window->warpInstaller()->hideWarpGui(),
+              "…and to the installer for the same reason: an install started after this move is asked "
+              "under a policy that has already changed");
+        check(f.warp->restoreCalls == 1,
+              "going back on asks for no restore of its own — the connect that follows is what suppresses");
+        f.window->settingsModel()->setHideWarpGui(false);
+        check(f.warp->restoreCalls == 2,
+              "and off again is the other direction again: one transition, one undo, so a machine that "
+              "was masked twice and unmasked once is not left masked");
+        f.window->settingsModel()->setHideWarpGui(true);
+        f.warp->log = nullptr;
+        store.setHideWarpGui(savedHide);
+    }
+
     // ---- a switch that takes a HELD half down pays the cost without asking ----
     //
     // The case the modal used to interrupt: the tunnel is up, the user turns its half dark. The pill
@@ -5544,6 +5621,38 @@ static void testWarpSetupDialog()
               "…and it is not dressed as the failure it is not: the manual-start sentence belongs to a "
               "chain that stopped, and printing it over a step that went on to work would be a red line "
               "the user learns to ignore");
+        dialog.hide();
+    }
+
+    // ---- the wizard takes the vendor's window down before the connect that summons it ----
+    //
+    // The claim is an order, and it is the order measured on the machine that reported the bug: the
+    // window appears *because of* the connect (the daemon's status traffic activates the taskbar's bus
+    // name, whose unit answers by mapping a window), so asking afterwards is chasing it and asking
+    // beforehand closes the door. The automatic path is covered by WarpManager::start(); this chain runs
+    // `warp-cli connect` as its own command, so it owes the same ask separately — and a wizard that
+    // skipped it would leave every fresh install with a second window on screen.
+    {
+        CountingWarpManager bare;
+        bare.available = false;      // a host with nothing: the full six-step plan
+        ProbeSetupDialog dialog(bare);
+        dialog.show();
+        dialog.startSetup();
+        dialog.stepAnswered(true, QString());            // install reports success
+        dialog.commandAnswered(0, QString(), false);     // daemon: systemctl enable --now
+        dialog.stepAnswered(true, QString());            // enrolment settled
+        dialog.commandAnswered(0, QString(), false);     // protocol: MASQUE — which launches the restart
+        check(dialog.commands.size() == 3
+                  && dialog.commands.last().contains(QStringLiteral("restart")),
+              "the service step's restart is the command standing in front of the connect");
+        check(bare.suppressCalls == 0,
+              "no window policy is asked of a chain that has not reached the verb that opens one");
+        dialog.commandAnswered(0, QString(), false);     // service answered — the chain walks to connect
+        check(dialog.commands.size() == 4
+                  && dialog.commands.last().contains(QStringLiteral("connect")),
+              "…and the wizard has reached its last step, the connect itself");
+        check(bare.suppressCalls == 1,
+              "the window is taken down as the chain reaches the connect, not after it and not never");
         dialog.hide();
     }
 

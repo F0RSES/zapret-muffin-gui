@@ -6272,6 +6272,181 @@ int main(int argc, char **argv)
     }
 #endif
 
+    // [WarpManager: the vendor's window] — keeping "Cloudflare One Client" off the screen on Linux.
+    //
+    // The commands themselves cannot run in a suite: masking a unit and killing a process are exactly the
+    // two things a test must not do to the machine running it. What is checkable without a host is the
+    // policy — which process, which unit, which argv, in what order, and which autostart files may be
+    // renamed — and that is what follows. Every value here names a fact measured on a host running
+    // cloudflare-warp 2026.8.2115.0, where `warp-cli connect` mapped two windows seconds after the CLI
+    // had already said Success, and where a pkill of the taskbar was answered by a respawn.
+    out << "\n[WarpManager: the vendor's window]\n";
+    {
+        // ---- the three names of one program ----
+        check(WarpManager::warpGuiProcessName() == QStringLiteral("warp-taskbar"),
+              "the window is named by its image, not by its title and not by a guessed 'warp-gui'");
+        check(WarpManager::warpGuiUserUnit() == QStringLiteral("warp-taskbar.service"),
+              "the unit that keeps it up is named the way systemctl names a unit");
+        check(WarpManager::warpGuiBusName() == QStringLiteral("com.cloudflare.WarpTaskbar"),
+              "and so is the bus name that reactivates it — the mechanism, not a detail");
+        check(WarpManager::warpGuiUserUnit().startsWith(WarpManager::warpGuiProcessName())
+                  && WarpManager::warpGuiProcessName() != WarpManager::serviceUnit(),
+              "the three names are one program's, and are not the daemon's");
+
+        // ---- the argv, spelled once ----
+        //
+        // Every systemctl verb here is --user. Without that flag the same two words would address the
+        // *system* manager, whose warp-svc unit is the daemon holding the tunnel: masking that is not a
+        // cosmetic mistake but a VPN taken away from the machine.
+        const QStringList disable = WarpManager::userUnitDisableArgs();
+        check(disable.first() == QStringLiteral("--user"),
+              "the unit is the user's own, never the system manager's");
+        check(disable.contains(QStringLiteral("disable"))
+                  && disable.last() == WarpManager::warpGuiUserUnit(),
+              "disable, of the taskbar's unit specifically");
+        const QStringList mask = WarpManager::userUnitMaskArgs();
+        check(mask.first() == QStringLiteral("--user") && mask.contains(QStringLiteral("mask"))
+                  && mask.contains(QStringLiteral("--now")),
+              "mask carries --now, because masking an active unit leaves the running window running");
+        check(mask.last() == WarpManager::warpGuiUserUnit(), "and it is aimed at the taskbar's unit");
+        check(WarpManager::systemctlUserArgs({QStringLiteral("status"), QStringLiteral("x.service")})
+                  == (QStringList{QStringLiteral("--user"), QStringLiteral("status"),
+                                  QStringLiteral("x.service")}),
+              "the prefix is composed once, in front of whatever verb is asked for");
+
+        // -x, never -f. A -f pattern matches whole command lines, so `-f warp` reaches warp-svc and any
+        // warp-cli in flight — the same rule LinuxBackend's own kill list documents for the same reason.
+        const QStringList kill = WarpManager::pkillArgs(WarpManager::warpGuiProcessName());
+        check(kill == (QStringList{QStringLiteral("-x"), QStringLiteral("warp-taskbar")}),
+              "pkill is asked by exact image name");
+        check(!kill.contains(QStringLiteral("-f")),
+              "and never as a command-line sweep that would name the daemon holding the tunnel");
+
+        // ---- the table, read as a policy ----
+        const QList<WarpManager::GuiSuppressionCommand> linuxCommands =
+            WarpManager::guiSuppressionCommands(Strategy::Platform::Linux);
+        QStringList ids;
+        QStringList programs;
+        for (const WarpManager::GuiSuppressionCommand &c : linuxCommands) {
+            ids << c.id;
+            programs << c.program;
+        }
+        check(ids == (QStringList{QStringLiteral("unautoenable"), QStringLiteral("mask"),
+                                  QStringLiteral("kill")}),
+              "three commands, in the order that holds: untangle the next session, mask and stop this "
+              "one, then the process nobody's unit owns");
+        check(programs == (QStringList{QStringLiteral("systemctl"), QStringLiteral("systemctl"),
+                                       QStringLiteral("pkill")}),
+              "two conversations with the session manager and one process-table lookup");
+        check(!programs.contains(WarpManager::warpCliProgram())
+                  && !programs.contains(WarpManager::serviceUnit()),
+              "nothing in the list talks to the tunnel: this is a window policy, not a tunnel verb");
+        for (const WarpManager::GuiSuppressionCommand &c : linuxCommands) {
+            check(!c.args.isEmpty(),
+                  QStringLiteral("the %1 command carries its arguments").arg(c.id));
+            check(!c.args.contains(QStringLiteral("-f")),
+                  QStringLiteral("and the %1 command carries no sweeping flag").arg(c.id));
+        }
+        check(WarpManager::guiSuppressionCommands(Strategy::Platform::Windows).isEmpty(),
+              "Windows has no list here, because its window already has an owner — WarpInstaller's");
+        check(WarpManager::guiSuppressionCommands(Strategy::Platform::Unknown).isEmpty(),
+              "and a platform this file cannot name is given no command at all");
+
+        // ---- the inverse list, which is what makes the switch a switch ----
+        //
+        // The mask is durable by design, and durability is the property that makes it worth having: a
+        // connect cannot be interrupted by a window that systemd is not allowed to start. The same
+        // durability is what would leave a user who turned the policy off without their tray application,
+        // so there is a second list, and what matters about it is what is not in it.
+        const QList<WarpManager::GuiSuppressionCommand> back =
+            WarpManager::guiRestorationCommands(Strategy::Platform::Linux);
+        QStringList backIds;
+        QStringList backPrograms;
+        for (const WarpManager::GuiSuppressionCommand &c : back) {
+            backIds << c.id;
+            backPrograms << c.program;
+        }
+        check(backIds == (QStringList{QStringLiteral("unmask"), QStringLiteral("reautoenable")}),
+              "unmask first, then put the unit back — the reverse order asks systemd to enable a unit it "
+              "has been told cannot exist, and is answered with an error about the order");
+        check(!backPrograms.contains(QStringLiteral("pkill")) && back.size() == 2,
+              "the undo contains no kill: nothing is being chased, only a policy taken off a unit");
+        check(back.size() == 2 && !back.at(1).args.contains(QStringLiteral("--now")),
+              "…and no --now either: enabling the tray application for the next sign-in is the user's "
+              "asked-for outcome, launching Cloudflare's window mid-settings-change is not");
+        for (const WarpManager::GuiSuppressionCommand &c : back)
+            check(c.args.first() == QStringLiteral("--user"),
+                  QStringLiteral("the %1 command stays aimed at the user manager").arg(c.id));
+        check(WarpManager::guiRestorationCommands(Strategy::Platform::Windows).isEmpty()
+                  && WarpManager::guiRestorationCommands(Strategy::Platform::Unknown).isEmpty(),
+              "nothing is undone where nothing was ever done");
+
+        // ---- the directories a session reads for autostart entries ----
+        const QStringList dirs = WarpManager::autostartDirectories(
+            QStringLiteral("/home/tester"), QStringLiteral("/etc/xdg:/opt/cfg"));
+        check(dirs.first() == QStringLiteral("/home/tester/.config/autostart"),
+              "the user's own directory is first — the only one this may write without a password");
+        check(dirs.contains(QStringLiteral("/etc/xdg/autostart"))
+                  && dirs.contains(QStringLiteral("/opt/cfg/autostart")),
+              "then one per $XDG_CONFIG_DIRS entry, each suffixed autostart/ rather than the config root");
+        check(WarpManager::autostartDirectories(QStringLiteral("/home/tester"), QString())
+                  == (QStringList{QStringLiteral("/home/tester/.config/autostart"),
+                                  QStringLiteral("/etc/xdg/autostart")}),
+              "an unset $XDG_CONFIG_DIRS falls back to the spec's own /etc/xdg");
+        check(WarpManager::autostartDirectories(QString(), QStringLiteral("/etc/xdg"))
+                  == (QStringList{QStringLiteral("/etc/xdg/autostart")}),
+              "a host with no home to names no user directory, rather than a relative one");
+
+        // ---- which autostart file *is* the window ----
+        //
+        // The refusal this classifier exists for is the interesting half. The same package ships
+        // com.cloudflare.warp.desktop, whose Exec is `warp-cli registration token %u`: the handler for a
+        // com.cloudflare.warp:// enrolment link. Renaming that would break registration in the browser
+        // over a window that was never in the way.
+        const QString taskbarEntry = QStringLiteral(
+            "[Desktop Entry]\nType=Application\nName=Cloudflare One Client\n"
+            "Exec=/bin/warp-taskbar\nDBusActivatable=true\n");
+        check(WarpManager::autostartNamesWarpGui(QStringLiteral("whatever.desktop"), taskbarEntry),
+              "an Exec line naming the taskbar settles it whatever the file is called, because the "
+              "vendor's entry naming has moved between builds");
+        check(WarpManager::autostartNamesWarpGui(
+                  QStringLiteral("com.cloudflare.WarpTaskbar.desktop"),
+                  QStringLiteral("[Desktop Entry]\nExec=/usr/bin/true\n")),
+              "a file unmistakably named for the taskbar is taken on its name alone");
+        check(!WarpManager::autostartNamesWarpGui(
+                  QStringLiteral("com.cloudflare.warp.desktop"),
+                  QStringLiteral("[Desktop Entry]\nType=Application\nName=Cloudflare One Client\n"
+                                 "Exec=/bin/warp-cli --accept-tos registration token %u\nNoDisplay=true\n")),
+              "the registration deep-link handler is not the window, and is left exactly as it was");
+        check(!WarpManager::autostartNamesWarpGui(QStringLiteral("nm-applet.desktop"),
+                  QStringLiteral("[Desktop Entry]\nExec=/usr/bin/nm-applet\n")),
+              "an unrelated entry is not touched");
+        check(!WarpManager::autostartNamesWarpGui(QStringLiteral("x.desktop"),
+                  QStringLiteral("[Desktop Entry]\nComment=about the warp-taskbar tray\n"
+                                 "Exec=/usr/bin/true\n")),
+              "and a Comment that merely mentions the taskbar does not qualify an entry for it");
+        check(!WarpManager::autostartNamesWarpGui(QStringLiteral("warp-taskbar.desktop"),
+                  QStringLiteral("[Desktop Entry]\nHidden=true\nExec=/bin/warp-taskbar\n")),
+              "an entry the session already skips is not renamed, which would bury whoever disabled it");
+        check(!WarpManager::autostartNamesWarpGui(
+                  QStringLiteral("com.cloudflare.WarpTaskbar.desktop.disabled"), taskbarEntry),
+              "and one already moved aside stays as it is, so a second sweep cannot double the suffix");
+        check(WarpManager::disabledAutostartName(QStringLiteral("warp.desktop"))
+                  == QStringLiteral("warp.desktop.disabled"),
+              "the suffix is the desktop-entry spec's own, so the file stays findable and reversible");
+
+        // ---- the platform answer, corrected ----
+        //
+        // The belief this replaces — that the Linux package ships a daemon, a CLI and nothing to look at
+        // — is why the settings page used to hide its single-window switch on exactly the platform that
+        // needed it. Both statements below are about that correction, not about taste.
+        check(WarpManager::platformHasWarpGui(Strategy::Platform::Linux),
+              "Linux has a WARP window: the package ships warp-taskbar and enables a user unit for it");
+        check(WarpManager::platformHasWarpGui(Strategy::Platform::Windows), "Windows has one too");
+        check(!WarpManager::platformHasWarpGui(Strategy::Platform::Unknown),
+              "and a platform this file cannot name is not claimed to have one");
+    }
+
     // [WarpInstaller] — putting the Cloudflare WARP client on a machine that has none.
     //
     // The privileged half of this class cannot run in a suite: it execs pkexec, and a test that ran it
@@ -6669,10 +6844,15 @@ int main(int argc, char **argv)
                   == (QStringList{QStringLiteral("/F"), QStringLiteral("/IM"), QStringLiteral("Warp.exe")}),
                   "taskkill is asked by image name, forcibly");
         check(WarpInstaller::platformHasWarpGui(Strategy::Platform::Windows), "Windows has a WARP window");
-        check(!WarpInstaller::platformHasWarpGui(Strategy::Platform::Linux),
-              "Linux has a daemon and a CLI and nothing to close");
+        check(WarpInstaller::platformHasWarpGui(Strategy::Platform::Linux),
+              "and so has Linux: the package ships warp-taskbar, which this used to deny");
         check(!WarpInstaller::platformHasWarpGui(Strategy::Platform::Unknown),
               "an unknown platform has nothing either");
+        // One answer, two classes: the installer's is a delegation to the manager that has to keep the
+        // promise, so a platform cannot be "has a window" to one and "has nothing to close" to the other.
+        check(WarpInstaller::platformHasWarpGui(Strategy::Platform::Linux)
+                  == WarpManager::platformHasWarpGui(Strategy::Platform::Linux),
+              "the installer and the manager give the same platform answer");
 
         // The single-window policy's own decision, as a truth table. Each of the three conditions
         // rules out a host where closing a window would do nothing: not asked, no window to close,
@@ -6681,8 +6861,11 @@ int main(int argc, char **argv)
               "asked, on Windows, with a client installed: close it");
         check(!WarpInstaller::closesWarpGui(false, Strategy::Platform::Windows, true),
               "not asked, not closed");
-        check(!WarpInstaller::closesWarpGui(true, Strategy::Platform::Linux, true),
-              "the setting means nothing where there is no window to keep hidden");
+        check(WarpInstaller::closesWarpGui(true, Strategy::Platform::Linux, true),
+              "asked on Linux with a client installed: the same promise applies, and warp-taskbar is "
+              "what it is a promise about");
+        check(!WarpInstaller::closesWarpGui(true, Strategy::Platform::Linux, false),
+              "but a machine with no client has no window, and is not swept for one");
         check(!WarpInstaller::closesWarpGui(true, Strategy::Platform::Windows, false),
               "and nothing is closed on a machine with no client at all");
         // The spawn is guarded by Q_OS_WIN, so on this runner the honest answer is that it named
