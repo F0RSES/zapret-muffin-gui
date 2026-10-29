@@ -3235,6 +3235,12 @@ void MainWindow::applyTheme()
 {
     Theme::apply(*qApp, Theme::modeFromName(m_settings->theme()));
 
+    // A log line's colour is a literal stored in the document when it was appended, so the stylesheet
+    // cannot reach the lines that already exist. Re-stamp them here, or a dark session switched to light
+    // keeps near-white text over the light journal well — exactly the "white on white" that was reported.
+    if (m_log)
+        m_log->refreshThemeColors();
+
     // Every baked-pixmap icon in the window is re-tinted here: a theme switch cannot repaint a pixmap the
     // sheet never owned. Each button carries the glyph name and the size it was drawn at, so one pass
     // covers the rail's 24 px icons, the pages' 16 px ones and the header's window controls alike. Both

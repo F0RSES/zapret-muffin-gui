@@ -617,6 +617,27 @@ static void testLogPanel()
     check(big.storedLineCount() == LogPanel::kMaxLines, "cache capped at kMaxLines");
     check(big.view()->document()->blockCount() <= LogPanel::kMaxLines + 1, "view capped too");
     check(big.text().contains(QStringLiteral("line 250")), "oldest lines dropped first");
+
+    // ---- a theme switch re-inks the lines already on screen ----
+    //
+    // A QTextCharFormat holds a literal colour captured when the line was inserted, so a journal written
+    // under the dark sheet keeps near-white text when the user picks the light one — the reported
+    // "white on white", which no stylesheet rule can fix because the colour is not in the sheet. This is
+    // the one seam that rewrites the document, and MainWindow::applyTheme() calls it after every switch.
+    {
+        Theme::apply(*qApp, Theme::Mode::Dark);
+        LogPanel switched;
+        switched.appendLine(QStringLiteral("written in the dark"), LogPanel::Info);
+        Theme::apply(*qApp, Theme::Mode::Light);
+        switched.refreshThemeColors();
+        const QTextDocument *switchedDoc = switched.view()->document();
+        check(Theme::logColor(0) == QColor(0x1F, 0x29, 0x37),
+              "the light theme's journal ink is #1F2937, never a dark-sheet white");
+        check(firstForegroundColor(switchedDoc->findBlockByNumber(0))
+                  == QColor(0x1F, 0x29, 0x37).name(QColor::HexRgb),
+              "a line written under the dark sheet is re-inked when the light one arrives");
+        Theme::apply(*qApp, Theme::Mode::Dark);
+    }
 }
 
 // ---------------------------------------------------------- PingIndicator ----
@@ -1996,15 +2017,20 @@ static void testSettingsPageCards(QApplication &app)
               QStringLiteral("…and every label cell asks for left-aligned vertical centring (%1 row(s))")
                   .arg(labelledRows));
     }
-    // And the label itself has to cooperate: it takes the row's full height and centres its own text
-    // inside it. A label left at its sizeHint is exactly the bug this pair exists to prevent — the grid's
-    // alignment only governs the cell, and a sizeHint-height label is still a line of text at the top of
-    // whatever room the cell gives it.
-    for (QLabel *label : rowLabels)
+    // And the label itself has to cooperate: it has a fixed height (32 px for a one-liner, more when the
+    // pinned column wraps the text) so its box cannot stretch a taller row and leave the words at the top.
+    // The grid's AlignVCenter then centres that box on the field: the two halves of the reported fix.
+    for (QLabel *label : rowLabels) {
+        const int wrapped = label->heightForWidth(SettingsPage::rowLabelWidth());
         check(label->alignment() == (Qt::AlignLeft | Qt::AlignVCenter)
-                  && label->sizePolicy().verticalPolicy() == QSizePolicy::Expanding,
-              QStringLiteral("row label \"%1\" fills its row and centres its text in it")
-                  .arg(label->text()));
+                  && label->minimumHeight() == label->maximumHeight()
+                  && label->minimumHeight() >= 32,
+              QStringLiteral("row label \"%1\" has a fixed height the grid can centre (%2 px)")
+                  .arg(label->text()).arg(label->minimumHeight()));
+        check(wrapped <= 0 || label->height() >= wrapped,
+              QStringLiteral("…and is tall enough for its wrapped text rather than clipping it (%1 >= %2)")
+                  .arg(label->height()).arg(wrapped));
+    }
 
     const int fieldX = page.themeField()->mapTo(&page, QPoint(0, 0)).x();
     check(page.pingIntervalField()->mapTo(&page, QPoint(0, 0)).x() == fieldX,
@@ -2988,6 +3014,8 @@ static void testTheme(QApplication &app)
             check(qGray(logWell.rgb()) > 200,
                   QStringLiteral("the light journal well is a light fill (%1)")
                       .arg(logWell.name(QColor::HexRgb)));
+            check(Theme::logColor(0) == QColor(0x1F, 0x29, 0x37),
+                  "Theme::logColor(0) is #1F2937 in the light theme, not an inherited white");
             check(isDarkInk(logInk),
                   QStringLiteral("…and its ink is dark, not the white the dark sheet left behind (%1)")
                       .arg(logInk.name(QColor::HexRgb)));

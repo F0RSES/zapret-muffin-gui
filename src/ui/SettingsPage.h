@@ -141,6 +141,10 @@ private:
     Card makeCard(QWidget *host, const QString &titleKey);
     // A row label pinned to kRowLabelPx, returned already carrying its key.
     QLabel *rowLabel(QFrame *card, const QString &key);
+    // Give one row label its fixed height: kPathToolPx (32 px) for a one-line label, more when the pinned
+    // column forces the text to wrap. Fixed so the label's own box cannot stretch a taller row and leave
+    // its text at the top; the grid's AlignVCenter then centres that box on the field.
+    void refitRowLabelHeight(QLabel *label);
     // One of the two icon buttons beside the path field. They differ in glyph and in words, not in shape,
     // so the shape is spelled once — including the promise that an icon-only control still says what it
     // does: a tooltip for the pointer and an accessible name for a screen reader.

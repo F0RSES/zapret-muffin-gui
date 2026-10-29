@@ -243,11 +243,23 @@ QColor Theme::markOnRing()
 
 QColor Theme::logColor(int level)
 {
+    // A journal line is formatted once, at insertion, so this has to answer with the sheet in force at
+    // that moment. The light theme's body ink is #1F2937 — explicitly, not inherited from a palette and
+    // never white, which is the reported "white on white": a QTextCharFormat is a literal colour and the
+    // light well (#F9FAFB) cannot make a dark-sheet white line readable.
+    if (!isDark()) {
+        switch (level)
+        {
+        case 1:  return warning();
+        case 2:  return error();
+        default: return QColor(0x1F, 0x29, 0x37);
+        }
+    }
     switch (level)
     {
     case 1:  return warning();
     case 2:  return error();
-    default: return tokensFor(isDark()).logText;
+    default: return tokensFor(true).logText;
     }
 }
 

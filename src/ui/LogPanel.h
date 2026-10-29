@@ -40,6 +40,12 @@ public:
 
     void appendLine(const QString &line, int level = Info);
 
+    // Re-stamp every line already in the document with the current theme's ink. A QTextCharFormat holds
+    // a literal colour captured at insertion, so a session that starts on the dark sheet and switches to
+    // the light one keeps near-white lines over the light well — the reported "white on white" journal.
+    // MainWindow::applyTheme() calls this after every Theme::apply().
+    void refreshThemeColors();
+
     void setFilterLevel(int level);
     int filterLevel() const { return m_filter; }
 

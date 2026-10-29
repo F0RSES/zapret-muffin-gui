@@ -96,6 +96,11 @@ SettingsPage::SettingsPage(Settings &settings, QWidget *parent)
             [this](const QString &) {
                 refreshPathPlaceholder();
                 retranslateTree(this);
+                // The new words may wrap differently at the pinned label width, so the fixed heights
+                // recomputed from the old language would clip them. Refit after the texts have moved.
+                const auto labels = findChildren<QLabel *>(QStringLiteral("settingsRowLabel"));
+                for (QLabel *label : labels)
+                    refitRowLabelHeight(label);
             });
 }
 
@@ -432,14 +437,28 @@ QLabel *SettingsPage::rowLabel(QFrame *card, const QString &key)
     label->setMaximumWidth(kRowLabelPx);
     // Vertically the same promise, one axis further. The grid's own AlignVCenter (see the addWidget calls
     // in build()) centres the label in its cell; this keeps the text centred inside the label as well, and
-    // the Expanding policy means a label left at its sizeHint in a taller row still fills that row instead
-    // of sitting at its top. Either half alone would have fixed the reported slide; together they hold
-    // whatever font, language or control height the machine turns out to have.
+    // the fixed height below stops the label's box from stretching a taller row and leaving its text at the
+    // top. Either half alone would have fixed the reported slide; together they hold whatever font,
+    // language or control height the machine turns out to have.
     QSizePolicy policy = label->sizePolicy();
-    policy.setVerticalPolicy(QSizePolicy::Expanding);
+    policy.setVerticalPolicy(QSizePolicy::Fixed);
     label->setSizePolicy(policy);
     label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    return i18nText(label, key);
+    i18nText(label, key);
+    refitRowLabelHeight(label);
+    return label;
+}
+
+void SettingsPage::refitRowLabelHeight(QLabel *label)
+{
+    if (!label)
+        return;
+    // 32 px is the control height this page is drawn around (the path field's minimum, kPathToolPx), so a
+    // one-word label is exactly as tall as the field beside it. A label whose translation wraps at the
+    // pinned 168 px gets precisely the height it needs instead of being clipped to that number — the reason
+    // this is a floor rather than a hard-coded 32.
+    const int wrapped = label->heightForWidth(kRowLabelPx);
+    label->setFixedHeight(qMax(kPathToolPx, wrapped > 0 ? wrapped : label->sizeHint().height()));
 }
 
 QToolButton *SettingsPage::makePathTool(QFrame *card, const QString &glyph, const QString &nameKey,

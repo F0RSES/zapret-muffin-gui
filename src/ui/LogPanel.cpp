@@ -172,6 +172,22 @@ void LogPanel::insertIntoView(const Entry &entry)
     cursor.insertText(formatted(entry), charFormat);
 }
 
+void LogPanel::refreshThemeColors()
+{
+    QTextDocument *doc = m_view->document();
+    for (QTextBlock block = doc->firstBlock(); block.isValid(); block = block.next()) {
+        const QVariant stored = block.blockFormat().property(kLevelProperty);
+        if (!stored.isValid())
+            continue;                      // never a log line (e.g. a trailing empty block)
+        QTextCursor cursor(block);
+        cursor.select(QTextCursor::BlockUnderCursor);
+        QTextCharFormat charFormat;
+        charFormat.setForeground(Theme::logColor(stored.toInt()));
+        cursor.mergeCharFormat(charFormat);
+    }
+    m_view->viewport()->update();
+}
+
 void LogPanel::scrollToBottom()
 {
     QScrollBar *bar = m_view->verticalScrollBar();
