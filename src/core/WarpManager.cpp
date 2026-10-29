@@ -1060,14 +1060,12 @@ bool WarpManager::needsDeleteFirst(Registration r)
     return r == Registration::Conflict;
 }
 
-bool WarpManager::needsPreparation(Registration r, bool alreadyPrepared)
+bool WarpManager::needsPreparation(Registration r)
 {
-    // The fast path is the only way out, and it takes both halves: a device that is enrolled *and* a
-    // machine that has been made ready once. Anything else pays the chain, including the Unknown reading
-    // — a device nobody can read is a device whose setup cannot be assumed, and an unprepared machine is
-    // one where the MASQUE switch has not been thrown yet, which is the difference between a tunnel that
-    // comes up and one that is accepted and then never answers.
-    return r != Registration::Registered || !alreadyPrepared;
+    // Registered is the whole fast path: the device has been through setup, so a connect is one short
+    // warp-cli verb with no root and no restart. Everything else pays the chain once — including the
+    // Unknown reading, because a device nobody can read is a device whose setup cannot be assumed.
+    return r != Registration::Registered;
 }
 
 QStringList WarpManager::installCandidatePaths(const QString &programFilesRoot)
@@ -1669,17 +1667,18 @@ int WarpManager::sweepWarpAutostart()
 
 bool WarpManager::start(QString *error)
 {
+    // The vendor's window comes down BEFORE the verb that summons it. `warp-cli connect` is what makes
+    // the daemon's status traffic activate com.cloudflare.WarpTaskbar, whose unit answers by mapping a
+    // window titled "Cloudflare One Client" a second or two after the CLI has already said Success — so
+    // the mask has to be issued first. Issuing it afterwards (as this used to) raced the window it was
+    // meant to prevent: a masked unit cannot be activated, but only if the mask got there first.
+    suppressWarpGui();
+
     if (!startVerb(connectArgs(), State::Connecting, true, error))
         return false;
     // The request was accepted, which is not the same as the tunnel being up — and the difference is
     // the exact shape of the failure this whole half was written for. Give it a deadline to say so.
     armConnectDeadline();
-    // And take the vendor's window away for the same reason. This is the verb that produces it: the
-    // daemon's status traffic activates com.cloudflare.WarpTaskbar, whose unit answers by mapping a
-    // window titled "Cloudflare One Client" a second or two after the CLI has already said Success.
-    // Asked here rather than after a poll reads Connecting, because by then the window has been on screen
-    // for five seconds — a masked unit cannot be activated, so preventing it beats chasing it.
-    suppressWarpGui();
     return true;
 }
 

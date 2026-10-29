@@ -5500,31 +5500,22 @@ int main(int argc, char **argv)
 
         // ---- whether this press owes the machine the preparation ----
         //
-        // The gate the toggle's speed hangs on, stated as data so the whole policy is readable at once:
-        // the chain runs unless the device is enrolled *and* the machine has already been made ready.
-        // Everything else — including the reading nobody could parse — pays it, because the cost of
-        // preparing a machine that did not need it is one pause, and the cost of skipping it on a machine
-        // that did is a connect the daemon never answers.
+        // The gate the toggle's speed hangs on, stated as data so the whole policy is readable at once.
+        // The chain is a FIRST-INSTALL cost: only a device that is not known to be enrolled pays it.
+        // `Registered` goes straight to connect — one short warp-cli verb, no restart, no root prompt —
+        // which is the whole fix for "turning WARP on is slow every time".
         {
             using Reg = WarpManager::Registration;
-            check(!WarpManager::needsPreparation(Reg::Registered, true),
-                  "an enrolled device on a prepared machine is the only fast path");
-            check(WarpManager::needsPreparation(Reg::Registered, false),
-                  "an enrolled device is not the same claim as a prepared machine: the restart and the "
-                  "protocol switch are still owed once");
-            check(WarpManager::needsPreparation(Reg::NotRegistered, true),
-                  "a device that has just been enrolled has never been through the setup, whatever the "
-                  "machine's flag says");
-            check(WarpManager::needsPreparation(Reg::Conflict, true),
+            check(!WarpManager::needsPreparation(Reg::Registered),
+                  "an enrolled device is the fast path: connect, without the restart or the protocol "
+                  "switch");
+            check(WarpManager::needsPreparation(Reg::NotRegistered),
+                  "a device that has never been enrolled has never been through the setup either");
+            check(WarpManager::needsPreparation(Reg::Conflict),
                   "…and neither has one whose enrolment was replaced");
-            check(WarpManager::needsPreparation(Reg::Unknown, true),
-                  "an unread device is prepared rather than trusted — the same rule that keeps "
-                  "ensureRegistered() from enrolling on a guess");
-            // The recovery half: a failure clears the caller's stored flag, which is what routes the next
-            // press back through here. The predicate's answer flips with it, so recovery needs no second
-            // mechanism and no state a window could forget to clear.
-            check(WarpManager::needsPreparation(Reg::Registered, false),
-                  "a cleared flag puts the chain back on the table for a device that is still enrolled");
+            check(WarpManager::needsPreparation(Reg::Unknown),
+                  "an unread device is prepared rather than trusted — assuming readiness is how a first "
+                  "connect hangs");
         }
     }
 
@@ -6338,6 +6329,10 @@ int main(int argc, char **argv)
                   && mask.contains(QStringLiteral("--now")),
               "mask carries --now, because masking an active unit leaves the running window running");
         check(mask.last() == WarpManager::warpGuiUserUnit(), "and it is aimed at the taskbar's unit");
+        check(mask == (QStringList{QStringLiteral("--user"), QStringLiteral("mask"),
+                                   QStringLiteral("--now"), WarpManager::warpGuiUserUnit()}),
+              "the suppression's middle command is exactly `systemctl --user mask --now "
+              "warp-taskbar.service` — the one invocation WarpManager::suppressWarpGui() promises");
         check(WarpManager::systemctlUserArgs({QStringLiteral("status"), QStringLiteral("x.service")})
                   == (QStringList{QStringLiteral("--user"), QStringLiteral("status"),
                                   QStringLiteral("x.service")}),

@@ -1522,17 +1522,14 @@ void MainWindow::onWarpRegistrationFinished(bool ok)
     }
     // The enrolment settled. Whether the machine is now made ready for a tunnel is a separate question,
     // and its answer is what the user feels: the preparation is a protocol verb, a sysctl read and a
-    // service restart that can sit behind a polkit prompt, and paying all of that on every flip of a
-    // switch that was set up days ago is the difference between "instant" and "Muffin hangs when I turn
-    // WARP on". It runs on a device that is not enrolled yet, on a machine that has never been through
-    // it, and again after a failure clears that flag — see WarpManager::needsPreparation().
-    if (WarpManager::needsPreparation(m_warp->registrationState(),
-                                      m_settings && m_settings->warpEnvironmentPrepared())) {
+    // service restart that can sit behind a polkit prompt. That is a FIRST-INSTALL cost. A device that is
+    // already Registered has been through it, so a flip of the switch is one short-lived warp-cli with no
+    // root, no restart and no settle — see WarpManager::needsPreparation().
+    if (WarpManager::needsPreparation(m_warp->registrationState())) {
         prepareWarpEnvironment();
         return;
     }
-    // Registered, and prepared once already. The tunnel is asked for straight away: one short-lived
-    // warp-cli, no root, no restart, no settle.
+    // Registered: the tunnel is asked for straight away.
     startWarpTunnel();
 }
 
@@ -1611,16 +1608,9 @@ void MainWindow::onWarpPreparationFinished(bool ok)
     if (!ok && m_log)
         m_log->appendLine(LanguageManager::tr(QStringLiteral("warp.prepare_failed")),
                           LogPanel::Warn);
-    // The flag records what the chain just did to this machine, not what the window hoped for: a
-    // preparation that finished is the machine being ready, and one that was refused or died halfway is
-    // not — so the next press pays it again rather than taking a fast path over a host nobody fixed.
-    // Written on both answers for that reason: a refusal that arrived while the flag still said
-    // "prepared" must not survive it.
-    if (m_settings) {
-        m_applyingSettings = true;
-        m_settings->setWarpEnvironmentPrepared(ok);
-        m_applyingSettings = false;
-    }
+    // The answer decides what the journal said about the machine, not whether the tunnel is asked for:
+    // the connect is owed on both paths, and a first-install preparation that failed is precisely the
+    // case where trying anyway is better than leaving the user with a lit half and no tunnel.
     startWarpTunnel();
 }
 
@@ -2920,17 +2910,9 @@ void MainWindow::onSelectionChanged(bool zapretOn, bool warpOn)
 
 void MainWindow::onWarpStateChanged(WarpManager::State state)
 {
-    // An Error is the machine saying the preparation did not hold, or never ran: the daemon refused, the
-    // connect was accepted and died, or a verb could not be carried out at all. Whatever the reason, this
-    // is the moment the stored "already prepared" stops being a description of the machine, so it is
-    // dropped — and the next press pays the full chain again (protocol, restart, settle) rather than
-    // taking the fast path over a host that has just proved it is not ready. A Connected answer puts it
-    // back, in onWarpPreparationFinished.
-    if (state == WarpManager::State::Error && m_settings && m_settings->warpEnvironmentPrepared()) {
-        m_applyingSettings = true;
-        m_settings->setWarpEnvironmentPrepared(false);
-        m_applyingSettings = false;
-    }
+    // The repaint below reads the selection and the manager's own state rather than this argument, which
+    // is kept for the signal's signature: the slot is connected to stateChanged(State).
+    Q_UNUSED(state);
     // Only repaint when the tunnel is part of the selection; a poll that lands after the user turned
     // the half dark should not overwrite the zapret chip with tunnel news nobody is looking at.
     if (m_selection.warp)

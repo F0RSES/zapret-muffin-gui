@@ -688,25 +688,17 @@ public:
 
     // Whether bringing the tunnel up this time owes the machine the preparation above.
     //
-    // Two answers, and both are about *this* machine rather than about the tunnel:
+    // Preparation is a FIRST-INSTALL cost, not a per-connect one. On a device that is already enrolled,
+    // `warp-cli connect` needs no protocol switch, no service restart and no root prompt — paying that
+    // chain on every flip of the switch is what made turning WARP on feel slow and sometimes blocked
+    // behind a polkit dialog nobody was looking at. `Registered` is therefore the fast path: the caller
+    // goes straight to connect (or disconnect), and the heavy restart only happens while the device has
+    // never been set up.
     //
-    //   * an enrolment that is not `Registered` — never enrolled, or enrolled so recently that the
-    //     sequence below is the first thing to run against it — has never been through the setup, and
-    //     the hang the MASQUE switch exists for is exactly what an unprepared client meets on its first
-    //     connect;
-    //   * a machine the caller has not prepared yet, which is the same claim seen from the other side and
-    //     the one that survives a restart of the application: the chain costs seconds and can sit behind a
-    //     root prompt, so paying it on every flip of a toggle that is already set up is charging the user
-    //     for a fix that is already applied. The caller stores the answer, clears it when a tunnel fails
-    //     (that is the recovery path), and does not clear it on a reboot: a daemon that started with the
-    //     machine cannot be the one that came up behind a running queue.
-    //
-    // `Registered` beside `alreadyPrepared` is the only combination that answers no, and it is the fast
-    // path a user who set WARP up yesterday should feel: one verb to the daemon, no restart, no prompt.
-    // Unknown keeps its yes deliberately — refusing to prepare a device that cannot be read is how a
-    // half-set-up machine gets a connect that never comes up, which is the failure this whole step was
-    // written against.
-    static bool needsPreparation(Registration r, bool alreadyPrepared);
+    // The readings that still prepare are exactly the ones where "already set up" cannot be claimed:
+    // `NotRegistered` and `Conflict` (never enrolled, or enrolled and then replaced), and `Unknown` (a
+    // device whose state nobody could parse — assuming readiness there is how a first connect hangs).
+    static bool needsPreparation(Registration r);
 
     // ---- current view ---------------------------------------------------------
     // Virtual for the same reason the verbs below are: the state is what a caller reads to decide

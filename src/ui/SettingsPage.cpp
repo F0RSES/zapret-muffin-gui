@@ -14,7 +14,7 @@
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
-#include <QFormLayout>
+#include <QGridLayout>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -180,13 +180,20 @@ void SettingsPage::build()
     // picks, and a field with an icon dangling off its vertical centre stops reading as one control.
     pathRow->addWidget(m_detectButton, 0, Qt::AlignVCenter);
 
-    general.form->addRow(rowLabel(general.frame, QStringLiteral("settings.path")), pathRow);
+    // The label is placed with both alignments spelled out, because on a QGridLayout they are a fact of
+    // the layout rather than a hint the style may reinterpret: the item is put into its cell with exactly
+    // these flags, so a 28 px word beside a 32 px combo is centred on that combo's line whatever the font
+    // does. The path row is the one field that must fill the column — a path is long — so it takes the
+    // cell's full width and leaves the vertical alignment to its own HBox.
+    general.grid->addWidget(rowLabel(general.frame, QStringLiteral("settings.path")), 0, 0,
+                            Qt::AlignLeft | Qt::AlignVCenter);
+    general.grid->addLayout(pathRow, 0, 1);
 
     // The verdict on the path, under the field rather than beside it: it is a sentence, and a sentence
     // squeezed into the remaining 200 px of a row wraps into unreadable confetti.
     m_pathState = new QLabel(general.frame);
     m_pathState->setWordWrap(true);
-    general.form->addRow(QString(), m_pathState);
+    general.grid->addWidget(m_pathState, 1, 1);
 
     // ---- what the application does on its own ---------------------------------
     // Still the general card: these are the settings about the program's own life — what it starts with,
@@ -250,10 +257,10 @@ void SettingsPage::build()
              QStringLiteral("settings.animations"));
     i18nTip(m_animationsCheck, QStringLiteral("settings.animations_tip"));
 
-    // The short fields, held to the left. A QFormLayout gives a field the whole width of its column, which
-    // is right for a path and wrong for a three-word choice: the card then reads as two long controls and
-    // a lot of empty form. The stretch beside each one is what keeps it beside its label rather than
-    // across the screen — and it is the same promise the row made when the page was one column.
+    // The short fields, held to the left. A grid cell gives an item the whole width of its column unless
+    // the placement says otherwise, which is right for a path and wrong for a three-word choice: the card
+    // then reads as two long controls and a lot of empty form. AlignLeft keeps the picker beside its label,
+    // and the stretch inside the row is what survives a future placement that forgets the flag.
     auto *themeField = new QHBoxLayout;
     themeField->setContentsMargins(0, 0, 0, 0);
     themeField->addWidget(m_themeBox);
@@ -264,9 +271,12 @@ void SettingsPage::build()
     languageField->addWidget(m_languageBox);
     languageField->addStretch(1);
 
-    uiCard.form->addRow(rowLabel(uiCard.frame, QStringLiteral("settings.theme")), themeField);
-    uiCard.form->addRow(rowLabel(uiCard.frame, QStringLiteral("settings.language")),
-                         languageField);
+    uiCard.grid->addWidget(rowLabel(uiCard.frame, QStringLiteral("settings.theme")), 0, 0,
+                           Qt::AlignLeft | Qt::AlignVCenter);
+    uiCard.grid->addLayout(themeField, 0, 1, Qt::AlignLeft | Qt::AlignVCenter);
+    uiCard.grid->addWidget(rowLabel(uiCard.frame, QStringLiteral("settings.language")), 1, 0,
+                           Qt::AlignLeft | Qt::AlignVCenter);
+    uiCard.grid->addLayout(languageField, 1, 1, Qt::AlignLeft | Qt::AlignVCenter);
     uiCard.body->addWidget(m_animationsCheck);
 
     // ---- the network card -----------------------------------------------------
@@ -296,10 +306,10 @@ void SettingsPage::build()
     m_watchdogSpin->setSingleStep(1);
     i18nTip(m_watchdogSpin, QStringLiteral("settings.watchdog_tip"));
 
-    // The short fields, held to the left. A QFormLayout gives a field the whole width of its column, which
-    // is right for a path and wrong for a two-word measurement: the card then reads as two long controls
-    // and a lot of empty form. The stretch beside each one is what keeps it beside its label rather than
-    // across the screen.
+    // The short fields, held to the left. A grid cell gives an item the whole width of its column unless
+    // the placement says otherwise, which is right for a path and wrong for a two-word measurement: the
+    // card then reads as two long controls and a lot of empty form. AlignLeft keeps the box beside its
+    // label; the placement below is the one that decides it.
     auto *pingField = new QHBoxLayout;
     pingField->setContentsMargins(0, 0, 0, 0);
     pingField->addWidget(m_pingSpin);
@@ -310,10 +320,14 @@ void SettingsPage::build()
     watchdogField->addWidget(m_watchdogSpin);
     watchdogField->addStretch(1);
 
-    network.form->addRow(rowLabel(network.frame, QStringLiteral("settings.ping")), pingField);
+    network.grid->addWidget(rowLabel(network.frame, QStringLiteral("settings.ping")), 0, 0,
+                            Qt::AlignLeft | Qt::AlignVCenter);
+    network.grid->addLayout(pingField, 0, 1, Qt::AlignLeft | Qt::AlignVCenter);
     // Right under the ping interval, because that is what it is: a second cadence, measured in minutes
     // rather than seconds, for the same question about the same services.
-    network.form->addRow(rowLabel(network.frame, QStringLiteral("settings.watchdog")), watchdogField);
+    network.grid->addWidget(rowLabel(network.frame, QStringLiteral("settings.watchdog")), 1, 0,
+                            Qt::AlignLeft | Qt::AlignVCenter);
+    network.grid->addLayout(watchdogField, 1, 1, Qt::AlignLeft | Qt::AlignVCenter);
 
     cards->addWidget(m_generalCard);
     cards->addWidget(m_interfaceCard);
@@ -388,20 +402,19 @@ SettingsPage::Card SettingsPage::makeCard(QWidget *host, const QString &titleKey
     i18nText(title, titleKey);
     box->addWidget(title);
 
-    auto *form = new QFormLayout;
-    form->setContentsMargins(0, 0, 0, 0);
-    form->setHorizontalSpacing(14);
-    form->setVerticalSpacing(kCardRowGapPx);
-    // Set on the form, and on every card's form, because this is the promise that was reported broken:
-    // "Тема" and "Язык" sitting low beside their fields. A QFormLayout gives a short label only its own
-    // sizeHint as a cell and then leaves the text at that cell's top, so centring inside the cell centred
-    // nothing while the field beside it was taller. Paired with rowLabel()'s Expanding policy — which
-    // makes the label's cell the row's full height — this is what puts every label on its field's centre
-    // line, whatever the font's metrics or the control's height turn out to be.
-    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    box->addLayout(form);
-    card.form = form;
+    auto *grid = new QGridLayout;
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setHorizontalSpacing(14);
+    grid->setVerticalSpacing(kCardRowGapPx);
+    // Every labelled row is placed by hand: the label at (row, 0) and the field at (row, 1), both asked
+    // for AlignLeft|AlignVCenter. That pair of flags is the whole fix for the reported "Тема and Язык
+    // have slid": a QGridLayout puts an item into its cell with exactly the alignment it was given, so a
+    // short word is centred on the line of a taller combo or spin box no matter what the font's metrics
+    // are. The field column is the one that grows, so the path row can still fill the card while the
+    // short choices stay beside their labels.
+    grid->setColumnStretch(1, 1);
+    box->addLayout(grid);
+    card.grid = grid;
 
     return card;
 }
@@ -411,19 +424,17 @@ QLabel *SettingsPage::rowLabel(QFrame *card, const QString &key)
     auto *label = new QLabel(card);
     label->setObjectName(QStringLiteral("settingsRowLabel"));
     label->setWordWrap(true);
-    // Pinned rather than floored, and the difference is the whole point: a QFormLayout takes as much label
-    // column as its widest label asks for, so three forms left to themselves would start the field column
+    // Pinned rather than floored, and the difference is the whole point: a QGridLayout takes its first
+    // column from the widest cell in it, so three grids left to themselves would start the field column
     // at three different pixels — "Путь к zapret" short, "Интервал проверки обхода" long, and the page
     // ragged. A fixed width makes every card share one left edge for its fields.
     label->setMinimumWidth(kRowLabelPx);
     label->setMaximumWidth(kRowLabelPx);
-    // Vertically, the same argument one axis further: the row's own centre line. A QFormLayout sizes a row
-    // from its field and leaves a shorter label at that row's TOP — the form's labelAlignment governs where
-    // a label sits *within the space it was given*, and the space it is given is its own sizeHint, so
-    // AlignVCenter centred nothing. A 28 px word beside a 32 px combo therefore sat two pixels above the
-    // control's middle, and four above a 35 px spin box: each row's offset its own, which is what read as
-    // "Тема and Язык have slid". Taking the row's height and centring the text inside it is the pair that
-    // fixes every row at once, whatever the font's metrics or the field's.
+    // Vertically the same promise, one axis further. The grid's own AlignVCenter (see the addWidget calls
+    // in build()) centres the label in its cell; this keeps the text centred inside the label as well, and
+    // the Expanding policy means a label left at its sizeHint in a taller row still fills that row instead
+    // of sitting at its top. Either half alone would have fixed the reported slide; together they hold
+    // whatever font, language or control height the machine turns out to have.
     QSizePolicy policy = label->sizePolicy();
     policy.setVerticalPolicy(QSizePolicy::Expanding);
     label->setSizePolicy(policy);

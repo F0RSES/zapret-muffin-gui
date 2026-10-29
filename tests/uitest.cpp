@@ -68,7 +68,7 @@
 #include <QFont>
 #include <QFontInfo>
 #include <QFontMetrics>
-#include <QFormLayout>
+#include <QGridLayout>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
@@ -1949,8 +1949,8 @@ static void testSettingsPageCards(QApplication &app)
           "the commit row belongs to no card — it closes the page, it is not one of its groups");
 
     // ---- one field column, three cards ----
-    // The reason the row labels are pinned to one width: a QFormLayout takes as much label column as its
-    // widest label asks for, so three forms left to themselves would start their fields three pixels apart.
+    // The reason the row labels are pinned to one width: a QGridLayout takes its first column from the
+    // widest cell in it, so three grids left to themselves would start their fields three pixels apart.
     const auto rowLabels = page.findChildren<QLabel *>(QStringLiteral("settingsRowLabel"));
     // Five labelled rows: the path, the theme, the language, and the two intervals. The switches carry
     // their own text and are not counted here — they are the reason the form has an empty label column.
@@ -1966,23 +1966,40 @@ static void testSettingsPageCards(QApplication &app)
               "…and a long label wraps rather than breaking the column it is pinned to");
 
     // The vertical half of that promise is made by the LAYOUT, not only by the pixels measured further
-    // down: QFormLayout::labelAlignment is what tells the form to centre a short label in the space a
-    // taller field claims. Read from each card's own form, so all three are covered rather than the one a
-    // screenshot happened to show.
+    // down: every label is placed in the grid's first column with AlignLeft|AlignVCenter, and that pair is
+    // what tells the layout to centre a short word on the line of a taller field. Read from each card's own
+    // grid, so all three are covered rather than the one a screenshot happened to show.
     for (QFrame *card : {general, ui, network}) {
         const QString which = card == general ? QStringLiteral("general")
                               : card == ui    ? QStringLiteral("interface")
                                               : QStringLiteral("network");
-        QFormLayout *form = card ? card->findChild<QFormLayout *>() : nullptr;
-        check(form != nullptr,
-              QStringLiteral("the %1 card keeps its rows in a QFormLayout").arg(which));
-        check(form && form->labelAlignment() == (Qt::AlignLeft | Qt::AlignVCenter),
-              QStringLiteral("…and asks that form to centre its labels on each row (%1)")
+        auto *grid = card ? card->findChild<QGridLayout *>() : nullptr;
+        check(grid != nullptr,
+              QStringLiteral("the %1 card keeps its rows in a QGridLayout").arg(which));
+        check(grid && grid->columnCount() == 2 && grid->itemAtPosition(0, 1) != nullptr,
+              QStringLiteral("…whose rows are the label/field pair, not a single stretched cell (%1)")
                   .arg(which));
+        bool labelsCentred = grid != nullptr;
+        int labelledRows = 0;
+        if (grid) {
+            for (int row = 0; row < grid->rowCount(); ++row) {
+                QLayoutItem *item = grid->itemAtPosition(row, 0);
+                if (!item || !qobject_cast<QLabel *>(item->widget()))
+                    continue;
+                ++labelledRows;
+                if (!item->alignment().testFlag(Qt::AlignLeft)
+                    || !item->alignment().testFlag(Qt::AlignVCenter))
+                    labelsCentred = false;
+            }
+        }
+        check(labelsCentred && labelledRows > 0,
+              QStringLiteral("…and every label cell asks for left-aligned vertical centring (%1 row(s))")
+                  .arg(labelledRows));
     }
     // And the label itself has to cooperate: it takes the row's full height and centres its own text
-    // inside it. A label left at its sizeHint is exactly the bug this pair exists to prevent — the form's
-    // alignment only governs the space the label was given, and a sizeHint is not that space.
+    // inside it. A label left at its sizeHint is exactly the bug this pair exists to prevent — the grid's
+    // alignment only governs the cell, and a sizeHint-height label is still a line of text at the top of
+    // whatever room the cell gives it.
     for (QLabel *label : rowLabels)
         check(label->alignment() == (Qt::AlignLeft | Qt::AlignVCenter)
                   && label->sizePolicy().verticalPolicy() == QSizePolicy::Expanding,
@@ -1999,11 +2016,11 @@ static void testSettingsPageCards(QApplication &app)
     //
     // The report was that "Тема" and "Язык" had slid. Horizontally the two columns already agree — that is
     // what the checks above measure — so what had moved is the vertical relation between a label and the
-    // thing it names: a QFormLayout sizes a row from its field and leaves a shorter label at the row's top,
-    // which sits a 28 px word two pixels above a 32 px combo and four above a 35 px spin box. Two pixels
-    // are invisible as a measurement and unmistakable as a page: the labels stop sharing a line with the
-    // controls they belong to, and each row's offset is its own. Every labelled row is therefore read as
-    // geometry here, in the page's own coordinates.
+    // thing it names: a form-shaped layout sizes a row from its field and leaves a shorter label at the
+    // row's top, which sits a 28 px word two pixels above a 32 px combo and four above a 35 px spin box.
+    // Two pixels are invisible as a measurement and unmistakable as a page: the labels stop sharing a line
+    // with the controls they belong to, and each row's offset is its own. The grid places both halves with
+    // an explicit AlignVCenter; this reads the result as geometry, in the page's own coordinates.
     {
         auto labelFor = [&page](const QString &key) -> QLabel * {
             const QString text = LanguageManager::tr(key);
@@ -5035,23 +5052,22 @@ static void testWarpEnrolmentWiring()
               "stay distinguishable after the fact");
     }
 
-    // ---- a tunnel that is already set up comes up without being prepared again ----
+    // ---- an enrolled device goes straight to the tunnel ----
     //
-    // The report this answers: turning WARP on is slow, every time, because the chain restarts warp-svc
-    // behind a polkit prompt and then waits for the daemon to re-open its socket. That is what a *first*
-    // setup costs; on a device that is enrolled and a machine that has been through the chain once, all
-    // of it is a pause in front of a single verb. The preparation is therefore gated on both halves of
-    // that fact, and the gate is what these three scenarios pin.
+    // The report this answers: turning WARP on is slow every time, because the chain restarted warp-svc
+    // behind a polkit prompt and then waited for the daemon to re-open its socket. That is a
+    // FIRST-INSTALL cost. On a device whose own `registration show` says Registered, a press is one
+    // short-lived warp-cli verb — no prepareEnvironment(), no restart, no settle — and this is the
+    // scenario that pins it.
     {
-        const bool savedPrepared = store.warpEnvironmentPrepared();
-        store.setWarpEnvironmentPrepared(true);
         EnrolmentFixture f(store);
         f.warp->registration = WarpManager::Registration::Registered;
         f.press();
         check(f.warp->ensureCalls == 1, "the enrolment is still read — that check is one short verb");
         f.warp->answerFinished(true);
         check(f.warp->prepareCalls == 0,
-              "a registered device on a machine that has been prepared once is not prepared again");
+              "a registered device is never prepared: the restart belongs to the first install, not to "
+              "every connect");
         check(f.warp->startCalls == 1,
               "…and the connect is issued inside the same answer, which is what makes the toggle feel "
               "instant rather than patient");
@@ -5060,49 +5076,25 @@ static void testWarpEnrolmentWiring()
                                          QStringLiteral("start")}),
               "three acts, in that order, with no restart and no settle between the enrolment and the "
               "tunnel");
-        store.setWarpEnvironmentPrepared(savedPrepared);
     }
 
-    // ---- the first tunnel a machine is asked for pays the whole chain ----
+    // ---- a device that is not enrolled still pays the whole chain ----
+    //
+    // The other side of the same policy, and the reason the gate is not simply "never prepare": a first
+    // install is exactly the case the protocol switch and the daemon restart exist for, so a reading that
+    // is not Registered must still go through them before the tunnel is asked for.
     {
-        const bool savedPrepared = store.warpEnvironmentPrepared();
-        store.setWarpEnvironmentPrepared(false);
         EnrolmentFixture f(store);
-        f.warp->registration = WarpManager::Registration::Registered;
+        f.warp->registration = WarpManager::Registration::NotRegistered;
         f.warp->preparationAnswersImmediately = false;
         f.press();
         f.warp->answerFinished(true);
         check(f.warp->prepareCalls == 1,
-              "an enrolled device is not the same claim as a prepared machine: the protocol switch and "
-              "the daemon restart are still owed once");
-        check(f.warp->startCalls == 0, "…and the tunnel waits for them, as it always has");
-        check(!f.window->settingsModel()->warpEnvironmentPrepared(),
-              "the machine is not marked ready while the chain is still in flight");
+              "an unenrolled device is prepared before the tunnel is asked for — the first-install path "
+              "is not lost, it is only kept off the everyday one");
+        check(f.warp->startCalls == 0, "…and the connect waits for it, as it always has");
         f.warp->answerPreparation(true);
-        check(f.window->settingsModel()->warpEnvironmentPrepared(),
-              "a preparation that finished is recorded as the machine being ready, and the next press "
-              "takes the fast path without ever being told");
-        store.setWarpEnvironmentPrepared(savedPrepared);
-    }
-
-    // ---- a tunnel that fails puts the preparation back on the table ----
-    {
-        const bool savedPrepared = store.warpEnvironmentPrepared();
-        store.setWarpEnvironmentPrepared(false);   // so the press below really does owe the chain
-        EnrolmentFixture f(store);
-        f.warp->registration = WarpManager::Registration::Registered;
-        f.press();
-        f.warp->answerFinished(true);
-        check(f.warp->prepareCalls == 1 && f.window->settingsModel()->warpEnvironmentPrepared(),
-              "the first press prepared the machine and said so");
-        // The daemon's own verdict, arrived at rather than assumed: an Error is the tunnel saying it did
-        // not come up, which makes the stored "ready" a description of a machine that just contradicted
-        // it. Nothing may be taken on the strength of a flag the host has disproved.
-        f.warp->emitState(WarpManager::State::Error);
-        check(!f.window->settingsModel()->warpEnvironmentPrepared(),
-              "an Error clears the flag, so the next press pays the full chain again instead of taking a "
-              "fast path over a host that has just proved it is not ready");
-        store.setWarpEnvironmentPrepared(savedPrepared);
+        check(f.warp->startCalls == 1, "…and follows the preparation once it is done");
     }
 
     // ---- the header speaks for the tunnel while the tunnel half is lit ----

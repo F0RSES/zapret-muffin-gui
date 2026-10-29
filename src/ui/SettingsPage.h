@@ -5,7 +5,7 @@
 class QAction;
 class QCheckBox;
 class QComboBox;
-class QFormLayout;
+class QGridLayout;
 class QFrame;
 class QLabel;
 class QLineEdit;
@@ -105,10 +105,9 @@ public:
     // Human verdict shown next to the field (platform + how many entries were found).
     static QString describePath(const QString &dir);
     // The width every row label is pinned to, and so the x the field column starts at in all three cards.
-    // Published because it is a promise rather than a private number: a QFormLayout sizes its own label
-    // column from its widest label, so three forms left to themselves would put the fields at three
-    // different pixels — and a page whose columns do not line up is the "колхозно" this redesign is here
-    // to remove.
+    // Published because it is a promise rather than a private number: a QGridLayout sizes its first column
+    // from its widest cell, so three grids left to themselves would put the fields at three different
+    // pixels — and a page whose columns do not line up is the "колхозно" this redesign is here to remove.
     static int rowLabelWidth() { return kRowLabelPx; }
 
 signals:
@@ -123,17 +122,17 @@ private:
     void build();
     void setPathState(bool ok, const QString &message);
     // A card of the page: the framed surface, the layout rows that span it go into, and the two-column
-    // form the labelled rows go into. All three are handed back because a card has two kinds of row and
+    // grid the labelled rows go into. All three are handed back because a card has two kinds of row and
     // they do not start at the same x: a labelled setting indents its value to the field column, while a
     // switch — which is its own label — belongs at the card's left edge, under the heading.
     struct Card
     {
         QFrame *frame = nullptr;
         QVBoxLayout *body = nullptr;
-        QFormLayout *form = nullptr;
+        QGridLayout *grid = nullptr;
     };
 
-    // A card: the framed surface, its heading, and the form its rows go in. The heading carries the
+    // A card: the framed surface, its heading, and the grid its rows go in. The heading carries the
     // catalog key it came from like every other label here, so a language switch re-reads it from the
     // catalog rather than from a hand-maintained list of widgets somewhere else. `host` is the widget the
     // card is parented to and must be the one its layout is installed on — a layout positions its widgets
@@ -195,10 +194,10 @@ private:
     QLabel *m_savedNote = nullptr;
     QTimer *m_savedTimer = nullptr;  // for how long "Сохранено ✓" stays up
 
-    // The label column every card shares. A QFormLayout takes its label width from the widest label in it,
-    // so three independent forms would start their fields at three different pixels; pinning each label to
-    // this width pins the field column to one x across the whole page. Word wrap is what keeps a long
-    // German or Hindi row from breaking the alignment instead of forcing it.
+    // The label column every card shares. A QGridLayout takes its first-column width from the widest cell
+    // in it, so three independent grids would start their fields at three different pixels; pinning each
+    // label to this width pins the field column to one x across the whole page. Word wrap is what keeps a
+    // long German or Hindi row from breaking the alignment instead of forcing it.
     static constexpr int kRowLabelPx = 168;
 };
 
