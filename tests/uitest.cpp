@@ -5657,6 +5657,33 @@ protected:
             acts->record(QStringLiteral("register"));
         return true;
     }
+
+public:
+    // Answer every command the current step owns, and return how many that was.
+    //
+    // `commandAnswered` advances the dialog's own command index, so a step is only finished when its LAST
+    // command answers. Linux's daemon and service steps each carry one command; Windows' carry two
+    // (`sc query` + `sc start`, `sc stop` + `sc start`). Answering one and stopping — which this suite used
+    // to do — left the wizard parked on the Windows daemon step, and every later index assertion failed
+    // with a message about a broken sequence that was really a test written against one platform's plan.
+    int finishCommandStep(int exitCode = 0, const QString &output = QString())
+    {
+        const int index = currentStepIndex();
+        const QList<WarpManager::SetupStep> plan = steps();
+        if (index < 0 || index >= plan.size())
+            return 0;
+        const int count = plan.at(index).commands.size();
+        for (int i = 0; i < count; ++i)
+            commandAnswered(exitCode, output, false);
+        return count;
+    }
+
+    // A step command in the exact "program arg arg" spelling the dialog logs and launches, so an
+    // expectation about the plan is platform-neutral: on Linux that is `systemctl …`, on Windows `sc …`.
+    static QString commandText(const WarpManager::SetupCommand &command)
+    {
+        return command.program + QLatin1Char(' ') + command.args.join(QLatin1Char(' '));
+    }
 };
 
 static void testWarpSetupDialog()
@@ -5697,6 +5724,11 @@ static void testWarpSetupDialog()
     manager.available = false;
     manager.registration = WarpManager::Registration::Unknown;
 
+    // The plan under test is THIS host's plan, not Linux's. The wizard asks ZapretSource::hostPlatform()
+    // for its steps, so on the Windows CI runner the daemon and service steps are `sc` pairs — asserting
+    // Linux's `systemctl` argv there is what kept the Windows job red while Linux stayed green.
+    const Strategy::Platform host = ZapretSource::hostPlatform();
+
     // ---- the plan the dialog was handed ----
     {
         ProbeSetupDialog dialog(manager);
@@ -5704,7 +5736,7 @@ static void testWarpSetupDialog()
         QStringList ids;
         for (const WarpManager::SetupStep &s : steps)
             ids << s.id;
-        check(ids == WarpManager::setupStepIds(Strategy::Platform::Linux),
+        check(ids == WarpManager::setupStepIds(host),
               "the dialog walks the same plan the core spells, rather than a second copy of it");
         check(dialog.stepCount() == 6, "…which on a bare Linux host is six steps");
         bool allTitled = !steps.isEmpty();
@@ -5717,6 +5749,20 @@ static void testWarpSetupDialog()
         const QString sample = WarpSetupDialog::stepStatusText(2, 5, QStringLiteral("X"));
         check(sample.contains(QStringLiteral("2")) && sample.contains(QStringLiteral("X")),
               "the status line carries the step's position and its own name");
+
+        // The shape the command-answering helper has to handle, pinned on both platforms rather than on
+        // the one this suite happens to run on: Linux's daemon and service steps own one command each,
+        // Windows' own two (`sc query`+`sc start`, `sc stop`+`sc start`). The Windows CI runner is where
+        // answering only the first one left the wizard parked on the daemon step.
+        const auto linuxPlan = WarpManager::setupSteps(Strategy::Platform::Linux, false,
+                                                       WarpManager::Registration::Unknown);
+        const auto windowsPlan = WarpManager::setupSteps(Strategy::Platform::Windows, false,
+                                                         WarpManager::Registration::Unknown);
+        check(linuxPlan.at(1).commands.size() == 1 && linuxPlan.at(4).commands.size() == 1
+                  && windowsPlan.at(1).commands.size() == 2
+                  && windowsPlan.at(4).commands.size() == 2,
+              "the daemon and service steps are one command on Linux and two on Windows — the shape "
+              "the test's command-answering helper reads from the plan");
     }
 
     // ---- the shape before anything runs ----
@@ -5759,10 +5805,19 @@ static void testWarpSetupDialog()
         check(paintsColor(dialog.statusLabel(), runningColour),
               "…and the status line is drawn in the running colour, not merely named after it");
 
+        // The plan's own command list is the expectation. Linux's daemon and service steps carry one
+        // command each; Windows' carry two (`sc query`+`sc start`, `sc stop`+`sc start`), and only the
+        // LAST answer finishes a step. Deriving the counts and the argv from the plan is what makes this
+        // scenario a claim about ordering rather than about one platform's spelling.
+        const QList<WarpManager::SetupStep> plan = dialog.steps();
+        const int daemonCommands = plan.at(1).commands.size();
+        const int protocolCommands = plan.at(3).commands.size();
+        const int serviceCommands = plan.at(4).commands.size();
+        auto text = [](const WarpManager::SetupCommand &c) { return ProbeSetupDialog::commandText(c); };
+
         dialog.stepAnswered(true, QString());
         check(dialog.currentStepIndex() == 1 && dialog.commands.size() == 1
-                      && dialog.commands.at(0)
-                             .contains(QStringLiteral("enable --now warp-svc")),
+                      && dialog.commands.first() == text(plan.at(1).commands.first()),
               "then the daemon is asked to come up, and before anything is asked OF it: a warp-cli verb "
               "is a client talking to warp-svc over a socket, and a socket with nobody behind it refuses "
               "the enrolment with a sentence that reads like a verdict about the device");
@@ -5773,32 +5828,37 @@ static void testWarpSetupDialog()
               "…announced as a step of its own, so the root prompt it is about to raise has a sentence "
               "attached to it rather than arriving over a line about registration");
 
-        dialog.commandAnswered(0, QStringLiteral("Created symlink /etc/systemd/system/multi-user.target"
-                                                 ".wants/warp-svc.service"), false);
+        // Every daemon command is non-fatal, so these answers walk past them and into the enrolment.
+        dialog.finishCommandStep(0, QStringLiteral("warp-svc is active"));
         check(dialog.registerBegun == 1 && dialog.currentStepIndex() == 2,
               "the enrolment is next, and it is the manager's — a bare `registration new` here would be "
               "a second key for a device that may already hold one");
 
         dialog.stepAnswered(true, QString());
-        check(dialog.currentStepIndex() == 3 && dialog.commands.size() == 2
-                      && dialog.commands.at(1).contains(QStringLiteral("tunnel protocol set MASQUE")),
+        check(dialog.currentStepIndex() == 3
+                      && dialog.commands.size() == daemonCommands + 1
+                      && dialog.commands.last() == text(plan.at(3).commands.first()),
               "then the transport is switched, with the argv the core spelled rather than a second copy");
 
-        dialog.commandAnswered(0, QStringLiteral("Success"), false);
-        check(dialog.currentStepIndex() == 4 && dialog.commands.size() == 3
-                      && dialog.commands.at(2).contains(QStringLiteral("systemctl restart warp-svc")),
-              "then the service is restarted — the step that clears the daemon a connect used to hang "
+        dialog.finishCommandStep(0, QStringLiteral("Success"));
+        check(dialog.currentStepIndex() == 4
+                      && dialog.commands.size() == daemonCommands + protocolCommands + 1
+                      && dialog.commands.last() == text(plan.at(4).commands.first()),
+              "then the service is cycled — the step that clears the daemon a connect used to hang "
               "against, and one that comes after the enrolment because a daemon restarted mid "
               "`registration new` loses the key that call is obtaining");
-        check(dialog.logView()->toPlainText().contains(QStringLiteral("systemctl restart warp-svc")),
+        check(dialog.logView()->toPlainText().contains(text(plan.at(4).commands.first())),
               "…and the pane shows the command that was run, not only the plan's idea of it");
 
         check(released.isEmpty(),
               "and nothing has been given back yet: the enrolment is still talking to Cloudflare through "
               "the path the install borrowed");
-        dialog.commandAnswered(0, QString(), false);
-        check(dialog.currentStepIndex() == 5 && dialog.commands.size() == 4
-                      && dialog.commands.at(3).contains(QStringLiteral("connect")),
+        // The rest of the service step — the second `sc` command on Windows — hands over to the connect.
+        dialog.finishCommandStep(0, QString());
+        check(dialog.currentStepIndex() == 5
+                      && dialog.commands.size()
+                             == daemonCommands + protocolCommands + serviceCommands + 1
+                      && dialog.commands.last() == text(plan.at(5).commands.first()),
               "and only then is the tunnel asked for");
         check(released.count() == 1,
               "…with the release announced at the connect step and not before it, which is where the "
@@ -5806,7 +5866,7 @@ static void testWarpSetupDialog()
         check(dialog.progressBar()->value() == 5,
               "the bar counts finished steps, so it is not full while one is still running");
 
-        dialog.commandAnswered(0, QString(), false);
+        dialog.finishCommandStep(0, QString());
         check(dialog.succeeded(), "a chain whose every step answered is a chain that succeeded");
         check(finished.count() == 1 && finished.at(0).at(0).toBool(),
               "…announced once, so a caller cannot read two outcomes out of one run");
@@ -5851,11 +5911,15 @@ static void testWarpSetupDialog()
         check(manager.rescans == rescansBefore + 1,
               "a successful install is followed by a rescan of the host, because everything after this "
               "step is a verb against a client that did not exist a moment ago");
+        // The rescan unblocks the daemon step; how many commands that step owns is the host's plan
+        // (one systemctl on Linux, two `sc` calls on Windows), so the count and argv come from the plan.
+        const QList<WarpManager::SetupStep> rescanPlan = dialog.steps();
         check(dialog.commands.size() == 1
-                      && dialog.commands.at(0).contains(QStringLiteral("enable --now warp-svc")),
+                      && dialog.commands.first()
+                             == ProbeSetupDialog::commandText(rescanPlan.at(1).commands.first()),
               "…and what that rescan unblocks is the daemon step, the next thing the plan runs and the "
               "first thing that needs the client the package manager just put down");
-        dialog.commandAnswered(0, QString(), false);
+        dialog.finishCommandStep();
         check(acts.acts == (QStringList{QStringLiteral("install"),
                                         QStringLiteral("rescanAvailability"),
                                         QStringLiteral("register")}),
@@ -5894,7 +5958,7 @@ static void testWarpSetupDialog()
         QSignalSpy finished(&dialog, &WarpSetupDialog::setupFinished);
         dialog.startSetup();
         dialog.stepAnswered(true, QString());                 // install
-        dialog.commandAnswered(0, QString(), false);          // daemon
+        dialog.finishCommandStep();                           // daemon (one or two commands)
         dialog.stepAnswered(true, QString());                 // enrolment
         const int commandsBefore = dialog.commands.size();
         dialog.commandAnswered(1, QStringLiteral("warp-cli: unrecognized option"), false);
@@ -5947,7 +6011,9 @@ static void testWarpSetupDialog()
         dialog.startSetup();
         dialog.stepAnswered(true, QString());        // the install reports success
         check(dialog.currentStepIndex() == 1, "the daemon is the step the install hands over to");
-        dialog.commandAnswered(1, QStringLiteral("pkexec: Unexpected response"), false);
+        // Every command the daemon step owns is refused. They are the plan's only non-fatal commands, and
+        // on Windows there are two of them (`sc query` and `sc start`), so the refusal has to walk both.
+        dialog.finishCommandStep(1, QStringLiteral("pkexec: Unexpected response"));
         check(dialog.currentStepIndex() == 2 && dialog.registerBegun == 1,
               "…and a refusal of it is survived: the enrolment is still asked for, because a machine "
               "whose daemon somebody else started has nothing to gain from the wizard stopping here");
@@ -5977,19 +6043,26 @@ static void testWarpSetupDialog()
         bare.available = false;      // a host with nothing: the full six-step plan
         ProbeSetupDialog dialog(bare);
         dialog.show();
+        const QList<WarpManager::SetupStep> plan = dialog.steps();
+        const int daemonCommands = plan.at(1).commands.size();
+        const int protocolCommands = plan.at(3).commands.size();
+        const int serviceCommands = plan.at(4).commands.size();
         dialog.startSetup();
         dialog.stepAnswered(true, QString());            // install reports success
-        dialog.commandAnswered(0, QString(), false);     // daemon: systemctl enable --now
+        dialog.finishCommandStep();                      // daemon (one or two commands)
         dialog.stepAnswered(true, QString());            // enrolment settled
-        dialog.commandAnswered(0, QString(), false);     // protocol: MASQUE — which launches the restart
-        check(dialog.commands.size() == 3
-                  && dialog.commands.last().contains(QStringLiteral("restart")),
-              "the service step's restart is the command standing in front of the connect");
+        dialog.finishCommandStep();                      // protocol: MASQUE — which launches the service
+        check(dialog.commands.size() == daemonCommands + protocolCommands + 1
+                  && dialog.commands.last()
+                         == ProbeSetupDialog::commandText(plan.at(4).commands.first()),
+              "the service step's own command is standing in front of the connect");
         check(bare.suppressCalls == 0,
               "no window policy is asked of a chain that has not reached the verb that opens one");
-        dialog.commandAnswered(0, QString(), false);     // service answered — the chain walks to connect
-        check(dialog.commands.size() == 4
-                  && dialog.commands.last().contains(QStringLiteral("connect")),
+        dialog.finishCommandStep();                      // service answered — the chain walks to connect
+        check(dialog.commands.size()
+                      == daemonCommands + protocolCommands + serviceCommands + 1
+                  && dialog.commands.last()
+                         == ProbeSetupDialog::commandText(plan.at(5).commands.first()),
               "…and the wizard has reached its last step, the connect itself");
         check(bare.suppressCalls == 1,
               "the window is taken down as the chain reaches the connect, not after it and not never");
@@ -6012,14 +6085,17 @@ static void testWarpSetupDialog()
               "two numbers for one socket are two opinions about how long it takes to come back");
         dialog.startSetup();
         dialog.stepAnswered(true, QString());          // install reports success
+        const QList<WarpManager::SetupStep> settlePlan = dialog.steps();
+        const int settleDaemonCommands = settlePlan.at(1).commands.size();
         check(dialog.commands.size() == 1
-                      && dialog.commands.at(0).contains(QStringLiteral("enable --now warp-svc")),
+                      && dialog.commands.first()
+                             == ProbeSetupDialog::commandText(settlePlan.at(1).commands.first()),
               "the daemon step is launched");
-        dialog.commandAnswered(0, QStringLiteral("active"), false);
+        dialog.finishCommandStep(0, QStringLiteral("active"));
         check(dialog.isSettling(),
               "and when it exits the chain stops rather than continuing: the unit is active, the daemon "
               "is not yet answerable");
-        check(dialog.commands.size() == 1 && dialog.registerBegun == 0,
+        check(dialog.commands.size() == settleDaemonCommands && dialog.registerBegun == 0,
               "…and nothing is asked of the daemon inside the gap, which is the whole of the race");
         check(dialog.statusLabel()->text().contains(
                       LanguageManager::tr(QStringLiteral("warp.setup.settle")).arg(0.06, 0, 'g', 2)),
@@ -6043,10 +6119,13 @@ static void testWarpSetupDialog()
         dialog.show();
         dialog.startSetup();
         dialog.stepAnswered(true, QString());          // install
-        dialog.commandAnswered(0, QStringLiteral("active"), false);   // daemon
+        const QList<WarpManager::SetupStep> retryPlan = dialog.steps();
+        const int retryDaemonCommands = retryPlan.at(1).commands.size();
+        dialog.finishCommandStep(0, QStringLiteral("active"));
         dialog.stepAnswered(true, QString());          // enrolment (stubbed)
-        check(dialog.commands.size() == 2
-                      && dialog.commands.at(1).contains(QStringLiteral("protocol set MASQUE")),
+        check(dialog.commands.size() == retryDaemonCommands + 1
+                      && dialog.commands.last()
+                             == ProbeSetupDialog::commandText(retryPlan.at(3).commands.first()),
               "the protocol verb is the command now in flight");
         dialog.commandAnswered(1, QStringLiteral("Unable to connect to the CloudflareWARP daemon: "
                                                 "No such file or directory"), false);
@@ -6054,7 +6133,9 @@ static void testWarpSetupDialog()
               "a refusal that says the daemon is not there is waited out on the same command, not failed "
               "and not advanced past");
         QTest::qWait(30);
-        check(dialog.commands.size() == 3 && dialog.commands.at(2).contains(QStringLiteral("MASQUE")),
+        check(dialog.commands.size() == retryDaemonCommands + 2
+                      && dialog.commands.last()
+                             == ProbeSetupDialog::commandText(retryPlan.at(3).commands.first()),
               "…and the ask is repeated rather than replayed from a cache, which is the only way a "
               "daemon that arrives in the meantime is ever reached");
         dialog.commandAnswered(0, QStringLiteral("Success"), false);
@@ -6082,7 +6163,7 @@ static void testWarpSetupDialog()
         dialog.show();
         dialog.startSetup();
         dialog.stepAnswered(true, QString());          // install
-        dialog.commandAnswered(0, QString(), false);   // daemon
+        dialog.finishCommandStep();                    // daemon (one or two commands)
         const int enrollBefore = manager.ensureCalls;
 
         for (int attempt = 1; attempt <= WarpSetupDialog::kDaemonRetryAttempts; ++attempt) {
