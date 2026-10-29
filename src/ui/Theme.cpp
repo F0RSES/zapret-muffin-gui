@@ -38,14 +38,14 @@ Tokens tokensFor(bool dark)
                 QColor(0xFB, 0xBF, 0x24)};
     // Light, "soft white-grey" palette: #F3F4F6 canvas, #E5E7EB rail, #FFFFFF surfaces framed by a
     // #D1D5DB hairline, #1F2937 text (dark grey, never black — the reason the sheet was reworked).
-    // The log well excepted: it carries #111827, one step darker, because a journal is monospace at
-    // 9pt on a plain white field and the surrounding chrome is a proportional 10pt on grey — the
-    // density that makes #1F2937 comfortable elsewhere is what makes small mono text wash out here.
-    // Mirrors theme_light.qss; change the two together.
+    // The journal shares that ink and is set apart by its recessed #F9FAFB well rather than by a third
+    // grey: #1F2937 on #F9FAFB is about 14:1, which is comfortably AAA even at the journal's 9pt
+    // monospace, and one dark text token means the sheet's log rule and Theme::logColor(0) cannot drift
+    // apart. Mirrors theme_light.qss; change the two together.
     return {QColor(0xF3, 0xF4, 0xF6), QColor(0xFF, 0xFF, 0xFF), QColor(0xE5, 0xE7, 0xEB),
             QColor(0xD1, 0xD5, 0xDB), QColor(0x1F, 0x29, 0x37), QColor(0x6B, 0x72, 0x80),
-            QColor(0x11, 0x18, 0x27),
-            QColor(0xE5, 0xE7, 0xEB), QColor(0xFF, 0xFF, 0xFF), QColor(0x7C, 0x3A, 0xED),
+            QColor(0x1F, 0x29, 0x37),
+            QColor(0xE5, 0xE7, 0xEB), QColor(0xF9, 0xFA, 0xFB), QColor(0x7C, 0x3A, 0xED),
             QColor(0x08, 0x91, 0xB2), QColor(0x05, 0x96, 0x69), QColor(0xDC, 0x26, 0x26),
             QColor(0xD9, 0x77, 0x06)};
 }

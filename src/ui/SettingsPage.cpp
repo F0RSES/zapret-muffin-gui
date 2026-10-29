@@ -392,6 +392,12 @@ SettingsPage::Card SettingsPage::makeCard(QWidget *host, const QString &titleKey
     form->setContentsMargins(0, 0, 0, 0);
     form->setHorizontalSpacing(14);
     form->setVerticalSpacing(kCardRowGapPx);
+    // Set on the form, and on every card's form, because this is the promise that was reported broken:
+    // "Тема" and "Язык" sitting low beside their fields. A QFormLayout gives a short label only its own
+    // sizeHint as a cell and then leaves the text at that cell's top, so centring inside the cell centred
+    // nothing while the field beside it was taller. Paired with rowLabel()'s Expanding policy — which
+    // makes the label's cell the row's full height — this is what puts every label on its field's centre
+    // line, whatever the font's metrics or the control's height turn out to be.
     form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     box->addLayout(form);

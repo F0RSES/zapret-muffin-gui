@@ -68,6 +68,7 @@
 #include <QFont>
 #include <QFontInfo>
 #include <QFontMetrics>
+#include <QFormLayout>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
@@ -88,6 +89,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QSignalSpy>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardPaths>
@@ -162,6 +164,15 @@ static bool rgbClose(const QColor &a, const QColor &b, int tol)
     return a.isValid() && b.isValid()
            && qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol
            && qAbs(a.blue() - b.blue()) <= tol;
+}
+
+// Is this colour dark enough to read as ink on a light surface? qGray is the same cheap brightness measure
+// the ring-mark check below already uses; the bound is a sanity limit rather than a design value — the
+// lightest grey the light sheet names for text (#6B7280) is 113 of 255, while the disabled/decorative
+// tokens that are lighter are deliberately kept out of the list that tests this.
+static bool isDarkInk(const QColor &c)
+{
+    return c.isValid() && qGray(c.rgb()) < 128;
 }
 
 // The sheet with every /* … */ block removed.
@@ -1954,6 +1965,30 @@ static void testSettingsPageCards(QApplication &app)
         check(rowLabels.first()->wordWrap(),
               "…and a long label wraps rather than breaking the column it is pinned to");
 
+    // The vertical half of that promise is made by the LAYOUT, not only by the pixels measured further
+    // down: QFormLayout::labelAlignment is what tells the form to centre a short label in the space a
+    // taller field claims. Read from each card's own form, so all three are covered rather than the one a
+    // screenshot happened to show.
+    for (QFrame *card : {general, ui, network}) {
+        const QString which = card == general ? QStringLiteral("general")
+                              : card == ui    ? QStringLiteral("interface")
+                                              : QStringLiteral("network");
+        QFormLayout *form = card ? card->findChild<QFormLayout *>() : nullptr;
+        check(form != nullptr,
+              QStringLiteral("the %1 card keeps its rows in a QFormLayout").arg(which));
+        check(form && form->labelAlignment() == (Qt::AlignLeft | Qt::AlignVCenter),
+              QStringLiteral("…and asks that form to centre its labels on each row (%1)")
+                  .arg(which));
+    }
+    // And the label itself has to cooperate: it takes the row's full height and centres its own text
+    // inside it. A label left at its sizeHint is exactly the bug this pair exists to prevent — the form's
+    // alignment only governs the space the label was given, and a sizeHint is not that space.
+    for (QLabel *label : rowLabels)
+        check(label->alignment() == (Qt::AlignLeft | Qt::AlignVCenter)
+                  && label->sizePolicy().verticalPolicy() == QSizePolicy::Expanding,
+              QStringLiteral("row label \"%1\" fills its row and centres its text in it")
+                  .arg(label->text()));
+
     const int fieldX = page.themeField()->mapTo(&page, QPoint(0, 0)).x();
     check(page.pingIntervalField()->mapTo(&page, QPoint(0, 0)).x() == fieldX,
           "the interface and the network cards start their fields at the same pixel");
@@ -2658,11 +2693,11 @@ static void testTheme(QApplication &app)
     check(app.styleSheet().contains(QStringLiteral("#F3F4F6")), "light background in the sheet");
 
     // Read one declaration out of one selector's rule. Needed because "does the sheet contain this hex"
-    // is a much weaker question than it looks: #1F2937 is the light sheet's general text colour as well
-    // as its old log colour, so a whole-sheet search stays green after the log rule alone stops
-    // matching the token the code paints with. Scoping to the selector is what makes the check a check —
-    // and stripping the comments first is what makes the scope mean the DECLARATION, since these files
-    // name selectors in prose to explain them (see sheetWithoutComments).
+    // is a much weaker question than it looks: #1F2937 is the light sheet's general text colour, so a
+    // whole-sheet search stays green after the log rule alone stops matching the token the code paints
+    // with. Scoping to the selector is what makes the check a check — and stripping the comments first is
+    // what makes the scope mean the DECLARATION, since these files name selectors in prose to explain them
+    // (see sheetWithoutComments).
     auto ruleProperty = [](const QString &sheetIn, const QString &selector, const QString &prop) {
         const QString sheet = sheetWithoutComments(sheetIn);
         const int at = sheet.indexOf(selector);
@@ -2901,6 +2936,83 @@ static void testTheme(QApplication &app)
                   .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"),
                        logHex.isEmpty() ? QStringLiteral("<none>") : logHex,
                        Theme::logColor(0).name(QColor::HexRgb)));
+        // The journal's other half, and the half the reported bug was about: ink and well have to be
+        // readable TOGETHER. A rule with dark ink over a dark well passes any check that looks at one
+        // colour alone, so the distance between the two is measured as well as each value.
+        const QColor logInk = sheetRuleColor(sheet, QStringLiteral("QPlainTextEdit#logView"),
+                                             QStringLiteral("color"));
+        const QColor logWell = sheetRuleColor(sheet, QStringLiteral("QPlainTextEdit#logView"),
+                                              QStringLiteral("background-color"));
+        const int logSpan = logInk.isValid() && logWell.isValid()
+                                ? qAbs(qGray(logInk.rgb()) - qGray(logWell.rgb()))
+                                : -1;
+        check(logSpan > 140,
+              QStringLiteral("%1 sheet's journal is dark ink on a well that stands off it (%2 on %3, %4 "
+                             "gray levels apart)")
+                  .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"))
+                  .arg(logInk.isValid() ? logInk.name(QColor::HexRgb) : QStringLiteral("<none>"))
+                  .arg(logWell.isValid() ? logWell.name(QColor::HexRgb) : QStringLiteral("<none>"))
+                  .arg(logSpan));
+        // The setup wizard's pane is the journal's sibling — monospace output in a recessed well — so it
+        // speaks with the same ink. Two mono consoles in one app and two different greys is a palette
+        // that drifted rather than a design.
+        const QColor setupInk = sheetRuleColor(sheet, QStringLiteral("QPlainTextEdit#setupLog"),
+                                               QStringLiteral("color"));
+        check(setupInk.isValid() && setupInk == logInk,
+              QStringLiteral("%1 sheet's setup console speaks with the journal's ink (%2 vs %3)")
+                  .arg(dark ? QStringLiteral("dark") : QStringLiteral("light"))
+                  .arg(setupInk.isValid() ? setupInk.name(QColor::HexRgb) : QStringLiteral("<none>"))
+                  .arg(logInk.isValid() ? logInk.name(QColor::HexRgb) : QStringLiteral("<none>")));
+
+        if (!dark) {
+            // The light theme's failure report, stated as three properties rather than one hex: the well
+            // is a light fill, the ink is dark, and the well is the recessed token rather than the card's
+            // white. Any later palette nudge stays free while those three remain true.
+            check(qGray(logWell.rgb()) > 200,
+                  QStringLiteral("the light journal well is a light fill (%1)")
+                      .arg(logWell.name(QColor::HexRgb)));
+            check(isDarkInk(logInk),
+                  QStringLiteral("…and its ink is dark, not the white the dark sheet left behind (%1)")
+                      .arg(logInk.name(QColor::HexRgb)));
+            check(logWell != Theme::surface(),
+                  QStringLiteral("…and the well is the recessed fill, not the card's surface (%1 vs %2)")
+                      .arg(logWell.name(QColor::HexRgb), Theme::surface().name(QColor::HexRgb)));
+            // The two canvas tokens the redesign was asked for, read from the rules rather than from this
+            // file's own literals: a soft grey-blue page, and a white card behind a grey hairline.
+            check(pageBg == QColor(0xF3, 0xF4, 0xF6),
+                  QStringLiteral("the light canvas is the soft grey-blue #F3F4F6 (%1)")
+                      .arg(pageBg.name(QColor::HexRgb)));
+            const QColor cardEdge = sheetRuleHex(sheet, QStringLiteral("QFrame#settingsCard"),
+                                                 QStringLiteral("border"));
+            check(cardBg == Theme::surface() && cardEdge == QColor(0xD1, 0xD5, 0xDB),
+                  QStringLiteral("…and a card is white behind the grey hairline (%1 over %2)")
+                      .arg(cardBg.name(QColor::HexRgb),
+                           cardEdge.isValid() ? cardEdge.name(QColor::HexRgb)
+                                              : QStringLiteral("<none>")));
+            // Body copy across the light sheet, not only in the journal. The failure mode was inherited
+            // white text, which is invisible on every surface this theme has; the rules below carry the
+            // words a user actually reads. Accent and state colours are deliberately absent — they are
+            // supposed to be coloured.
+            const struct { const char *selector; const char *what; } inks[] = {
+                { "QWidget", "the base text" },
+                { "QLineEdit, QSpinBox, QComboBox", "the input text" },
+                { "QCheckBox", "the switch labels" },
+                { "QLabel#pageTitle", "page headings" },
+                { "QLabel#footerHint", "the footer hint" },
+                { "QLabel#muted", "secondary text" },
+                { "QLabel#placeholder", "empty-state copy" },
+            };
+            for (const auto &inkRule : inks) {
+                const QColor ink = sheetRuleColor(sheet, QLatin1String(inkRule.selector),
+                                                  QStringLiteral("color"));
+                check(isDarkInk(ink),
+                      QStringLiteral("the light sheet keeps %1 dark (%2 from %3)")
+                          .arg(QLatin1String(inkRule.what),
+                               ink.isValid() ? ink.name(QColor::HexRgb)
+                                             : QStringLiteral("<none>"),
+                               QLatin1String(inkRule.selector)));
+            }
+        }
         // The dashboard's service mark is baked into a pixmap by PingIndicator::refreshGlyph(), so no
         // sheet rule can rescue it once the theme changes — it has to be the right colour at bake time.
         // The failure this guards is not "slightly low contrast" but the mark vanishing: white on the
