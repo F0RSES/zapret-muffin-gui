@@ -5,7 +5,6 @@
 class QAction;
 class QCheckBox;
 class QComboBox;
-class QGridLayout;
 class QFrame;
 class QLabel;
 class QLineEdit;
@@ -121,15 +120,15 @@ private slots:
 private:
     void build();
     void setPathState(bool ok, const QString &message);
-    // A card of the page: the framed surface, the layout rows that span it go into, and the two-column
-    // grid the labelled rows go into. All three are handed back because a card has two kinds of row and
+    // A card of the page: the framed surface, the rows that span it go into, and the one-row-per-setting
+    // column the labelled rows go into. All three are handed back because a card has two kinds of row and
     // they do not start at the same x: a labelled setting indents its value to the field column, while a
     // switch — which is its own label — belongs at the card's left edge, under the heading.
     struct Card
     {
         QFrame *frame = nullptr;
         QVBoxLayout *body = nullptr;
-        QGridLayout *grid = nullptr;
+        QVBoxLayout *rows = nullptr;
     };
 
     // A card: the framed surface, its heading, and the grid its rows go in. The heading carries the
@@ -141,10 +140,10 @@ private:
     Card makeCard(QWidget *host, const QString &titleKey);
     // A row label pinned to kRowLabelPx, returned already carrying its key.
     QLabel *rowLabel(QFrame *card, const QString &key);
-    // Give one row label its fixed height: kPathToolPx (32 px) for a one-line label, more when the pinned
-    // column forces the text to wrap. Fixed so the label's own box cannot stretch a taller row and leave
-    // its text at the top; the grid's AlignVCenter then centres that box on the field.
-    void refitRowLabelHeight(QLabel *label);
+    // One labelled setting as its own QHBoxLayout: label (Expanding/Preferred), field (Fixed/Fixed and
+    // exactly kPathToolPx tall), both placed with AlignVCenter. `fieldExpands` is for the path row, whose
+    // field is the only one that should take the width the label does not need.
+    void addRow(const Card &card, QLabel *label, QWidget *field, bool fieldExpands = false);
     // One of the two icon buttons beside the path field. They differ in glyph and in words, not in shape,
     // so the shape is spelled once — including the promise that an icon-only control still says what it
     // does: a tooltip for the pointer and an accessible name for a screen reader.

@@ -1,6 +1,7 @@
 #include "LogPanel.h"
 #include "LanguageManager.h"
 #include "Theme.h"
+#include "ThemedComboBox.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -56,7 +57,7 @@ LogPanel::LogPanel(QWidget *parent)
     levelCaption->setObjectName(QStringLiteral("muted"));
     i18nText(levelCaption, QStringLiteral("log.level"));
 
-    m_levelBox = new QComboBox(header);
+    m_levelBox = new ThemedComboBox(header);
     // Display text only — the filter reads itemData() (the int level), so nothing keys off these words.
     m_levelBox->addItem(LanguageManager::tr(QStringLiteral("log.filter.all")), int(All));
     m_levelBox->addItem(LanguageManager::tr(QStringLiteral("log.filter.info")), int(Info));

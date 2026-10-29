@@ -146,6 +146,7 @@ set(ZAPRET_UI_HEADERS
     src/ui/DownloadDialog.h
     src/ui/WarpSetupDialog.h
     src/ui/SettingsPage.h
+    src/ui/ThemedComboBox.h
     src/ui/HistoryPage.h
     src/ui/MainWindow.h
 )

@@ -466,7 +466,17 @@ void HistoryPage::build()
     // three lines of height. The sentence reads as a centred paragraph rather than a rule across the page.
     m_emptyText->setFixedWidth(kEmptyTextMaxWidthPx);
     i18nText(m_emptyText, QStringLiteral("history.empty"));
-    emptyBox->addWidget(m_emptyText);
+    // Centered by two stretches rather than by an alignment flag on the item: a QBoxLayout stops honouring
+    // a widget's height-for-width as soon as its item carries an alignment, and a word-wrapped label then
+    // collapses to one line. The stretches centre the fixed-width paragraph while leaving its size policy
+    // alone, which is what keeps the sentence's own height honest. Measured before this fix the sentence
+    // started at the page's left margin while the clock above it was centred — the "text is shifted" report.
+    auto *textRow = new QHBoxLayout;
+    textRow->setContentsMargins(0, 0, 0, 0);
+    textRow->addStretch(1);
+    textRow->addWidget(m_emptyText);
+    textRow->addStretch(1);
+    emptyBox->addLayout(textRow);
 
     // …and the mirror: the same gap, then the icon's own height, below the sentence. That is what makes the
     // pair balance on the words rather than on the pair — the two expanding spacers then leave equal space

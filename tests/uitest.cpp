@@ -59,6 +59,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QColor>
 #include <QComboBox>
 #include <QDate>
@@ -68,7 +69,6 @@
 #include <QFont>
 #include <QFontInfo>
 #include <QFontMetrics>
-#include <QGridLayout>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QGraphicsOpacityEffect>
@@ -85,6 +85,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegion>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
@@ -112,25 +113,35 @@ using namespace zapret;
 
 static int g_failures = 0;
 
-// True when `w` sits in a QHBoxLayout that has a spacer after it — the shape the settings page uses to
-// keep a short field beside its label instead of across the whole form. Walking the layouts is the only
-// way to see it: a stretch is an item, not a widget, so nothing about the field itself records that it
-// has one, and a maximum width alone would still leave the control floating in its column.
-static bool fieldEndsInStretch(QWidget *w)
+// True when `w` is the field of a labelled setting row: a QHBoxLayout holding a settingsRowLabel pinned
+// to its column, the field itself Fixed/Fixed at exactly the control height, and the row aligned VCenter.
+// That is the shape the page builds for every setting since the grid was replaced, so this reads the
+// promise from the layout rather than from a spacer that no longer exists.
+static bool fieldInCentredRow(QWidget *w)
 {
     if (!w || !w->parentWidget())
         return false;
     const auto layouts = w->parentWidget()->findChildren<QLayout *>();
     for (QLayout *l : layouts) {
         auto *row = qobject_cast<QHBoxLayout *>(l);
-        if (!row)
+        if (!row || !row->alignment().testFlag(Qt::AlignVCenter))
             continue;
         const int at = row->indexOf(w);
         if (at < 0)
             continue;
-        for (int i = at + 1; i < row->count(); ++i)
-            if (row->itemAt(i) && row->itemAt(i)->spacerItem())
-                return true;
+        QWidget *label = nullptr;
+        for (int i = 0; i < row->count(); ++i) {
+            QWidget *candidate = row->itemAt(i) ? row->itemAt(i)->widget() : nullptr;
+            if (candidate && candidate->objectName() == QLatin1String("settingsRowLabel"))
+                label = candidate;
+        }
+        if (!label)
+            continue;
+        if (label->sizePolicy().horizontalPolicy() == QSizePolicy::Expanding
+            && w->sizePolicy().horizontalPolicy() == QSizePolicy::Fixed
+            && w->sizePolicy().verticalPolicy() == QSizePolicy::Fixed
+            && w->minimumHeight() == 32 && w->maximumHeight() == 32)
+            return true;
     }
     return false;
 }
@@ -1856,8 +1867,8 @@ static void testTrayPolicy()
     check(interval && interval->maximumWidth() == 200, "and so is the ping interval");
     check(interval && interval->buttonSymbols() == QAbstractSpinBox::NoButtons,
           "the interval box shows no stepper arrows");
-    check(theme && fieldEndsInStretch(theme), "the theme picker is held to the left of its row");
-    check(interval && fieldEndsInStretch(interval), "and so is the interval box");
+    check(theme && fieldInCentredRow(theme), "the theme picker is a fixed 32 px field in a centred row");
+    check(interval && fieldInCentredRow(interval), "and so is the interval box");
 
     // ---- the watchdog's cadence ----
     // The page is the only place the number is chosen, so the range it offers has to be the range the
@@ -1871,7 +1882,7 @@ static void testTrayPolicy()
     check(watchdog && watchdog->minimum() == Settings::kWatchdogMinIntervalMin
                   && watchdog->maximum() == Settings::kWatchdogMaxIntervalMin,
           "its range is the model's range, 1 to 60 minutes");
-    check(watchdog && fieldEndsInStretch(watchdog), "and it is held to the left of its row");
+    check(watchdog && fieldInCentredRow(watchdog), "and it is a fixed 32 px field in a centred row");
     check(watchdog && !watchdog->suffix().isEmpty(), "the unit is spelled on the field");
     check(watchdog && watchdog->property("i18nSuffix").toString()
                           == QLatin1String("settings.watchdog_suffix"),
@@ -1970,8 +1981,8 @@ static void testSettingsPageCards(QApplication &app)
           "the commit row belongs to no card — it closes the page, it is not one of its groups");
 
     // ---- one field column, three cards ----
-    // The reason the row labels are pinned to one width: a QGridLayout takes its first column from the
-    // widest cell in it, so three grids left to themselves would start their fields three pixels apart.
+    // The reason the row labels are pinned to one width: each setting is its own QHBoxLayout, and the
+    // pinned maximum is what keeps the field edge identical in all three cards.
     const auto rowLabels = page.findChildren<QLabel *>(QStringLiteral("settingsRowLabel"));
     // Five labelled rows: the path, the theme, the language, and the two intervals. The switches carry
     // their own text and are not counted here — they are the reason the form has an empty label column.
@@ -1986,51 +1997,56 @@ static void testSettingsPageCards(QApplication &app)
         check(rowLabels.first()->wordWrap(),
               "…and a long label wraps rather than breaking the column it is pinned to");
 
-    // The vertical half of that promise is made by the LAYOUT, not only by the pixels measured further
-    // down: every label is placed in the grid's first column with AlignLeft|AlignVCenter, and that pair is
-    // what tells the layout to centre a short word on the line of a taller field. Read from each card's own
-    // grid, so all three are covered rather than the one a screenshot happened to show.
+    // Every labelled setting is one QHBoxLayout: label Expanding/Preferred, field Fixed/Fixed at exactly
+    // 32 px, both placed with AlignVCenter. Read from the card's own child layouts, so all three cards are
+    // covered and a later layout change cannot quietly reintroduce the slide.
     for (QFrame *card : {general, ui, network}) {
         const QString which = card == general ? QStringLiteral("general")
                               : card == ui    ? QStringLiteral("interface")
                                               : QStringLiteral("network");
-        auto *grid = card ? card->findChild<QGridLayout *>() : nullptr;
-        check(grid != nullptr,
-              QStringLiteral("the %1 card keeps its rows in a QGridLayout").arg(which));
-        check(grid && grid->columnCount() == 2 && grid->itemAtPosition(0, 1) != nullptr,
-              QStringLiteral("…whose rows are the label/field pair, not a single stretched cell (%1)")
-                  .arg(which));
-        bool labelsCentred = grid != nullptr;
+        const auto rows = card ? card->findChildren<QHBoxLayout *>() : QList<QHBoxLayout *>();
         int labelledRows = 0;
-        if (grid) {
-            for (int row = 0; row < grid->rowCount(); ++row) {
-                QLayoutItem *item = grid->itemAtPosition(row, 0);
-                if (!item || !qobject_cast<QLabel *>(item->widget()))
-                    continue;
-                ++labelledRows;
-                if (!item->alignment().testFlag(Qt::AlignLeft)
-                    || !item->alignment().testFlag(Qt::AlignVCenter))
-                    labelsCentred = false;
+        bool rowsOk = !rows.isEmpty();
+        for (QHBoxLayout *row : rows) {
+            QLabel *label = nullptr;
+            int labelIndex = -1;
+            for (int i = 0; i < row->count(); ++i) {
+                QWidget *w = row->itemAt(i) ? row->itemAt(i)->widget() : nullptr;
+                if (w && w->objectName() == QLatin1String("settingsRowLabel")) {
+                    label = qobject_cast<QLabel *>(w);
+                    labelIndex = i;
+                    break;
+                }
             }
+            if (!label)
+                continue;
+            ++labelledRows;
+            QWidget *field = nullptr;
+            for (int i = labelIndex + 1; i < row->count(); ++i) {
+                if (QWidget *w = row->itemAt(i) ? row->itemAt(i)->widget() : nullptr) {
+                    field = w;
+                    break;
+                }
+            }
+            if (!row->alignment().testFlag(Qt::AlignVCenter)
+                || label->sizePolicy().horizontalPolicy() != QSizePolicy::Expanding
+                || label->sizePolicy().verticalPolicy() != QSizePolicy::Preferred
+                || !field || field->minimumHeight() != 32 || field->maximumHeight() != 32
+                || field->sizePolicy().verticalPolicy() != QSizePolicy::Fixed)
+                rowsOk = false;
         }
-        check(labelsCentred && labelledRows > 0,
-              QStringLiteral("…and every label cell asks for left-aligned vertical centring (%1 row(s))")
-                  .arg(labelledRows));
+        check(rowsOk && labelledRows > 0,
+              QStringLiteral("the %1 card builds every labelled setting as a V-centred row "
+                             "(label Expanding/Preferred, field Fixed at 32 px; %2 row(s))")
+                  .arg(which).arg(labelledRows));
     }
-    // And the label itself has to cooperate: it has a fixed height (32 px for a one-liner, more when the
-    // pinned column wraps the text) so its box cannot stretch a taller row and leave the words at the top.
-    // The grid's AlignVCenter then centres that box on the field: the two halves of the reported fix.
-    for (QLabel *label : rowLabels) {
-        const int wrapped = label->heightForWidth(SettingsPage::rowLabelWidth());
+    // And the label itself keeps its text on that line: a Preferred-height box, text aligned VCenter
+    // inside it, rather than a stretched box with the words floating at the top.
+    for (QLabel *label : rowLabels)
         check(label->alignment() == (Qt::AlignLeft | Qt::AlignVCenter)
-                  && label->minimumHeight() == label->maximumHeight()
-                  && label->minimumHeight() >= 32,
-              QStringLiteral("row label \"%1\" has a fixed height the grid can centre (%2 px)")
-                  .arg(label->text()).arg(label->minimumHeight()));
-        check(wrapped <= 0 || label->height() >= wrapped,
-              QStringLiteral("…and is tall enough for its wrapped text rather than clipping it (%1 >= %2)")
-                  .arg(label->height()).arg(wrapped));
-    }
+                  && label->sizePolicy().verticalPolicy() == QSizePolicy::Preferred,
+              QStringLiteral("row label \"%1\" keeps its text on its own centre line")
+                  .arg(label->text()));
 
     const int fieldX = page.themeField()->mapTo(&page, QPoint(0, 0)).x();
     check(page.pingIntervalField()->mapTo(&page, QPoint(0, 0)).x() == fieldX,
@@ -2087,11 +2103,12 @@ static void testSettingsPageCards(QApplication &app)
     // ---- the path row ----
     QLineEdit *field = page.pathField();
     check(field != nullptr, "the path row is one text field");
-    // Asked of the card, and of its direct children only: a QSpinBox owns a QLineEdit of its own, so a
-    // page-wide search counts three edits on a page with one. The promise is about the row, not about Qt.
-    const auto rowEdits = general ? general->findChildren<QLineEdit *>(QString(),
-                                                                    Qt::FindDirectChildrenOnly)
-                                  : QList<QLineEdit *>();
+    // Asked of the field's own container, and of its direct children only: a QSpinBox owns a QLineEdit of
+    // its own, and the path row now lives in a container widget so the field can expand beside the icon.
+    QWidget *pathFieldHost = field ? field->parentWidget() : nullptr;
+    const auto rowEdits = pathFieldHost ? pathFieldHost->findChildren<QLineEdit *>(
+                                              QString(), Qt::FindDirectChildrenOnly)
+                                        : QList<QLineEdit *>();
     check(rowEdits.size() == 1 && !rowEdits.isEmpty() && rowEdits.first() == field,
           "…and the only field the row holds — one box for one value");
 
@@ -2277,8 +2294,14 @@ static void testSettingsPageCards(QApplication &app)
     if (general && field) {
         const QRect titleOf = general->findChild<QLabel *>(QStringLiteral("settingsCardTitle"))
                                   ->geometry();
-        check(titleOf.top() < field->geometry().top(), "the heading sits above the card's first field");
-        check(field->geometry().bottom() < general->height() - 1,
+        // Both ends are read in the CARD's coordinates: the path field now lives inside the row's own
+        // container widget, so its geometry is relative to that container rather than to the card.
+        const int titleTop = general->findChild<QLabel *>(QStringLiteral("settingsCardTitle"))
+                                 ->mapTo(general, QPoint(0, 0)).y();
+        check(titleOf.top() < titleTop + 1, "the heading is a real row of the card");
+        check(titleTop < field->mapTo(general, QPoint(0, 0)).y(),
+              "the heading sits above the card's first field");
+        check(field->mapTo(general, QPoint(0, field->height())).y() < general->height() - 1,
               "…and every row finishes inside the card, not under its border");
     }
 
@@ -2318,6 +2341,31 @@ static void testSettingsPageCards(QApplication &app)
     check(rgbClose(page.grab().toImage().convertToFormat(QImage::Format_ARGB32).pixelColor(QPoint(4, 4)),
                    lightPage, 8),
           "…with the page still its own colour behind the cards");
+
+    // Debug snapshots for the two defects that are judged by eye: the row layout and the popup's corners.
+    page.grab().save(QStringLiteral("/tmp/settings-page-light.png"));
+    if (QComboBox *themeField = page.themeField()) {
+        themeField->showPopup();
+        QTest::qWait(50);
+        if (QWidget *popup = themeField->view()->window()) {
+            const QImage popupImg = popup->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+            popupImg.save(QStringLiteral("/tmp/combo-popup-light.png"));
+            // The rounded view is only the shape the user sees if the popup's own frame is clipped to it;
+            // before ThemedComboBox the corner was the frame's opaque square background. Read the mask rather
+            // than the pixel alpha: grab() composites a translucent window onto an opaque backing, so alpha
+            // there measures Qt's renderer rather than what the desktop shows.
+            const QRegion mask = popup->mask();
+            check(!mask.isEmpty() && !mask.contains(QPoint(0, 0))
+                      && mask.contains(popup->rect().center()),
+                  "the combo popup is clipped to a rounded rectangle, not a square frame");
+            check(popup->testAttribute(Qt::WA_TranslucentBackground)
+                      && popup->windowFlags().testFlag(Qt::FramelessWindowHint),
+                  "…and its window is frameless/translucent, so nothing paints square corners behind it");
+            check(qAlpha(popupImg.pixel(popupImg.width() / 2, popupImg.height() / 2)) > 200,
+                  "…while the popup's body is still opaque enough to read the list on");
+        }
+        themeField->hidePopup();
+    }
 
     // Everything after this section — and the application itself — is drawn on the dark sheet.
     Theme::apply(app, true);
@@ -3530,6 +3578,20 @@ static void testHistoryPage()
     check(page.successRate() == -1, "with no number to show");
     check(!page.clearButton()->isEnabled(), "and nothing to clear, so the button says so");
 
+    // Snapshot of the empty state, the screen whose sentence was reported as riding low: the claim is
+    // that the words sit on the panel's centre line, which is checked here by eye and by the geometry
+    // below rather than trusted to a comment.
+    {
+        Theme::apply(*qApp, Theme::Mode::Light);
+        HistoryPage snap(&store);
+        snap.resize(900, 560);
+        snap.show();
+        QTest::qWait(50);
+        snap.grab().save(QStringLiteral("/tmp/history-empty-light.png"));
+        snap.hide();
+        Theme::apply(*qApp, Theme::Mode::Dark);
+    }
+
     // ---- the empty state, measured rather than eyeballed ----
     //
     // The report was that the sentence rides over the clock icon or gets cut. Both are geometry, so both
@@ -3574,6 +3636,13 @@ static void testHistoryPage()
                                      "(sentence %1, panel %2)")
                           .arg(t.center().y())
                           .arg(panelCentre));
+                // …and on its centre column. The fixed-width sentence was left-anchored by the box layout
+                // (measured at x≈36–470 while the clock sat at x≈450): the clock was centred and the words
+                // were not, which is the "history text is shifted" report. Two stretches now centre it.
+                check(qAbs(t.center().x() - empty->rect().center().x()) <= 3,
+                      QStringLiteral("…and on the panel's centre column (sentence %1, panel %2)")
+                          .arg(t.center().x())
+                          .arg(empty->rect().center().x()));
             }
         }
     }
@@ -6975,6 +7044,21 @@ static void testWindowFrame()
             // no second picture beside it any more: the shadow is part of this one, which is the change.
             view.save(dark ? QStringLiteral("/tmp/shell-dark.png")
                            : QStringLiteral("/tmp/shell-light.png"));
+
+            // The two pages whose rendering is reported by eye rather than by geometry, kept beside the
+            // shell picture for the same reason: a screenshot is the only way to see a two-pixel slide or a
+            // square popup corner that no assertion would think to name.
+            struct PageSnap { int page; const char *name; };
+            const PageSnap snaps[] = {{MainWindow::PageSettings, "settings"},
+                                      {MainWindow::PageHistory, "history"}};
+            for (const PageSnap &s : snaps) {
+                window.setCurrentPage(s.page);
+                QTest::qWait(60);
+                window.grab().save(QStringLiteral("/tmp/%1-%2.png")
+                                       .arg(QLatin1String(s.name), theme));
+            }
+            window.setCurrentPage(MainWindow::PageDashboard);
+            QTest::qWait(30);
         }
 
         // ---- the drag, across the new layer ----

@@ -358,8 +358,14 @@ QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top righ
 QComboBox::down-arrow { image: url(:/icons/arrow-down.svg); width: 14px; height: 14px; }
 QComboBox QAbstractItemView {
     background-color: #15161C; color: #E7E9F2;
-    border: 1px solid #262A36; border-radius: 9px; padding: 4px;
-    selection-background-color: #1C1727; selection-color: #C084FC; outline: none;
+    border: 1px solid #2C2E3E; border-radius: 10px; padding: 6px;
+    selection-background-color: #C084FC; selection-color: #0B0C10; outline: none;
+}
+/* The popup's rows are what actually shows the square edge: the view's own border is one rounded frame,
+   but a full-width item with its own square background paints over the arc. Rounding each item and
+   insetting it by the view's padding keeps the list's corners visible. */
+QComboBox QAbstractItemView::item {
+    min-height: 28px; padding: 0 8px; border-radius: 6px;
 }
 /* The app's only spin box is the ping interval, and it hides its buttons in code — the platform's
    stacked arrows are the one control that cannot be made to look like the rest of this sheet. These rules
