@@ -234,8 +234,12 @@ void WindowsBackend::stop()
     emit logMessage(QStringLiteral("WindowsBackend: winws.exe is still present after kill(); running "
                                    "taskkill /F /IM winws.exe"),
                     1);
-    QProcess::execute(QStringLiteral("taskkill"),
-                      {QStringLiteral("/F"), QStringLiteral("/IM"), QStringLiteral("winws.exe")});
+    // An explicit QStringList: the braced form relies on an implicit initializer-list conversion that
+    // MSVC has been stricter about than GCC/Clang, and this is the one Windows-only branch where a
+    // compile failure would only show up on the Windows CI runner.
+    (void)QProcess::execute(QStringLiteral("taskkill"),
+                            QStringList{QStringLiteral("/F"), QStringLiteral("/IM"),
+                                        QStringLiteral("winws.exe")});
     m_process->waitForFinished(kTerminateGraceMs);
 #else
     // The POSIX build of this class is exercised by the test suite; give the SIGKILL a moment to be

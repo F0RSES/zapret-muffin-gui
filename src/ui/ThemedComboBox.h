@@ -4,8 +4,11 @@
 #include <QComboBox>
 #include <QFrame>
 #include <QPainterPath>
+#include <QPolygon>
+#include <QRectF>
 #include <QRegion>
 #include <QTimer>
+#include <QWidget>
 
 namespace zapret {
 
