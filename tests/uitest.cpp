@@ -2261,7 +2261,7 @@ static void testSettingsPageCards(QApplication &app)
               .arg(cardImg.rect().contains(edge) ? cardImg.pixelColor(edge).name(QColor::HexRgb)
                                                  : QStringLiteral("<off-image>"))
               .arg(stroke.isValid() ? stroke.name(QColor::HexRgb) : QStringLiteral("<none>")));
-    // Four pixels in rather than one: the sheet asks for a 1 px stroke, but a stroke is drawn in device
+    // Four pixels in rather than one: the sheet asks for a 2 px stroke, but a stroke is drawn in device
     // pixels and a scaled environment scales it, so sampling the pixel right next to the edge would be
     // reading the border and calling it a missing fill. Four is still far inside the card's padding and
     // far from its first row.
@@ -2932,6 +2932,44 @@ static void testTheme(QApplication &app)
         check(sheet.contains(QStringLiteral("historyBadge[badgeKind=\"warning\"]")),
               QStringLiteral("%1 sheet colours a chip that counted substitutions").arg(
                   dark ? QStringLiteral("dark") : QStringLiteral("light")));
+        // ---- combo hover/open ink and the 2 px frames ----
+        // A platform style paints hovered/opened combo text in its own colour, which on Windows is black
+        // on a dark field. Both states must name the theme's accent explicitly.
+        const QColor comboHover = sheetRuleColor(sheet, QStringLiteral("QComboBox:hover"),
+                                                 QStringLiteral("color"));
+        const QColor comboOn = sheetRuleColor(sheet, QStringLiteral("QComboBox:on"),
+                                              QStringLiteral("color"));
+        check(comboHover.isValid() && comboHover == Theme::accent() && comboOn == Theme::accent(),
+              QStringLiteral("%1 sheet paints hovered/opened combo text in the accent, not black")
+                  .arg(dark ? QStringLiteral("dark") : QStringLiteral("light")));
+        const QColor itemHover = sheetRuleColor(
+            sheet, QStringLiteral("QComboBox QAbstractItemView::item:hover"), QStringLiteral("color"));
+        const QColor itemSelBg = sheetRuleColor(
+            sheet, QStringLiteral("QComboBox QAbstractItemView::item:selected"),
+            QStringLiteral("background-color"));
+        const QColor itemSelFg = sheetRuleColor(
+            sheet, QStringLiteral("QComboBox QAbstractItemView::item:selected"),
+            QStringLiteral("color"));
+        check(itemHover.isValid() && itemHover != QColor(Qt::black) && itemSelBg.isValid()
+                  && itemSelFg.isValid()
+                  && qAbs(qGray(itemSelBg.rgb()) - qGray(itemSelFg.rgb())) > 80,
+              QStringLiteral("%1 sheet keeps the dropdown's hovered and selected rows readable")
+                  .arg(dark ? QStringLiteral("dark") : QStringLiteral("light")));
+        // The frames the user sees are 2 px in both themes; the input padding is one pixel smaller in
+        // each direction so the text does not shift when the stroke grows.
+        const QString cardBorder = ruleProperty(sheet, QStringLiteral("QFrame#settingsCard"),
+                                                QStringLiteral("border"));
+        const QString inputBorder = ruleProperty(sheet,
+                                                 QStringLiteral("QLineEdit, QSpinBox, QComboBox"),
+                                                 QStringLiteral("border"));
+        const QString shellBorder = ruleProperty(sheet, QStringLiteral("QFrame#mainWindowFrame"),
+                                                 QStringLiteral("border"));
+        check(cardBorder.contains(QStringLiteral("2px"))
+                  && inputBorder.contains(QStringLiteral("2px"))
+                  && shellBorder.contains(QStringLiteral("2px")),
+              QStringLiteral("%1 sheet draws cards, inputs and the window shell with a 2 px stroke")
+                  .arg(dark ? QStringLiteral("dark") : QStringLiteral("light")));
+
         // ---- the window's own shell ----
         //
         // The rounded window is a shape, and a shape is only ever visible as pixels — those are read off a
@@ -6507,7 +6545,7 @@ static void testUpdateNotice()
 // the desktop showing through, which is exactly the fact this section turns on.
 //
 // Four ways it can be wrong, each with its own reading:
-//   * no band — a card flush with the surface edge has its 1 px stroke cut in half by that edge, so the
+//   * no band — a card flush with the surface edge has its 2 px stroke cut in half by that edge, so the
 //     window's own outline is a smudge instead of a line;
 //   * a painted window or canvas — an opaque rectangle again, corners and all, with the rounding hidden
 //     behind it: the black squares this feature exists to remove, in whatever colour the theme uses;
@@ -6558,7 +6596,7 @@ static void testWindowFrame()
 
     // The numbers the shell and its shadow are made of, spelled once more here so a change to one of them
     // has to pass two places that would otherwise disagree quietly.
-    check(r == 12 && b == 1, "the shell is 12 px of arc over a 1 px stroke");
+    check(r == 12 && b == 2, "the shell is 12 px of arc over a 2 px stroke");
     // The band is not a free design value any more: it is the shadow's reach, and the shadow is the reason
     // the surface's own edge no longer falls inside it. QGraphicsDropShadowEffect blurs with a radius of half
     // its blurRadius and the offset pushes the whole curve down, so the band is that reach plus a pixel. The

@@ -2789,7 +2789,12 @@ void MainWindow::drawWindowShadow(QPainter &painter)
         const int alpha = windowShadowAlphaAt(distance);
         if (alpha <= 0)
             continue;
-        painter.setPen(QPen(QColor(0, 0, 0, alpha), 1.0));
+        QPen pen(QColor(0, 0, 0, alpha), 1.0);
+        // Round joins/caps keep the one-pixel rings from showing a stair-step where the curved path
+        // changes direction; the shadow is drawn many times, so a ragged corner compounds.
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(pen);
         painter.drawRoundedRect(source.adjusted(-distance, -distance, distance, distance),
                                 radius + distance, radius + distance);
     }

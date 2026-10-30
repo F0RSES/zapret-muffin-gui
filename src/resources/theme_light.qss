@@ -26,7 +26,7 @@ QWidget {
 }
 QToolTip {
     background-color: #FFFFFF; color: #1F2937;
-    border: 1px solid #D1D5DB; padding: 5px 8px; border-radius: 6px;
+    border: 2px solid #D1D5DB; padding: 5px 8px; border-radius: 6px;
 }
 
 /* ---------- tool buttons ---------- */
@@ -34,7 +34,7 @@ QToolTip {
 QToolBar, QToolBar::separator { background-color: #E5E7EB; border: none; spacing: 6px; }
 QToolButton {
     background-color: transparent; color: #1F2937;
-    border: 1px solid transparent; border-radius: 8px; padding: 6px 10px;
+    border: 2px solid transparent; border-radius: 8px; padding: 6px 10px;
 }
 QToolButton:hover  { background-color: #E5E7EB; border-color: #9CA3AF; }
 QToolButton:pressed { background-color: #D1D5DB; }
@@ -42,10 +42,10 @@ QToolButton:disabled { color: #A7ABBB; }
 
 /* ---------- shell: the window's own silhouette ---------------------------------
    The window paints nothing (QMainWindow#mainWindow above), so this card is the shape: the same 12 px arc,
-   1 px stroke in the sheet's hairline and 2 px of transparent band as the dark sheet declares, all three
+   2 px stroke in the sheet's hairline and 2 px of transparent band as the dark sheet declares, all three
    read off MainWindow::kWindowFrameRadiusPx / kWindowFrameBorderPx / kWindowFrameMarginPx by the tests.
    The corner list is in that sheet's shell block; the arithmetic is the same here — the surfaces that
-   reach a window corner carry 12 - 1 = 11 px.
+   reach a window corner carry 12 - 2 = 10 px.
 
    The light theme is the one that proves it. In the dark sheet the rail, the header band and the footer are
    all #0B0C10, the same as the shell's own fill, so a square corner there is invisible in the pixels and
@@ -54,7 +54,7 @@ QToolButton:disabled { color: #A7ABBB; }
    tests/uitest.cpp. */
 QFrame#mainWindowFrame {
     background-color: #F3F4F6;
-    border: 1px solid #D1D5DB;
+    border: 2px solid #D1D5DB;
     border-radius: 12px;
 }
 
@@ -63,13 +63,13 @@ QFrame#mainWindowFrame {
 QFrame#sidebar {
     background-color: #E5E7EB;
     border-right: 1px solid #D1D5DB;
-    border-top-left-radius: 11px;
-    border-bottom-left-radius: 11px;
+    border-top-left-radius: 10px;
+    border-bottom-left-radius: 10px;
 }
 QFrame#mainArea {
     background-color: #F3F4F6;
-    border-top-right-radius: 11px;
-    border-bottom-right-radius: 11px;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
 }
 QLabel#brandLogo { background-color: transparent; }
 
@@ -78,7 +78,7 @@ QLabel#brandLogo { background-color: transparent; }
    only one that answers the pointer. */
 QPushButton#navButton {
     background-color: transparent; color: #6B7280;
-    border: 1px solid transparent; border-radius: 8px; padding: 0;
+    border: 2px solid transparent; border-radius: 8px; padding: 0;
 }
 QPushButton#navButton:hover { background-color: #E5E7EB; border-color: #D1D5DB; color: #1F2937; }
 QPushButton#navButton:pressed { background-color: #D1D5DB; border-color: #D1D5DB; }
@@ -89,7 +89,7 @@ QPushButton#navButton[alert="true"] { color: #DC2626; border-color: #FCA5A5; bac
 
 /* The rail's one QToolButton: a flag, not a glyph, so it is deliberately not tinted by the sheet. */
 QToolButton#langButton {
-    background-color: transparent; border: 1px solid transparent; border-radius: 8px; padding: 0;
+    background-color: transparent; border: 2px solid transparent; border-radius: 8px; padding: 0;
 }
 QToolButton#langButton:hover { background-color: #E5E7EB; border-color: #D1D5DB; }
 QToolButton#langButton:pressed { background-color: #D1D5DB; }
@@ -106,7 +106,7 @@ QLabel#railVersion {
    apart from minimising. */
 QToolButton#windowButton {
     background-color: transparent; color: #6B7280;
-    border: 1px solid transparent; border-radius: 8px; padding: 0;
+    border: 2px solid transparent; border-radius: 8px; padding: 0;
 }
 QToolButton#windowButton:hover { background-color: #E5E7EB; border-color: #D1D5DB; color: #1F2937; }
 QToolButton#windowButton:pressed { background-color: #D1D5DB; }
@@ -121,9 +121,9 @@ QToolButton#windowButton[role="update"]:hover { background-color: #ECFEFF; borde
 QToolButton#windowButton[role="update"]:pressed { background-color: #CFFAFE; border-color: #0891B2; }
 
 /* ---------- header ---------- */
-/* The band is the top of the main column, so it is also the window's top-right corner: 11 px, the shell's
+/* The band is the top of the main column, so it is also the window's top-right corner: 10 px, the shell's
    arc minus its stroke (see the shell block). */
-QWidget#headerBar { background-color: #F3F4F6; border-top-right-radius: 11px; }
+QWidget#headerBar { background-color: #F3F4F6; border-top-right-radius: 10px; }
 QLabel#appTitle {
     background-color: transparent;
     font-family: "Montserrat", "Outfit", "Segoe UI", "Inter", sans-serif;
@@ -149,7 +149,7 @@ QLabel#statusText[statusKind="error"]    { color: #DC2626; }
 
 QPushButton#ghostButton {
     background-color: #FFFFFF; color: #1F2937;
-    border: 1px solid #9CA3AF; border-radius: 10px;
+    border: 2px solid #9CA3AF; border-radius: 10px;
     padding: 6px 12px; font-size: 10pt; font-weight: 500;
 }
 QPushButton#ghostButton:hover { background-color: #F9FAFB; border-color: #7C3AED; color: #1F2937; }
@@ -173,7 +173,7 @@ QLabel#pageTitle {
    footer's hints, and a heading one step louder than its rows is the point. */
 QFrame#settingsCard {
     background-color: #FFFFFF;
-    border: 1px solid #D1D5DB;
+    border: 2px solid #D1D5DB;
     border-radius: 14px;
 }
 QLabel#settingsCardTitle {
@@ -185,7 +185,7 @@ QLabel#settingsRowLabel { background-color: transparent; }
    theme's recessed fill — the same one the fields themselves use — and answer the pointer in the accent. */
 QToolButton#pathToolButton {
     background-color: #F9FAFB; color: #4B5563;
-    border: 1px solid #D1D5DB; border-radius: 8px; padding: 0;
+    border: 2px solid #D1D5DB; border-radius: 8px; padding: 0;
 }
 QToolButton#pathToolButton:hover { background-color: #EDE9FE; border-color: #7C3AED; color: #1F2937; }
 QToolButton#pathToolButton:pressed { background-color: #E5E7EB; border-color: #6D28D9; }
@@ -209,7 +209,7 @@ QScrollArea#settingsScroll { background: transparent; border: none; }
     every change, exactly as the rail's [alert] tab does. */
 QFrame#profileCard {
     background-color: #FFFFFF;
-    border: 1px solid #D1D5DB;
+    border: 2px solid #D1D5DB;
     border-radius: 12px;
 }
 QFrame#profileCard:hover { background-color: #F9FAFB; border-color: #9CA3AF; }
@@ -246,7 +246,7 @@ QLabel#placeholder { color: #6B7280; font-size: 11pt; }
 
 /* The row's menu button: a 30x30 plate holding the three-dot glyph, quiet until the pointer arrives. */
 QToolButton#cardMenu {
-    background-color: transparent; border: 1px solid transparent; border-radius: 8px; padding: 0;
+    background-color: transparent; border: 2px solid transparent; border-radius: 8px; padding: 0;
 }
 QToolButton#cardMenu:hover { background-color: #E5E7EB; border-color: #D1D5DB; }
 QToolButton#cardMenu:pressed { background-color: #D1D5DB; }
@@ -259,13 +259,13 @@ QMenu#cardMenuPopup { min-width: 148px; }
 
 QPushButton {
     background-color: #FFFFFF; color: #1F2937;
-    border: 1px solid #9CA3AF; border-radius: 8px; padding: 7px 14px;
+    border: 2px solid #9CA3AF; border-radius: 8px; padding: 7px 14px;
 }
 QPushButton:hover   { background-color: #F9FAFB; border-color: #9CA3AF; }
 QPushButton:pressed { background-color: #E5E7EB; }
 QPushButton:disabled { color: #9CA3AF; background-color: #E5E7EB; border-color: #E5E7EB; }
 QPushButton#primaryButton {
-    background-color: #7C3AED; color: #FFFFFF; border: 1px solid #7C3AED;
+    background-color: #7C3AED; color: #FFFFFF; border: 2px solid #7C3AED;
     border-radius: 8px; padding: 8px 16px; font-weight: 600;
 }
 QPushButton#primaryButton:hover   { background-color: #8B5CF6; border-color: #8B5CF6; }
@@ -281,13 +281,16 @@ QPushButton#dangerButton:disabled { background-color: #E5E7EB; border-color: #E5
 
 QLineEdit, QSpinBox, QComboBox {
     background-color: #FFFFFF; color: #1F2937;
-    border: 1px solid #9CA3AF; border-radius: 8px; padding: 6px 10px;
+    border: 2px solid #9CA3AF; border-radius: 8px; padding: 5px 9px;
     selection-background-color: #7C3AED; selection-color: #FFFFFF;
 }
-QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #7C3AED; }
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border: 2px solid #7C3AED; }
+/* Explicit hover/open ink: without it the native style paints black text inside the field. */
+QComboBox:hover, QComboBox:on { color: #7C3AED; border-color: #7C3AED; }
+QComboBox:disabled { color: #9CA3AF; }
 QLineEdit:read-only { color: #6B7280; background-color: #F9FAFB; }
-QLineEdit#pathOk   { border: 1px solid #059669; }
-QLineEdit#pathBad  { border: 1px solid #DC2626; }
+QLineEdit#pathOk   { border: 2px solid #059669; }
+QLineEdit#pathBad  { border: 2px solid #DC2626; }
 QLabel#validOk  { color: #059669; font-size: 9pt; }
 QLabel#validBad { color: #DC2626; font-size: 9pt; }
 QLabel#trayNote { color: #B45309; font-size: 8pt; }
@@ -299,7 +302,7 @@ QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top righ
 QComboBox::down-arrow { image: url(:/icons/arrow-down.svg); width: 14px; height: 14px; }
 QComboBox QAbstractItemView {
     background-color: #FFFFFF; color: #1F2937;
-    border: 1px solid #2C2E3E; border-radius: 10px; padding: 6px;
+    border: 2px solid #2C2E3E; border-radius: 10px; padding: 6px;
     selection-background-color: #7C3AED; selection-color: #FFFFFF; outline: none;
 }
 /* A full-width square item paints over the rounded frame; the item radius plus the view's padding keeps
@@ -307,6 +310,8 @@ QComboBox QAbstractItemView {
 QComboBox QAbstractItemView::item {
     min-height: 28px; padding: 0 8px; border-radius: 6px;
 }
+QComboBox QAbstractItemView::item:hover { background-color: #F3F4F6; color: #1F2937; }
+QComboBox QAbstractItemView::item:selected { background-color: #7C3AED; color: #FFFFFF; }
 /* The app's only spin box is the ping interval, and it hides its buttons in code; these rules close the
    gutter those arrows would have claimed so a hidden control leaves no dead width behind it. */
 QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; background: transparent; }
@@ -315,7 +320,7 @@ QSpinBox::up-arrow, QSpinBox::down-arrow { image: none; width: 0px; height: 0px;
 QCheckBox { spacing: 8px; color: #1F2937; background: transparent; }
 QCheckBox::indicator {
     width: 16px; height: 16px; border-radius: 5px;
-    border: 1px solid #9CA3AF; background-color: #FFFFFF;
+    border: 2px solid #9CA3AF; background-color: #FFFFFF;
 }
 QCheckBox::indicator:hover  { border-color: #7C3AED; }
 QCheckBox::indicator:checked { background-color: #7C3AED; border-color: #7C3AED;
@@ -328,11 +333,11 @@ QCheckBox::indicator:checked { background-color: #7C3AED; border-color: #7C3AED;
    sunk into the page. */
 QPlainTextEdit#logView {
     background-color: #F9FAFB; color: #1F2937;
-    border: 1px solid #9CA3AF; border-radius: 10px;
+    border: 2px solid #9CA3AF; border-radius: 10px;
     font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
     font-size: 9pt; padding: 6px;
 }
-QFrame#logPanel { background-color: #FFFFFF; border: 1px solid #D1D5DB; border-radius: 12px; }
+QFrame#logPanel { background-color: #FFFFFF; border: 2px solid #D1D5DB; border-radius: 12px; }
 QFrame#logHeader { background: transparent; border: none; }
 
 /* ---------- history and statistics page ----------
@@ -348,7 +353,7 @@ QFrame#logHeader { background: transparent; border: none; }
    the colour coding. */
 QWidget#historyPage { background-color: #F3F4F6; }
 QFrame#historySummary {
-    background-color: #FFFFFF; border: 1px solid #D1D5DB; border-radius: 12px;
+    background-color: #FFFFFF; border: 2px solid #D1D5DB; border-radius: 12px;
 }
 QLabel#historyHeadline {
     background-color: transparent; color: #1F2937; font-size: 16pt; font-weight: 700;
@@ -369,7 +374,7 @@ QProgressBar#historyRateBar[rateLevel="none"]::chunk { background-color: #D1D5DB
    are children that keep square corners and paint over the arc. The inset settles it, not a clip. */
 QFrame#historyTableCard {
     background-color: #FFFFFF;
-    border: 1px solid #D1D5DB; border-radius: 12px;
+    border: 2px solid #D1D5DB; border-radius: 12px;
 }
 /* The table is the panel's fill, not transparent — see the dark sheet for why. */
 QTableView#historyTable {
@@ -422,7 +427,7 @@ QProgressBar#setupProgress {
 QProgressBar#setupProgress::chunk { background-color: #0891B2; border-radius: 3px; }
 QPlainTextEdit#setupLog {
     background-color: #F9FAFB; color: #1F2937;
-    border: 1px solid #D1D5DB; border-radius: 10px;
+    border: 2px solid #D1D5DB; border-radius: 10px;
     font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
     font-size: 8pt; padding: 6px;
 }
@@ -439,7 +444,7 @@ QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 
 /* ---------- footer + ping badges ---------- */
 /* Its bottom-right corner is the window's own, hence the radius the shell block above explains. */
-QFrame#footerBar { background-color: #F3F4F6; border-top: 1px solid #D1D5DB; border-bottom-right-radius: 11px; }
+QFrame#footerBar { background-color: #F3F4F6; border-top: 1px solid #D1D5DB; border-bottom-right-radius: 10px; }
 QLabel#footerHint { background-color: transparent; color: #4B5563; font-size: 8pt; }
 QLabel#pingNumber { background-color: transparent; color: #1F2937; }
 QLabel#pingClock  { background-color: transparent; }
@@ -447,18 +452,18 @@ QLabel#pingLabel  { background-color: transparent; color: #4B5563; font-size: 8p
 
 QMenu {
     background-color: #FFFFFF; color: #1F2937;
-    border: 1px solid #9CA3AF; border-radius: 10px; padding: 6px;
+    border: 2px solid #9CA3AF; border-radius: 10px; padding: 6px;
 }
 QMenu::item { padding: 6px 22px 6px 14px; border-radius: 6px; }
 QMenu::item:selected { background-color: #7C3AED; color: #FFFFFF; }
 QMenu::separator { height: 1px; background: #E5E7EB; margin: 5px 8px; }
 
 QSplitter::handle { background-color: #E5E7EB; width: 3px; }
-QGroupBox { border: 1px solid #D1D5DB; border-radius: 10px; margin-top: 12px; padding-top: 8px; }
+QGroupBox { border: 2px solid #D1D5DB; border-radius: 10px; margin-top: 12px; padding-top: 8px; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; color: #6B7280; }
 QHeaderView::section { background-color: #E5E7EB; color: #6B7280; border: none; padding: 6px; }
 QDialogButtonBox QPushButton { min-width: 84px; }
-QProgressBar { border: 1px solid #D1D5DB; border-radius: 6px; background: #F9FAFB; color: #1F2937; }
+QProgressBar { border: 2px solid #D1D5DB; border-radius: 6px; background: #F9FAFB; color: #1F2937; }
 QProgressBar::chunk { background-color: #0891B2; border-radius: 5px; }
 
 /* The profiles page's bypass-check meter: a 6 px thread under the page head, not the download's
@@ -486,7 +491,7 @@ QWidget#headerBar {
 QMainWindow#mainWindow, QWidget#rootCanvas { background-color: transparent; }
 QFrame#mainWindowFrame {
     background-color: #F3F4F6;
-    border: 1px solid #D1D5DB;
+    border: 2px solid #D1D5DB;
     border-radius: 12px;
 }
 QFrame#sidebar { background-color: #E5E7EB; }

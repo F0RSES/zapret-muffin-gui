@@ -467,10 +467,10 @@ public:
     // silhouette, which under a translucent window is a nub on the desktop rather than a wrong colour
     // inside the app.
     static constexpr int kWindowFrameRadiusPx = 12;
-    static constexpr int kWindowFrameBorderPx = 1;
+    static constexpr int kWindowFrameBorderPx = 2;
 
     // The shadow the card casts. A rounded card on a translucent surface can sit so close to the desktop
-    // that it reads as part of it: the 1 px stroke is the only thing between the app and whatever is behind
+    // that it reads as part of it: the 2 px stroke is the only thing between the app and whatever is behind
     // it, and a stroke is a thin claim to make on its own. The shadow is what says "this is a window, and it
     // is above your desktop".
     //
@@ -505,7 +505,7 @@ public:
     static int windowShadowPassCount();
 
     // The transparent band between the card and the surface's own edge. It has two jobs and the second one
-    // is the bigger: it keeps the 1 px stroke off the window's last pixel (a stroke that begins on the last
+    // is the bigger: it keeps the 2 px stroke off the window's last pixel (a stroke that begins on the last
     // pixel is a stroke cut in half — the frameless equivalent of the square corners
     // WA_TranslucentBackground exists to remove), and it is the only room the shadow above has to fall in.
     // QGraphicsDropShadowEffect blurs with a radius of half its blurRadius, and a Gaussian has no last
