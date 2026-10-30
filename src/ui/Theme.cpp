@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QHash>
 #include <QIcon>
 #include <QPalette>
 #include <QStyleHints>
@@ -270,13 +271,22 @@ QColor Theme::iconColor()
 
 QIcon Theme::icon(const QString &name, const QColor &color, int size)
 {
+    // The same glyph at the same tint and size is requested again by every theme pass (and by several
+    // buttons in one pass). Re-reading and re-rasterising the SVG each time was a measurable part of the
+    // settings-save freeze; an icon is immutable, so the tinted result can be shared for as long as the
+    // process lives. A theme switch changes the tint and therefore the key.
+    static QHash<QString, QIcon> cache;
+    const QString cacheKey = QStringLiteral("%1|%2|%3").arg(name).arg(color.rgba()).arg(size);
+    if (const auto cached = cache.constFind(cacheKey); cached != cache.constEnd())
+        return cached.value();
+
     const QString path = QStringLiteral(":/icons/%1.svg").arg(name);
+    QIcon result;
     QFile file(path);
     if (file.open(QIODevice::ReadOnly)) {
         const QByteArray base = file.readAll();
         const QByteArray tint = color.name(QColor::HexRgb).toLatin1();
 
-        QIcon out;
         for (int px : {size, 16, 24, 32}) {
             // Rewrite the glyph's declared size so the SVG plugin rasterises exactly at that
             // resolution instead of scaling a 24 px bitmap up.
@@ -286,16 +296,17 @@ QIcon Theme::icon(const QString &name, const QColor &color, int size)
             data.replace("height=\"24\"", QByteArray("height=\"") + QByteArray::number(px) + "\"");
             QPixmap pm;
             if (pm.loadFromData(data, "SVG"))
-                out.addPixmap(pm);
+                result.addPixmap(pm);
         }
-        if (!out.isNull())
-            return out;
     }
-    // No SVG handler on this platform: fall back to whatever QIcon/the icon theme can offer.
-    QIcon fallback(path);
-    if (fallback.isNull())
-        fallback = QIcon::fromTheme(name);
-    return fallback;
+    if (result.isNull()) {
+        // No SVG handler on this platform: fall back to whatever QIcon/the icon theme can offer.
+        result = QIcon(path);
+        if (result.isNull())
+            result = QIcon::fromTheme(name);
+    }
+    cache.insert(cacheKey, result);
+    return result;
 }
 
 QIcon Theme::themedIcon(const QString &name, int size)

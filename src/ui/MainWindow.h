@@ -456,6 +456,11 @@ public:
     QComboBox *profileSortBox() const { return m_profileSortBox; }
     bool hasBlockcheckButton() const { return m_blockcheckButton != nullptr; }
 
+    // Test-only synchronous entry points for the two expensive passes. Production defers them to the next
+    // event-loop turn; a test that wants to name their cost has to be able to call them without a timer.
+    void applyThemeForTest() { applyTheme(); }
+    void retranslateForTest() { retranslateUi(); }
+
     // ---- the rounded shell --------------------------------------------------------------
     //
     // The window carries no system frame and, since the shell below, no background of its own either:
@@ -957,6 +962,9 @@ private:
     void showStoppingFeedback();
     void updateTrayIcon();
     void applyTheme();
+    // Queue one theme pass for the next event-loop turn, coalescing repeat requests. The pass repolishes
+    // every widget and re-tints every icon; doing it in the caller's stack is what froze the UI.
+    void scheduleThemeApply();
     void requestQuit();
     void startStrategy(const QString &id, bool interactive);
     // The footer's temporary line — what statusBar()->showMessage used to be. The redesign retired the
@@ -1157,6 +1165,12 @@ private:
 
     bool m_quitting = false;          // explicit quit (tray menu / Ctrl+Q), bypasses hide-to-tray
     bool m_applyingSettings = false;  // re-entrancy guard for onSettingsChanged
+    // Coalescing flags for the heavy reactions to a settings write. A form commit emits one changed()
+    // now, but other writers can still emit several in a row; these make the expensive work happen once
+    // on the next event-loop turn rather than once per signal in the caller's stack.
+    bool m_themeApplyPending = false;
+    bool m_pathReloadPending = false;
+    bool m_retranslatePending = false;
     bool m_needsSettingsPrompt = false;
     bool m_trayWarned = false;        // "no tray here" has already been said once
 

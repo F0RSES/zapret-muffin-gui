@@ -147,6 +147,30 @@ template <typename T>
 void Settings::write(const QString &key, const T &value)
 {
     m_settings->setValue(key, value);
+    if (m_batchDepth > 0) {
+        m_batchDirty = true;
+        return;
+    }
+    m_settings->sync();
+    emit changed();
+}
+
+void Settings::beginBatch()
+{
+    ++m_batchDepth;
+}
+
+void Settings::endBatch()
+{
+    if (m_batchDepth == 0)
+        return;
+    if (--m_batchDepth > 0)
+        return;
+    if (!m_batchDirty)
+        return;
+    m_batchDirty = false;
+    // One disk sync and one notification for the whole commit. The values are already in memory, so a
+    // reader inside the slot sees the complete new state rather than a half-applied form.
     m_settings->sync();
     emit changed();
 }

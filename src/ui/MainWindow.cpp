@@ -2000,12 +2000,23 @@ void MainWindow::wire()
     // the widgets: one signal, one walk over the tree. updateStatusUi() is part of retranslateUi(), so
     // the state-derived strings move with it.
     connect(&LanguageManager::instance(), &LanguageManager::languageChanged, this,
-            [this](const QString &) { retranslateUi(); });
+            [this](const QString &) {
+        // Deferred and coalesced for the same reason as applyTheme(): the walk rewrites every tagged
+        // string and re-lays-out the pages, and doing it inside the signal that changed the language is
+        // what makes the flag/rail press feel stuck. The catalog has already moved by the time this runs.
+        if (m_retranslatePending)
+            return;
+        m_retranslatePending = true;
+        QTimer::singleShot(0, this, [this] {
+            m_retranslatePending = false;
+            retranslateUi();
+        });
+    });
 
     if (QStyleHints *hints = QGuiApplication::styleHints()) {
         connect(hints, &QStyleHints::colorSchemeChanged, this, [this] {
             if (Theme::currentMode() == Theme::Mode::System)
-                applyTheme();
+                scheduleThemeApply();
         });
     }
 }
@@ -3386,6 +3397,17 @@ void MainWindow::updateTrayIcon()
                                                : QString())));
 }
 
+void MainWindow::scheduleThemeApply()
+{
+    if (m_themeApplyPending)
+        return;
+    m_themeApplyPending = true;
+    QTimer::singleShot(0, this, [this] {
+        m_themeApplyPending = false;
+        applyTheme();
+    });
+}
+
 void MainWindow::applyTheme()
 {
     Theme::apply(*qApp, Theme::modeFromName(m_settings->theme()));
@@ -4417,10 +4439,30 @@ void MainWindow::onSettingsChanged()
         m_warpInstaller->setHideWarpGui(m_settings->hideWarpGui());
 
     const QString path = m_settings->zapretPath();
-    if (path != m_manager->zapretDir())
-        m_manager->setZapretDir(path);   // reload() -> onStrategiesLoaded -> populateCards()
+    if (path != m_manager->zapretDir()) {
+        // Parsing a zapret tree is the one part of a path commit that can take real time. Deferred so
+        // the click's own frame is painted (and the saving cursor is live) before the scan starts, and
+        // coalesced so a burst of writes scans once. The path is re-read at run time, not captured: a
+        // second write before the timer fires must win.
+        if (!m_pathReloadPending) {
+            m_pathReloadPending = true;
+            QTimer::singleShot(0, this, [this] {
+                m_pathReloadPending = false;
+                const QString current = m_settings->zapretPath();
+                if (current != m_manager->zapretDir())
+                    m_manager->setZapretDir(current);   // reload() -> onStrategiesLoaded -> populateCards()
+            });
+        }
+    }
 
-    applyTheme();
+    // The full theme pass is the reported freeze: qApp.setStyleSheet repolishes every widget, every baked
+    // icon is re-rasterised and every card/ring rethemes. One turn of the event loop later it is still the
+    // same work, but the click has returned, the button says "Сохранение…" and the wait cursor is up.
+    // Nothing is scheduled at all when the commit did not move the theme: most saves only touch a switch
+    // or an interval, and re-applying the same sheet was pure cost.
+    const QString wantedTheme = m_settings->theme();
+    if (wantedTheme != Theme::nameForMode(Theme::currentMode()))
+        scheduleThemeApply();
     // The motion switch, and the one channel that carries it. Setting it before the widgets below are
     // re-read is what makes an untick take effect on a pulse that is running right now rather than on
     // the next state change: Motion::setEnabled lands everything in flight, and updateStatusUi() at the

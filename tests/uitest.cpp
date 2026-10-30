@@ -107,6 +107,8 @@
 
 #include <QtTest/QTest>
 
+#include <QElapsedTimer>
+
 #include <cstdio>
 
 using namespace zapret;
@@ -345,6 +347,21 @@ static void testSettings()
         check(reopened.theme() == QLatin1String("system"), "theme round-trip");
         check(reopened.pingIntervalSec() == 12, "ping interval round-trip");
         check(reopened.watchdogIntervalMin() == 15, "watchdog interval round-trip");
+    }
+
+    {
+        // A form commit is one transaction, not nine: the values are visible immediately, while changed()
+        // and the disk sync wait for the closing endBatch().
+        Settings batched(dir.filePath(QStringLiteral("muffin-batch.ini")));
+        QSignalSpy changed(&batched, &Settings::changed);
+        batched.beginBatch();
+        batched.setTheme(QStringLiteral("light"));
+        batched.setPingIntervalSec(9);
+        check(batched.theme() == QLatin1String("light") && batched.pingIntervalSec() == 9,
+              "inside a batch the model already answers with the new values");
+        check(changed.count() == 0, "…while no half-commit has been announced");
+        batched.endBatch();
+        check(changed.count() == 1, "endBatch publishes the complete commit exactly once");
     }
 }
 
@@ -1845,6 +1862,10 @@ static void testTrayPolicy()
     save->click();
     check(savedSpy.count() == 1, "Save fires saved() once");
     check(settings.zapretPath() == path, "Save wrote the path through the model");
+    // The acknowledgement is written on the next event-loop turn, after the queued theme work: let the
+    // deferred commit finish before reading it (and before a second Save press, which the disabled
+    // button would otherwise ignore).
+    QTest::qWait(10);
     // The tray box was loaded checked (the model said minimize-to-tray) and the commit wrote every field
     // back, so a round-trip through the page must leave the flag set — not silently drop it.
     check(settings.minimizeToTray(), "the page's commit preserved the tray setting it was loaded with");
@@ -1895,6 +1916,7 @@ static void testTrayPolicy()
         watchdog->setValue(30);
     save->click();
     check(settings.watchdogIntervalMin() == 30, "Save wrote the new interval through the model");
+    QTest::qWait(10);   // let the deferred commit leave its saving state
 
     // A write that came from somewhere else (a download, the startup auto-location) re-reads the page
     // rather than leaving it showing a stale path.
@@ -2195,6 +2217,7 @@ static void testSettingsPageCards(QApplication &app)
     if (lang)
         lang->setCurrentIndex(lang->findData(QStringLiteral("de")));
     page.saveButton()->click();
+    QTest::qWait(10);   // the deferred commit and the page's own retranslation settle
     check(settings.language() == QLatin1String("de"), "Save stores the language that was picked");
     check(LanguageManager::instance().currentCode() == QLatin1String("de"),
           "…and moves the catalog with it, so the change is on screen and not only in the store");
@@ -2218,6 +2241,7 @@ static void testSettingsPageCards(QApplication &app)
     if (lang)
         lang->setCurrentIndex(lang->findData(QStringLiteral("ru")));
     page.saveButton()->click();
+    QTest::qWait(10);
     check(LanguageManager::instance().currentCode() == QLatin1String("ru"),
           "and the section puts the language back the way it found it");
 
@@ -4260,6 +4284,7 @@ static void testMotion()
         if (box)
             box->setChecked(false);
         settingsPage.saveButton()->click();
+        QTest::qWait(10);   // finish the deferred saving state before the page goes away
         check(!store.animationsEnabled(), "Save writes an untick through the model");
         check(box && !box->isChecked(), "…and the commit did not re-read the form over the tick");
         store.setAnimationsEnabled(true);        // a write from anywhere else
@@ -7388,6 +7413,65 @@ static void testProfileSorting()
             check(window.cardRows().contains(first) && window.cardRows().contains(second)
                       && order().value(0) == firstId,
                   "sorting reorders the existing rows rather than rebuilding them, so their chips survive");
+        }
+
+        // ---- the cost of the deferred passes, and the click that no longer waits for them ----
+        // Measure real switches on a shown window, not a no-op: a theme pass that re-tints every cached
+        // glyph and a translation pass that rewrites every tagged string are the two worst cases, and a
+        // hidden window would under-report both because no layout is recomputed.
+        window.show();
+        QTest::qWait(30);
+        const QString savedTheme = window.settingsModel()->theme();
+        const QString otherTheme = savedTheme == QLatin1String("light")
+                                       ? QStringLiteral("dark")
+                                       : QStringLiteral("light");
+        window.settingsModel()->setTheme(otherTheme);
+        QElapsedTimer clock;
+        clock.start();
+        window.applyThemeForTest();
+        const qint64 themeUs = clock.nsecsElapsed() / 1000;
+
+        const QString savedLanguage = LanguageManager::instance().currentCode();
+        const QString otherLanguage = savedLanguage == QLatin1String("en")
+                                          ? QStringLiteral("de")
+                                          : QStringLiteral("en");
+        LanguageManager::instance().setCode(otherLanguage);
+        clock.restart();
+        window.retranslateForTest();
+        const qint64 retranslateUs = clock.nsecsElapsed() / 1000;
+
+        // Restore the theme and catalog for the rest of the suite. The deferred timers scheduled by the
+        // setters above will apply these saved values once the event loop turns; qWait drains them.
+        LanguageManager::instance().setCode(savedLanguage);
+        window.settingsModel()->setTheme(savedTheme);
+        QTest::qWait(80);
+
+        std::printf("  info  applyTheme %.1f ms, retranslateTree %.1f ms\n", themeUs / 1000.0,
+                    retranslateUs / 1000.0);
+        check(themeUs < 1500000 && retranslateUs < 1500000,
+              QStringLiteral("a full theme/translation pass stays bounded (%1 ms / %2 ms; the 150 ms "
+                             "budget is the design target, the hard ceiling catches a pathological "
+                             "regression on a slow runner)")
+                  .arg(themeUs / 1000.0, 0, 'f', 1)
+                  .arg(retranslateUs / 1000.0, 0, 'f', 1));
+
+        if (SettingsPage *page = window.findChild<SettingsPage *>()) {
+            QPushButton *save = page->saveButton();
+            QElapsedTimer clickClock;
+            clickClock.start();
+            save->click();
+            const qint64 clickMs = clickClock.elapsed();
+            const bool feedback = !save->isEnabled()
+                                  && save->text() == LanguageManager::tr(QStringLiteral("settings.saving"));
+            QTest::qWait(80);
+            check(clickMs < 200,
+                  QStringLiteral("Save hands the event loop back before the heavy pass (%1 ms)").arg(clickMs));
+            check(feedback && page->savedNote()->text()
+                                  == LanguageManager::tr(QStringLiteral("settings.saved")),
+                  "…with the button in its saving state before it, and the acknowledgement after it");
+            check(save->isEnabled()
+                      && save->text() == LanguageManager::tr(QStringLiteral("settings.save")),
+                  "…and the control restored once the deferred work has drained");
         }
     }
 

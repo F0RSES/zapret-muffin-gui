@@ -11,6 +11,7 @@
 #include "ZapretSource.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
@@ -99,7 +100,15 @@ SettingsPage::SettingsPage(Settings &settings, QWidget *parent)
             });
 }
 
-SettingsPage::~SettingsPage() = default;
+SettingsPage::~SettingsPage()
+{
+    // A page destroyed while its deferred commit is in flight must not leave the application holding an
+    // override cursor nobody can restore.
+    if (m_waitCursor) {
+        QApplication::restoreOverrideCursor();
+        m_waitCursor = false;
+    }
+}
 
 void SettingsPage::build()
 {
@@ -503,10 +512,15 @@ void SettingsPage::loadFromSettings()
 
 void SettingsPage::apply()
 {
-    // One guard around nine writes: Settings answers every write with changed(), and the reload slot
-    // connected in the constructor would otherwise re-read the form underneath the commit — harmless
-    // for these values, but it would drop the note this call is about to put up.
+    if (m_saving)
+        return;   // the button is disabled, but a programmatic double press must not stack commits
+    beginSaving();
+
+    // One guard around nine writes, and one batch around them as well: Settings answers every write with
+    // changed(), and the window's reaction to that signal is expensive (a whole theme pass). A batch makes
+    // the disk sync and the window's reaction happen once, for the complete form, instead of nine times.
     m_writing = true;
+    m_settings.beginBatch();
     m_settings.setZapretPath(m_pathEdit->text().trimmed());
     m_settings.setStartLastOnLaunch(m_startLastCheck->isChecked());
     m_settings.setMinimizeToTray(m_trayCheck->isChecked());
@@ -524,13 +538,51 @@ void SettingsPage::apply()
     // is the one value here that rewrites the page's own labels, and re-reading the form in the middle of
     // that would be the form answering itself.
     commitLanguage(m_languageBox->currentData().toString());
+    m_settings.endBatch();
     m_writing = false;
 
-    // Set after the language has moved, so the acknowledgement is said in the language the user just
-    // asked for rather than the one they were leaving.
-    m_savedNote->setText(LanguageManager::tr(QStringLiteral("settings.saved")));
-    m_savedTimer->start(kSavedNoteMs);
+    // The acknowledgement is written only after the window's deferred work has run: the page is still in
+    // its saving state while the theme/translation pass is queued, and the note says what happened, not
+    // what was requested. saved() itself is immediate — the commit has landed in the model.
+    QTimer::singleShot(0, this, [this] {
+        finishSaving();
+        // Set here rather than before the timer so it is said in the language the deferred retranslation
+        // has just installed.
+        m_savedNote->setText(LanguageManager::tr(QStringLiteral("settings.saved")));
+        m_savedTimer->start(kSavedNoteMs);
+    });
     emit saved();
+}
+
+void SettingsPage::beginSaving()
+{
+    m_saving = true;
+    if (m_save) {
+        m_save->setEnabled(false);
+        i18nText(m_save, QStringLiteral("settings.saving"));
+        // Paint the new label before the event loop gets a chance to run the heavy work queued behind this
+        // press: a disabled button that still reads "Сохранить" until after the freeze is no feedback.
+        m_save->repaint();
+    }
+    if (!m_waitCursor) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        m_waitCursor = true;
+    }
+}
+
+void SettingsPage::finishSaving()
+{
+    if (!m_saving)
+        return;
+    m_saving = false;
+    if (m_waitCursor) {
+        QApplication::restoreOverrideCursor();
+        m_waitCursor = false;
+    }
+    if (m_save) {
+        i18nText(m_save, QStringLiteral("settings.save"));
+        m_save->setEnabled(true);
+    }
 }
 
 QString SettingsPage::zapretPath() const

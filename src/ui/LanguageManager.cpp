@@ -1266,6 +1266,8 @@ const QVector<Row> &catalog()
             "कितनी बार जाँचें कि चलती प्रोफ़ाइल अब भी अवरोध तोड़ती है"),
         ROW("settings.save", "Сохранить", "Save", "Guardar", "Speichern", "保存", "Enregistrer",
             "सहेजें"),
+        ROW("settings.saving", "Сохранение…", "Saving…", "Guardando…", "Speichern…", "正在保存…",
+            "Enregistrement…", "सहेजा जा रहा है…"),
         // The acknowledgement the Save button puts beside itself for two seconds. The tick is the whole
         // sentence: a page has no frame to close, so "it worked" has to be said where the press was.
         ROW("settings.saved", "Сохранено ✓", "Saved ✓", "Guardado ✓", "Gespeichert ✓",
@@ -1462,23 +1464,34 @@ int retranslateTree(QObject *root)
     for (QWidget *w : widgets) {
         const QString key = w->property("i18nKey").toString();
         if (!key.isEmpty()) {
+            const QString text = LanguageManager::tr(key);
             if (auto *button = qobject_cast<QAbstractButton *>(w)) {
-                button->setText(LanguageManager::tr(key));
-                ++rewritten;
+                if (button->text() != text) {
+                    button->setText(text);
+                    ++rewritten;
+                }
             } else if (auto *label = qobject_cast<QLabel *>(w)) {
-                label->setText(LanguageManager::tr(key));
-                ++rewritten;
+                if (label->text() != text) {
+                    label->setText(text);
+                    ++rewritten;
+                }
             }
         }
         const QString tip = w->property("i18nTip").toString();
         if (!tip.isEmpty()) {
-            w->setToolTip(LanguageManager::tr(tip));
-            ++rewritten;
+            const QString text = LanguageManager::tr(tip);
+            if (w->toolTip() != text) {
+                w->setToolTip(text);
+                ++rewritten;
+            }
         }
         const QString acc = w->property("i18nAcc").toString();
         if (!acc.isEmpty()) {
-            w->setAccessibleName(LanguageManager::tr(acc));
-            ++rewritten;
+            const QString text = LanguageManager::tr(acc);
+            if (w->accessibleName() != text) {
+                w->setAccessibleName(text);
+                ++rewritten;
+            }
         }
 
         // A combo's entries carry their data (a level int, a theme name) independently of their text, so
@@ -1486,22 +1499,31 @@ int retranslateTree(QObject *root)
         if (auto *combo = qobject_cast<QComboBox *>(w)) {
             const QStringList keys = w->property("i18nItems").toStringList();
             for (int i = 0; i < keys.size() && i < combo->count(); ++i) {
-                combo->setItemText(i, LanguageManager::tr(keys.at(i)));
-                ++rewritten;
+                const QString text = LanguageManager::tr(keys.at(i));
+                if (combo->itemText(i) != text) {
+                    combo->setItemText(i, text);
+                    ++rewritten;
+                }
             }
         }
         if (auto *spin = qobject_cast<QSpinBox *>(w)) {
             const QString suffixKey = w->property("i18nSuffix").toString();
             if (!suffixKey.isEmpty()) {
-                spin->setSuffix(LanguageManager::tr(suffixKey));
-                ++rewritten;
+                const QString text = LanguageManager::tr(suffixKey);
+                if (spin->suffix() != text) {
+                    spin->setSuffix(text);
+                    ++rewritten;
+                }
             }
         }
         if (auto *edit = qobject_cast<QLineEdit *>(w)) {
             const QString ph = w->property("i18nPlaceholder").toString();
             if (!ph.isEmpty()) {
-                edit->setPlaceholderText(LanguageManager::tr(ph));
-                ++rewritten;
+                const QString text = LanguageManager::tr(ph);
+                if (edit->placeholderText() != text) {
+                    edit->setPlaceholderText(text);
+                    ++rewritten;
+                }
             }
         }
     }
@@ -1510,21 +1532,30 @@ int retranslateTree(QObject *root)
     for (QAction *action : actions) {
         const QString key = action->property("i18nKey").toString();
         if (!key.isEmpty()) {
-            action->setText(LanguageManager::tr(key));
-            ++rewritten;
+            const QString text = LanguageManager::tr(key);
+            if (action->text() != text) {
+                action->setText(text);
+                ++rewritten;
+            }
         }
         // An action's tooltip is read as often as its text — a glyph inside a line edit is an action, and
         // it is icon-only, so the tooltip is the only words it ever shows. Leaving this out would keep
         // that sentence in the language the page was built in after every other label had moved.
         const QString tip = action->property("i18nTip").toString();
         if (!tip.isEmpty()) {
-            action->setToolTip(LanguageManager::tr(tip));
-            ++rewritten;
+            const QString text = LanguageManager::tr(tip);
+            if (action->toolTip() != text) {
+                action->setToolTip(text);
+                ++rewritten;
+            }
         }
         const QString acc = action->property("i18nAcc").toString();
         if (!acc.isEmpty()) {
-            action->setProperty("accessibleName", LanguageManager::tr(acc));
-            ++rewritten;
+            const QString text = LanguageManager::tr(acc);
+            if (action->property("accessibleName").toString() != text) {
+                action->setProperty("accessibleName", text);
+                ++rewritten;
+            }
         }
     }
     return rewritten;

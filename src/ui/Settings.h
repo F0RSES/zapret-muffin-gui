@@ -90,6 +90,12 @@ public:
     bool hideWarpGui() const;
     void setHideWarpGui(bool on);
 
+    // A form commit writes many keys at once. Inside a batch the store still updates in memory, but the
+    // disk sync and the single changed() wait for endBatch(): nine setters used to mean nine syncs and
+    // nine full MainWindow reactions, each one a complete theme re-application.
+    void beginBatch();
+    void endBatch();
+
     // ---- motion ----
     // Whether the interface may move at all: page fades, card entrances, the power button's breath. On
     // by default, because the design was drawn moving; the switch exists for the machines the movement
@@ -132,6 +138,9 @@ private:
     void write(const QString &key, const T &value);
 
     std::unique_ptr<QSettings> m_settings;
+    // Depth rather than a bool: a nested batch must not make the inner endBatch publish a half-commit.
+    int m_batchDepth = 0;
+    bool m_batchDirty = false;
 };
 
 // One-time carry-over of everything the 0.1.0 identity persisted, into the store this build uses.

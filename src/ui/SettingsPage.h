@@ -157,6 +157,10 @@ private:
     // catalog, because nothing re-reads the store on its own and a page that only wrote it would change
     // nothing on screen until the next launch.
     void commitLanguage(const QString &code);
+    // Enter/leave the saving state: disabled button with "Сохранение…" and a wait cursor while the
+    // deferred theme/translation work runs, restored when the event loop has drained it.
+    void beginSaving();
+    void finishSaving();
 
     Settings &m_settings;
     // Guards the Settings::changed() reload: apply() writes through the model, and the model answers by
@@ -196,6 +200,8 @@ private:
     QPushButton *m_save = nullptr;
     QLabel *m_savedNote = nullptr;
     QTimer *m_savedTimer = nullptr;  // for how long "Сохранено ✓" stays up
+    bool m_saving = false;
+    bool m_waitCursor = false;
 
     // The label column every card shares. A QGridLayout takes its first-column width from the widest cell
     // in it, so three independent grids would start their fields at three different pixels; pinning each
