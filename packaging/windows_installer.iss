@@ -183,13 +183,6 @@ Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppName}.exe"; IconFilename: "{app}\{#AppName}.exe"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
-; Offered but unchecked: right after a fresh install the app has no zapret tree yet, and opening it is
-; not a prerequisite for finishing the setup. skipifsilent is the silent-install half of the same
-; reasoning: an unattended /SILENT or /VERYSILENT run must not end with a GUI popping up over it.
-; postinstall starts the program with the original, non-elevated user token, and since 0.4.1
-; Muffin.exe's own manifest asks Windows for requireAdministrator -- so ticking this box costs the user
-; one UAC consent. That is the intended shape of it: the elevation belongs to the application (see
-; packaging/windows/app.manifest), and launching it from here with runascurrentuser would only hide
-; that same prompt behind the setup's own consent, with the app inheriting the installer's token.
-Filename: "{app}\{#AppName}.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall unchecked skipifsilent
+; The installer offers no "launch Muffin" checkbox: README.md carries Flags: isreadme and is the only
+; post-install document offered. The application is not started by setup, silently or otherwise.
 

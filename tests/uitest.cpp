@@ -2363,6 +2363,18 @@ static void testSettingsPageCards(QApplication &app)
                   "…and its window is frameless/translucent, so nothing paints square corners behind it");
             check(qAlpha(popupImg.pixel(popupImg.width() / 2, popupImg.height() / 2)) > 200,
                   "…while the popup's body is still opaque enough to read the list on");
+            // The bug this pins: the list used to be translucent, so the window showed through it. The
+            // sheet's own background must be what the list paints, sampled in its padding away from any
+            // item text.
+            const QColor listBg = sheetRuleColor(app.styleSheet(),
+                                                 QStringLiteral("QComboBox QAbstractItemView"),
+                                                 QStringLiteral("background-color"));
+            check(listBg.isValid()
+                      && rgbClose(popupImg.pixelColor(QPoint(2, popupImg.height() / 2)), listBg, 12),
+                  QStringLiteral("…and the dropdown paints the sheet's dense background (%1 wanted %2)")
+                      .arg(popupImg.pixelColor(QPoint(2, popupImg.height() / 2)).name(QColor::HexRgb))
+                      .arg(listBg.isValid() ? listBg.name(QColor::HexRgb)
+                                            : QStringLiteral("<none>")));
         }
         themeField->hidePopup();
     }
@@ -7273,13 +7285,16 @@ static void testProfileSorting()
         }
         check(itemsOk, "…each carrying its catalog wording and a stable enum value");
 
-        check(!MainWindow::showsBlockcheck(Strategy::Platform::Windows),
-              "Windows gets no manual Blockcheck control: dozens of .bat profiles have no single path "
-              "to verify at a press");
-        check(MainWindow::showsBlockcheck(Strategy::Platform::Linux), "Linux keeps it");
+        check(MainWindow::showsBlockcheck(Strategy::Platform::Windows),
+              "Windows keeps the manual Blockcheck sweep: it is how the working .bat profile is found");
+        check(MainWindow::showsBlockcheck(Strategy::Platform::Linux), "Linux keeps it too");
         check(window.hasBlockcheckButton()
                   == MainWindow::showsBlockcheck(ZapretSource::hostPlatform()),
               "…and the window builds the control only where the policy allows it");
+        check(LanguageManager::tr(QStringLiteral("log.blockcheck_done"))
+                      != QLatin1String("log.blockcheck_done")
+                  && !LanguageManager::tr(QStringLiteral("log.blockcheck_done")).isEmpty(),
+              "the sweep's closing sentence is in the catalog, so the journal ends in a real sentence");
 
         const QList<ProfileCard *> cards = window.cardRows();
         check(cards.size() >= 2, "the fixture produced at least two rows to order");

@@ -885,6 +885,11 @@ private:
     // Reorder the existing rows for m_profileSort. Reads the chips' own numbers, so no second copy of a
     // latency exists and a row cannot be sorted by a figure it is not showing.
     void applyProfileSort();
+    // The manual Blockcheck sweep: one profile at a time, updating that profile's chips from each
+    // hostChecked, then the last log line when the queue is empty. startNext* is called on the event
+    // loop after a run finishes so the engine is no longer busy when the next preset is handed to it.
+    void startNextBlockcheckProfile();
+    void finishBlockcheckSweep();
     // The entrance cascade for the profile rows: the first kCardRiseRows rows rise into their layout
     // slots one step behind the last, the rest simply appear. Called when the page is opened and when
     // the list is rebuilt while it is the page being looked at — the two moments a row arrives in front
@@ -1114,6 +1119,12 @@ private:
     bool m_blockcheckActive = false;
     QPushButton *m_blockcheckButton = nullptr;
     QProgressBar *m_blockcheckProgress = nullptr;
+    // The manual sweep walks every profile once. The ids, the one being measured, and whether the sweep
+    // (rather than the watchdog's single quiet cycle) owns the engine right now.
+    QStringList m_blockcheckSweep;
+    int m_blockcheckSweepIndex = 0;
+    bool m_blockcheckSweepActive = false;
+    QString m_blockcheckCurrentId;
     // ---- the watchdog -------------------------------------------------------------------
     // Fires every Settings::watchdogIntervalMin() minutes from the moment the window exists. There is
     // no "waiting for the first answer" state to show and no watchdog-of-the-watchdog: a tick either

@@ -299,7 +299,7 @@ QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top righ
 QComboBox::down-arrow { image: url(:/icons/arrow-down.svg); width: 14px; height: 14px; }
 QComboBox QAbstractItemView {
     background-color: #FFFFFF; color: #1F2937;
-    border: 1px solid #9CA3AF; border-radius: 10px; padding: 6px;
+    border: 1px solid #2C2E3E; border-radius: 10px; padding: 6px;
     selection-background-color: #7C3AED; selection-color: #FFFFFF; outline: none;
 }
 /* A full-width square item paints over the rounded frame; the item radius plus the view's padding keeps

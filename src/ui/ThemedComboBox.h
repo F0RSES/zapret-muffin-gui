@@ -32,7 +32,9 @@ protected:
         }
         if (QAbstractItemView *list = view()) {
             list->setFrameShape(QFrame::NoFrame);
-            list->setAttribute(Qt::WA_TranslucentBackground, true);
+            // Deliberately NOT translucent: the sheet gives the list an opaque background and the
+            // viewport is what paints it. Marking the view translucent (as an earlier version did) let
+            // the window show through the dropdown — the reported "transparent background".
         }
         QComboBox::showPopup();
         // After show, and only then: the container has its final geometry. The radius is the sheet's 10 px

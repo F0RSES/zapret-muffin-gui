@@ -959,10 +959,10 @@ QWidget *MainWindow::buildProfilesPage()
     connect(m_pingTestButton, &QPushButton::clicked, this, &MainWindow::onPingTestRequested);
 
     // The page's second measurement, and the harder question: not "do the services answer" but
-    // "does the path the SELECTED profile opens actually work". Only a host where that question has one
-    // answer gets the control: a Windows install ships dozens of .bat profiles, so "verify the real
-    // bypass" would be a claim about one arbitrary row. There the button and its verdict sheet are not
-    // built at all; the watchdog's quiet cycle still uses the same engine internally.
+    // "does the path this profile opens actually work". Available on every platform, including
+    // Windows, where it is how a user finds out which of the installed .bat profiles the provider
+    // really lets through. The sweep reports per-profile numbers into that profile's chips and into the
+    // journal; it has no final modal (see onBlockcheckFinished).
     const bool withBlockcheck = showsBlockcheck(ZapretSource::hostPlatform());
     if (withBlockcheck) {
         m_blockcheckButton = new QPushButton(QString(), page);
@@ -1906,8 +1906,8 @@ void MainWindow::wire()
         onLogMessage(line, level);
     });
     connect(m_blockcheck, &BlockcheckEngine::stageChanged, this, [this](const QString &stage) {
-        if (m_watchdogRun)
-            return;
+        if (m_watchdogRun || m_blockcheckSweepActive)
+            return;   // the sweep's bar is driven per profile, not by a run's internal stage
         if (!m_blockcheckProgress || stage == QLatin1String("probing"))
             return;   // the first progress() moves the meter to determinate on its own
         m_blockcheckProgress->setRange(0, 0);   // busy while starting / settling / stopping
@@ -1918,6 +1918,12 @@ void MainWindow::wire()
             return;
         if (!m_blockcheckProgress)
             return;
+        if (m_blockcheckSweepActive) {
+            // One profile is in flight; the bar answers "how many profiles are done", not "how many
+            // hosts of this one". Kept determinate for the whole sweep.
+            m_blockcheckProgress->setValue(m_blockcheckSweepIndex);
+            return;
+        }
         if (m_blockcheckProgress->maximum() != qMax(1, total))
             m_blockcheckProgress->setRange(0, qMax(1, total));
         m_blockcheckProgress->setValue(done);
@@ -1939,6 +1945,16 @@ void MainWindow::wire()
 
         if (m_watchdogRun)
             return;
+        // The sweep's whole point: the row for the profile the engine just measured takes the real
+        // numbers, so the chips and the latency sort both describe a measurement rather than a guess.
+        if (m_blockcheckSweepActive) {
+            if (ProfileCard *card = m_cards.value(m_blockcheckCurrentId, nullptr)) {
+                card->setPing(host,
+                              r.success ? PingIndicator::PingStatus::Ok
+                                        : PingIndicator::PingStatus::Fail,
+                              r.success ? r.avgLatency : -1);
+            }
+        }
         // A journal line per host, in the engine's own vocabulary rather than a translated sentence:
         // the sheet at the end is the user-facing wording, and the journal is where the numbers live.
         QString verdict;
@@ -2651,10 +2667,12 @@ QStringList MainWindow::profileSortKeys()
 
 bool MainWindow::showsBlockcheck(Strategy::Platform platform)
 {
-    // A Windows install presents dozens of .bat profiles; "verify the real bypass" has no single path
-    // to describe at a press, and the modal verdict that used to follow it was measuring one arbitrary
-    // row. Linux (and a platform this file cannot name, where the old behaviour is harmless) keeps it.
-    return platform != Strategy::Platform::Windows;
+    // The manual sweep is available everywhere, including Windows: checking which of the installed
+    // profiles actually gets through the provider is the point of the button there. What Windows does
+    // NOT get is the final modal verdict sheet — the sweep reports into the journal and the rows
+    // instead (see onBlockcheckFinished).
+    Q_UNUSED(platform);
+    return true;
 }
 
 bool MainWindow::rowFollowsCycle(bool manualRound, bool rowIsActive)
@@ -3911,7 +3929,7 @@ void MainWindow::endPingTest()
 void MainWindow::onBlockcheckRequested()
 {
     if (!m_blockcheckButton)
-        return;   // Windows: the control is not built, and its verdict sheet is not either
+        return;
     if (m_blockcheckActive)
         return;   // a cycle is in flight; the button says so and is not answering presses
 
@@ -3923,29 +3941,80 @@ void MainWindow::onBlockcheckRequested()
         return;
     }
 
-    // The same gate the power button answers to, widened by exactly one state: a backend owns one
-    // operation at a time, so Starting/Stopping refuse — but a run that is already up is fine, the
-    // engine measures it as-is and leaves its lifecycle alone (it only stops what it started).
+    // The sweep starts every profile in turn, so there must be no live run for it to collide with: the
+    // engine leaves a run the user started alone, which would make every step measure the same profile.
     const IZapretBackend::State state = m_manager->state();
-    if (state != IZapretBackend::State::Running && !canStartFrom(state)) {
-        showTransientMessage(blockedReason(state), 4000);
-        return;
-    }
-    const Strategy *s = m_selectedId.isEmpty() ? nullptr : m_manager->findStrategy(m_selectedId);
-    if (!s) {
-        showTransientMessage(LanguageManager::tr(QStringLiteral("msg.pick_profile")), 5000);
+    if (m_manager->isRunning() || state == IZapretBackend::State::Starting
+        || state == IZapretBackend::State::Stopping) {
+        showTransientMessage(LanguageManager::tr(QStringLiteral("blockcheck.stop_first")), 5000);
         return;
     }
 
+    const QList<Strategy> list = m_manager->strategies();
+    if (list.isEmpty()) {
+        showTransientMessage(LanguageManager::tr(QStringLiteral("blockcheck.no_profiles")), 5000);
+        return;
+    }
+
+    m_blockcheckSweep.clear();
+    for (const Strategy &s : list)
+        m_blockcheckSweep << (s.id.isEmpty() ? s.filePath : s.id);
+    m_blockcheckSweepIndex = 0;
+    m_blockcheckCurrentId.clear();
+    m_blockcheckSweepActive = true;
+
     beginBlockcheck();
-    // The name the history rows get, kept for the whole cycle: the engine reports a host and a verdict,
-    // and the preset that produced them is this window's to know.
-    m_blockcheckPreset = s->name;
-    m_log->appendLine(LanguageManager::tr(QStringLiteral("log.blockcheck_started")).arg(s->name),
-                      LogPanel::Info);
-    // The row's two hosts, not the dashboard's three: this check is about the path the profile
-    // exists to open, and google.com is the baseline no profile ever promised.
-    m_blockcheck->startTest(*s, profilePingHosts());
+    if (m_blockcheckProgress) {
+        m_blockcheckProgress->setRange(0, m_blockcheckSweep.size());
+        m_blockcheckProgress->setValue(0);
+    }
+    startNextBlockcheckProfile();
+}
+
+void MainWindow::startNextBlockcheckProfile()
+{
+    if (!m_blockcheckSweepActive)
+        return;
+
+    // Skip an id the catalog no longer names (a delete landed mid-sweep) rather than stalling on it.
+    while (m_blockcheckSweepIndex < m_blockcheckSweep.size()) {
+        const QString id = m_blockcheckSweep.at(m_blockcheckSweepIndex);
+        const Strategy *s = m_manager->findStrategy(id);
+        if (!s) {
+            ++m_blockcheckSweepIndex;
+            continue;
+        }
+        m_blockcheckCurrentId = id;
+        // The name the history rows get: the engine reports a host and a verdict, and the preset that
+        // produced them is this window's to know.
+        m_blockcheckPreset = s->name;
+        if (m_blockcheckProgress)
+            m_blockcheckProgress->setValue(m_blockcheckSweepIndex);
+        m_log->appendLine(LanguageManager::tr(QStringLiteral("log.blockcheck_started")).arg(s->name),
+                          LogPanel::Info);
+        // The row's two hosts, not the dashboard's three: this check is about the path the profile
+        // exists to open, and google.com is the baseline no profile ever promised.
+        m_blockcheck->startTest(*s, profilePingHosts());
+        return;
+    }
+    finishBlockcheckSweep();
+}
+
+void MainWindow::finishBlockcheckSweep()
+{
+    if (!m_blockcheckSweepActive)
+        return;
+    m_blockcheckSweepActive = false;
+    m_blockcheckCurrentId.clear();
+    m_blockcheckSweep.clear();
+    m_blockcheckSweepIndex = 0;
+    if (m_blockcheckProgress)
+        m_blockcheckProgress->setValue(m_blockcheckProgress->maximum());
+    endBlockcheck();
+    // The sentence the user asked for, and it is actionable: the numbers just measured are exactly what
+    // the order picker above the list sorts by.
+    m_log->appendLine(LanguageManager::tr(QStringLiteral("log.blockcheck_done")), LogPanel::Info);
+    applyProfileSort();
 }
 
 void MainWindow::beginBlockcheck()
@@ -3977,34 +4046,45 @@ void MainWindow::endBlockcheck()
     }
 }
 
-// Every run ends here — complete, cancelled (a partial map) or failed (an empty one) — so this is
-// the one verdict sheet per press, and the only modal the cycle ever opens.
+// Every run ends here — complete, cancelled (a partial map) or failed (an empty one) — and this is
+// where one profile hands over to the next. There is deliberately no verdict sheet: a sweep of twenty
+// profiles cannot be reported in one modal, and the numbers it produces belong on the rows (and in the
+// journal), not in a dialog the user has to dismiss between profiles.
 void MainWindow::onBlockcheckFinished(const QJsonObject &results)
 {
-    // One exception: a cycle the watchdog started is not a press and gets no sheet. Its own handler
-    // reads the map for a dead bypass and stays silent otherwise, which is the whole difference between
-    // a check the user asked for and one that is merely watching.
+    // A cycle the watchdog started is not a press: its own handler reads the map for a dead bypass and
+    // stays silent otherwise, which is the whole difference between a check the user asked for and one
+    // that is merely watching.
     if (m_watchdogRun) {
         onWatchdogResult(results);
         return;
     }
 
-    endBlockcheck();
-    // Windows has no Blockcheck button and no verdict sheet: the manual press cannot exist there. The
-    // watchdog's quiet cycle is handled above and still writes its own journal line; reaching here
-    // without a control means there is nobody to show a modal to.
-    if (!showsBlockcheck(ZapretSource::hostPlatform()))
-        return;
-    if (results.isEmpty()) {
-        const QString why = m_blockcheck ? m_blockcheck->lastError() : QString();
-        QMessageBox::warning(this, LanguageManager::tr(QStringLiteral("blockcheck.title")),
-                             why.isEmpty()
-                                 ? LanguageManager::tr(QStringLiteral("blockcheck.no_results"))
-                                 : why);
+    if (m_blockcheckSweepActive) {
+        if (results.isEmpty()) {
+            const QString why = m_blockcheck ? m_blockcheck->lastError() : QString();
+            m_log->appendLine(why.isEmpty()
+                                  ? LanguageManager::tr(QStringLiteral("blockcheck.no_results"))
+                                  : why,
+                              LogPanel::Warn);
+        }
+        ++m_blockcheckSweepIndex;
+        if (m_blockcheckProgress)
+            m_blockcheckProgress->setValue(qMin(m_blockcheckSweepIndex,
+                                                m_blockcheckProgress->maximum()));
+        if (m_blockcheckSweepIndex < m_blockcheckSweep.size()) {
+            // The next turn of the loop: the engine has already cleared its busy flag before emitting
+            // this signal, and queueing the next start keeps the finished run's cleanup out of its frame.
+            QTimer::singleShot(0, this, [this] { startNextBlockcheckProfile(); });
+        } else {
+            finishBlockcheckSweep();
+        }
         return;
     }
-    QMessageBox::information(this, LanguageManager::tr(QStringLiteral("blockcheck.title")),
-                             blockcheckResultText(results));
+
+    // A run that was not part of a sweep has no per-profile queue to advance. Close the UI state; there
+    // is no dialog to show.
+    endBlockcheck();
 }
 
 QString MainWindow::blockcheckResultText(const QJsonObject &results)
