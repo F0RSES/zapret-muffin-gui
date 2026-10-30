@@ -72,6 +72,10 @@ public:
     QLabel *nameLabel() const { return m_name; }
     QToolButton *menuButton() const { return m_menu; }
     int pingChipCount() const { return static_cast<int>(m_pings.size()); }
+    // The latency this row currently shows for `host`, or -1 when it has no successful measurement
+    // (unknown, waiting or failed). The profiles page sorts on exactly this number, so the order and
+    // the figure beside the ring cannot disagree.
+    int latencyMsFor(const QString &host) const;
 
 signals:
     // The row was pressed (or activated from the keyboard). The window is the only thing that decides

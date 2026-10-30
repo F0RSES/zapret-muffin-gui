@@ -35,6 +35,12 @@ public:
 
     QString platformName() const override { return QStringLiteral("Windows"); }
 
+    // How long stop() gives terminate() to be heard before it escalates to kill(). The old value was
+    // 3000 ms; a user who pressed Stop has already decided, and three seconds of a still-running payload
+    // is the reported "Stop is slow on Windows". 500 ms is the same grace the Linux direct-payload path
+    // uses, and the escalation is logged so a slow teardown is diagnosable rather than mysterious.
+    static constexpr int kTerminateGraceMs = 500;
+
 private slots:
     void onProcessStarted();
     void onProcessFinished(int exitCode, bool crashed);

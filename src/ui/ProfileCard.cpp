@@ -318,6 +318,16 @@ void ProfileCard::setPing(const QString &host, PingIndicator::PingStatus status,
     refreshPing(host, it.value());
 }
 
+int ProfileCard::latencyMsFor(const QString &host) const
+{
+    const auto it = m_pings.constFind(host);
+    if (it == m_pings.constEnd())
+        return -1;
+    if (it->status != PingIndicator::PingStatus::Ok || it->latencyMs < 0)
+        return -1;
+    return it->latencyMs;
+}
+
 void ProfileCard::refreshPing(const QString &host, Ping &ping)
 {
     if (!ping.icon || !ping.value)

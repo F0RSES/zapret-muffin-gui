@@ -213,10 +213,48 @@ void WindowsBackend::stop()
     setState(State::Stopping);
     emit logMessage(QStringLiteral("WindowsBackend: terminating managed process"), 0);
     m_process->terminate();
-    // Escalate to kill if it ignores terminate. waitForFinished blocks briefly (<=3s) but only in the
-    // explicit user-initiated stop path, which is acceptable for a GUI already expecting a shutdown.
-    if (!m_process->waitForFinished(3000))
-        m_process->kill();
+    // Escalate fast. waitForFinished blocks only in the explicit stop path, which the user is already
+    // waiting on, and 500 ms is long enough for a cooperative winws to exit and short enough that a
+    // stubborn one does not read as a frozen button.
+    if (m_process->waitForFinished(kTerminateGraceMs))
+        return;
+
+    emit logMessage(QStringLiteral("WindowsBackend: no exit within %1 ms of terminate(); killing the "
+                                   "process").arg(kTerminateGraceMs),
+                    1);
+    m_process->kill();
+    if (m_process->waitForFinished(kTerminateGraceMs))
+        return;
+
+#if defined(Q_OS_WIN)
+    // TerminateProcess (what kill() sends) should have taken it; if the handle is still not reaped, the
+    // image itself is the last thing that can be named. taskkill by image is deliberately the LAST
+    // resort: it is reachable only after our own process ignored both terminate and kill, so it cannot
+    // take down a healthy run, and it covers the wrapper shape where cmd.exe's child outlived it.
+    emit logMessage(QStringLiteral("WindowsBackend: winws.exe is still present after kill(); running "
+                                   "taskkill /F /IM winws.exe"),
+                    1);
+    QProcess::execute(QStringLiteral("taskkill"),
+                      {QStringLiteral("/F"), QStringLiteral("/IM"), QStringLiteral("winws.exe")});
+    m_process->waitForFinished(kTerminateGraceMs);
+#else
+    // The POSIX build of this class is exercised by the test suite; give the SIGKILL a moment to be
+    // reaped so state lands on Stopped before stop() returns.
+    m_process->waitForFinished(kTerminateGraceMs);
+#endif
+
+    // A handle that still reports Running after both signals and (on Windows) taskkill would otherwise
+    // leave the UI in Stopping forever. Drop the handle and report the stop the user asked for: the
+    // process has been told to die in every way this class can name, and a window stuck on "Stopping" is
+    // a worse lie than one that says the run is over.
+    if (m_process->state() != QProcess::NotRunning) {
+        emit logMessage(QStringLiteral("WindowsBackend: the process did not report an exit; dropping "
+                                       "the handle and reporting Stopped"),
+                        1);
+        resetProcess();
+        m_stopByRequest = false;
+        setState(State::Stopped);
+    }
 }
 
 

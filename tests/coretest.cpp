@@ -3065,6 +3065,8 @@ int main(int argc, char **argv)
             wb.stop();
             check(pumpUntil([&] { return wb.state() == S::Stopped; }, 8000),
                   "WindowsBackend stop() lands on Stopped");
+            check(WindowsBackend::kTerminateGraceMs == 500,
+                  "the terminate grace is the 500 ms the stop path promises, not the old 3 s");
             check(probe->errors().isEmpty(),
                   "and, like Linux, does not dress its own kill up as a crash");
             check(!probe->sawState(S::Error),

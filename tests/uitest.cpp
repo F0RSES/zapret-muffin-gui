@@ -7228,6 +7228,120 @@ static void testWindowFrame()
     store.setStartLastOnLaunch(savedStart);
 }
 
+// ------------------------------------------------------- profile sorting ----
+// The order picker above the profile list, and the Windows rule that removes the manual Blockcheck
+// control. Both are window-level promises, so the window is constructed over the same two-profile
+// fixture the watchdog and release sections use.
+static void testProfileSorting()
+{
+    std::printf("\n[profile sorting]\n");
+
+    if (!configRedirectedIntoBuildTree()) {
+        std::printf("  SKIP  the picker belongs to a window, and constructing one needs XDG_CONFIG_HOME "
+                    "redirected into the build tree (run it through ctest)\n");
+        return;
+    }
+
+    QTemporaryDir dir;
+    check(dir.isValid(), "temporary dir for the sorting fixture");
+    const QString root = dir.filePath(QStringLiteral("zapret/linux"));
+    check(makeWatchdogTree(root), "a two-profile tree written");
+
+    Settings store;
+    const QString savedPath = store.zapretPath();
+    const bool savedStart = store.startLastOnLaunch();
+    store.setZapretPath(root);
+    store.setStartLastOnLaunch(false);
+
+    {
+        MainWindow window;
+        window.setCurrentPage(MainWindow::PageProfiles);
+        QTest::qWait(50);
+        for (int i = 0; i < 40 && window.cardRows().size() < 2; ++i)
+            QTest::qWait(50);
+
+        QComboBox *sort = window.profileSortBox();
+        const QStringList keys = MainWindow::profileSortKeys();
+        check(sort != nullptr, "the profiles page carries an order picker above the list");
+        check(sort && sort->count() == 7 && keys.size() == 7,
+              "seven orders: default, Discord/YouTube each way, average each way");
+        bool itemsOk = sort != nullptr;
+        for (int i = 0; sort && i < sort->count(); ++i) {
+            if (sort->itemData(i).toInt() != i
+                || sort->itemText(i) != LanguageManager::tr(keys.at(i)))
+                itemsOk = false;
+        }
+        check(itemsOk, "…each carrying its catalog wording and a stable enum value");
+
+        check(!MainWindow::showsBlockcheck(Strategy::Platform::Windows),
+              "Windows gets no manual Blockcheck control: dozens of .bat profiles have no single path "
+              "to verify at a press");
+        check(MainWindow::showsBlockcheck(Strategy::Platform::Linux), "Linux keeps it");
+        check(window.hasBlockcheckButton()
+                  == MainWindow::showsBlockcheck(ZapretSource::hostPlatform()),
+              "…and the window builds the control only where the policy allows it");
+
+        const QList<ProfileCard *> cards = window.cardRows();
+        check(cards.size() >= 2, "the fixture produced at least two rows to order");
+        if (cards.size() >= 2 && sort) {
+            ProfileCard *first = cards.at(0);
+            ProfileCard *second = cards.at(1);
+            const QString firstId = first->id();
+            const QString secondId = second->id();
+            first->setPing(QStringLiteral("discord.com"), PingIndicator::PingStatus::Ok, 200);
+            first->setPing(QStringLiteral("youtube.com"), PingIndicator::PingStatus::Ok, 300);
+            second->setPing(QStringLiteral("discord.com"), PingIndicator::PingStatus::Ok, 50);
+            second->setPing(QStringLiteral("youtube.com"), PingIndicator::PingStatus::Ok, 100);
+
+            auto order = [&window] {
+                QStringList ids;
+                for (ProfileCard *card : window.cardRows())
+                    ids << card->id();
+                return ids;
+            };
+            auto select = [sort](MainWindow::ProfileSort choice) {
+                sort->setCurrentIndex(int(choice));
+            };
+
+            select(MainWindow::ProfileSort::Default);
+            check(order().value(0) == firstId && order().value(1) == secondId,
+                  "Default restores the manager's scan order");
+            select(MainWindow::ProfileSort::DiscordAsc);
+            check(order().value(0) == secondId && order().value(1) == firstId,
+                  "Discord ascending puts the 50 ms row before the 200 ms one");
+            select(MainWindow::ProfileSort::DiscordDesc);
+            check(order().value(0) == firstId && order().value(1) == secondId,
+                  "Discord descending puts the 200 ms row first");
+            select(MainWindow::ProfileSort::YouTubeAsc);
+            check(order().value(0) == secondId && order().value(1) == firstId,
+                  "YouTube ascending reads the other chip");
+            select(MainWindow::ProfileSort::AverageAsc);
+            check(order().value(0) == secondId && order().value(1) == firstId,
+                  "average ascending orders 75 ms before 250 ms");
+            select(MainWindow::ProfileSort::AverageDesc);
+            check(order().value(0) == firstId && order().value(1) == secondId,
+                  "average descending reverses it");
+
+            // A row nobody measured is not a fast time: it goes last in both directions.
+            first->setPing(QStringLiteral("discord.com"), PingIndicator::PingStatus::Unknown, -1);
+            select(MainWindow::ProfileSort::DiscordAsc);
+            check(order().last() == firstId,
+                  "an unmeasured row falls to the end of an ascending sort");
+            select(MainWindow::ProfileSort::DiscordDesc);
+            check(order().last() == firstId,
+                  "…and to the end of a descending one, where 'no data' must not read as the best time");
+
+            select(MainWindow::ProfileSort::Default);
+            check(window.cardRows().contains(first) && window.cardRows().contains(second)
+                      && order().value(0) == firstId,
+                  "sorting reorders the existing rows rather than rebuilding them, so their chips survive");
+        }
+    }
+
+    store.setZapretPath(savedPath);
+    store.setStartLastOnLaunch(savedStart);
+}
+
 int main(int argc, char **argv)
 {
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
@@ -7251,6 +7365,7 @@ int main(int argc, char **argv)
     testSelectionSwitch();
     testCombinedPower();
     testProfileCard();
+    testProfileSorting();
     testTrayPolicy();
     testSettingsPageCards(app);
     testWindowPolicy();

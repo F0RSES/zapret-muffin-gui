@@ -15,12 +15,14 @@
 #include "Settings.h"
 #include "SettingsPage.h"
 #include "Theme.h"
+#include "ThemedComboBox.h"
 #include "WarpSetupDialog.h"
 #include "UpdateChecker.h"
 #include "WarpInstaller.h"
 #include "WarpManager.h"
 #include "ZapretManager.h"
 #include "ZapretPaths.h"
+#include "ZapretSource.h"
 
 #include <QAction>
 #include <QApplication>
@@ -62,6 +64,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QtMath>   // qCeil, for the shadow's pass count
+
+#include <algorithm>
 
 namespace zapret {
 
@@ -955,20 +959,23 @@ QWidget *MainWindow::buildProfilesPage()
     connect(m_pingTestButton, &QPushButton::clicked, this, &MainWindow::onPingTestRequested);
 
     // The page's second measurement, and the harder question: not "do the services answer" but
-    // "does the path the SELECTED profile opens actually work" — connect + TLS handshake + the
-    // certificate verdict, three tries per host. The engine brings the preset up itself and takes
-    // it back down, so the verdict this button reports is about the profile, not about whatever
-    // happens to be running right now.
-    m_blockcheckButton = new QPushButton(QString(), page);
-    m_blockcheckButton->setObjectName(QStringLiteral("ghostButton"));
-    m_blockcheckButton->setProperty("glyph", QStringLiteral("shield-check"));
-    m_blockcheckButton->setProperty("glyphPx", 16);
-    m_blockcheckButton->setIcon(Theme::themedIcon(QStringLiteral("shield-check"), 16));
-    i18nText(m_blockcheckButton, QStringLiteral("action.blockcheck"));
-    i18nTip(m_blockcheckButton, QStringLiteral("action.blockcheck_tip"));
-    m_blockcheckButton->setCursor(Qt::PointingHandCursor);
-    m_blockcheckButton->setAutoDefault(false);
-    connect(m_blockcheckButton, &QPushButton::clicked, this, &MainWindow::onBlockcheckRequested);
+    // "does the path the SELECTED profile opens actually work". Only a host where that question has one
+    // answer gets the control: a Windows install ships dozens of .bat profiles, so "verify the real
+    // bypass" would be a claim about one arbitrary row. There the button and its verdict sheet are not
+    // built at all; the watchdog's quiet cycle still uses the same engine internally.
+    const bool withBlockcheck = showsBlockcheck(ZapretSource::hostPlatform());
+    if (withBlockcheck) {
+        m_blockcheckButton = new QPushButton(QString(), page);
+        m_blockcheckButton->setObjectName(QStringLiteral("ghostButton"));
+        m_blockcheckButton->setProperty("glyph", QStringLiteral("shield-check"));
+        m_blockcheckButton->setProperty("glyphPx", 16);
+        m_blockcheckButton->setIcon(Theme::themedIcon(QStringLiteral("shield-check"), 16));
+        i18nText(m_blockcheckButton, QStringLiteral("action.blockcheck"));
+        i18nTip(m_blockcheckButton, QStringLiteral("action.blockcheck_tip"));
+        m_blockcheckButton->setCursor(Qt::PointingHandCursor);
+        m_blockcheckButton->setAutoDefault(false);
+        connect(m_blockcheckButton, &QPushButton::clicked, this, &MainWindow::onBlockcheckRequested);
+    }
 
     auto *refresh = new QPushButton(QString(), page);
     refresh->setObjectName(QStringLiteral("ghostButton"));
@@ -1006,23 +1013,49 @@ QWidget *MainWindow::buildProfilesPage()
     connect(m_fetchButton, &QToolButton::clicked, this, &MainWindow::downloadZapret);
 
     head->addWidget(m_pingTestButton);
-    head->addWidget(m_blockcheckButton);
+    if (m_blockcheckButton)
+        head->addWidget(m_blockcheckButton);
     head->addStretch(1);
     head->addWidget(m_fetchButton, 0, Qt::AlignVCenter);
     head->addWidget(refresh);
     box->addLayout(head);
 
+    // The order picker, above the list it orders. Reordering the rows themselves (rather than rebuilding
+    // them from a second data model) is what keeps each row's chips as the values it is sorted by.
+    m_profileSortBox = new ThemedComboBox(page);
+    m_profileSortBox->setObjectName(QStringLiteral("profileSortBox"));
+    m_profileSortBox->setFixedHeight(32);
+    m_profileSortBox->setMaximumWidth(280);
+    const QStringList sortKeys = profileSortKeys();
+    for (int i = 0; i < sortKeys.size(); ++i)
+        m_profileSortBox->addItem(LanguageManager::tr(sortKeys.at(i)), i);
+    i18nItems(m_profileSortBox, sortKeys);
+    connect(m_profileSortBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                if (index < 0)
+                    return;
+                m_profileSort = ProfileSort(index);
+                applyProfileSort();
+            });
+    auto *sortRow = new QHBoxLayout;
+    sortRow->setContentsMargins(0, 0, 0, 0);
+    sortRow->addWidget(m_profileSortBox);
+    sortRow->addStretch(1);
+    box->addLayout(sortRow);
+
     // The slim meter that exists only while a bypass-check cycle is in flight: busy (indeterminate)
     // while the engine starts, settles and stops the preset, determinate while the hosts are being
     // probed, hidden the rest of the time. A bar of its own rather than the footer's text because
-    // "how far along" is the one thing a label cannot say.
-    m_blockcheckProgress = new QProgressBar(page);
-    m_blockcheckProgress->setObjectName(QStringLiteral("blockcheckProgress"));
-    m_blockcheckProgress->setRange(0, 0);
-    m_blockcheckProgress->setTextVisible(false);
-    m_blockcheckProgress->setFixedHeight(6);
-    m_blockcheckProgress->hide();
-    box->addWidget(m_blockcheckProgress);
+    // "how far along" is the one thing a label cannot say. Not built where the button is not.
+    if (withBlockcheck) {
+        m_blockcheckProgress = new QProgressBar(page);
+        m_blockcheckProgress->setObjectName(QStringLiteral("blockcheckProgress"));
+        m_blockcheckProgress->setRange(0, 0);
+        m_blockcheckProgress->setTextVisible(false);
+        m_blockcheckProgress->setFixedHeight(6);
+        m_blockcheckProgress->hide();
+        box->addWidget(m_blockcheckProgress);
+    }
 
     // m_stack is still what it always was — the profile rows or the "nothing found" page.
     m_stack = new QStackedWidget(page);
@@ -1973,9 +2006,11 @@ void MainWindow::populateCards()
 
     const QStringList hosts = profilePingHosts();
     const QList<Strategy> list = m_manager->strategies();
+    m_defaultCardOrder.clear();
     for (const Strategy &s : list) {
         auto *card = new ProfileCard(s, m_cardHost);
         const QString id = s.id.isEmpty() ? s.filePath : s.id;
+        m_defaultCardOrder.append(id);
         // The chips are the services this row exists to unblock — the same hosts the dashboard's rings
         // name, minus the baseline it probes and a profile has nothing to do with. Seeded from the last
         // verdict we hold, so a row built mid-cycle does not start every chip on grey and wait for the
@@ -2009,6 +2044,8 @@ void MainWindow::populateCards()
         else if (!list.isEmpty())
             m_selectedId = list.first().id.isEmpty() ? list.first().filePath : list.first().id;
     }
+    // A reload keeps the picker's choice: the rows are new, but the order the user asked for is not.
+    applyProfileSort();
     updateStatusUi();
 
     // The other moment a row appears in front of somebody: the list was rebuilt while its page was up —
@@ -2030,6 +2067,82 @@ QList<ProfileCard *> MainWindow::cardRows() const
             rows.append(card);
     }
     return rows;
+}
+
+void MainWindow::applyProfileSort()
+{
+    if (!m_cardLayout)
+        return;
+    QList<ProfileCard *> cards = cardRows();
+    if (cards.isEmpty())
+        return;
+
+    // Start from the manager's own order, then apply the picker. Restoring that order first is what
+    // makes "Default" mean the scan order again rather than whatever a previous sort left behind.
+    QList<ProfileCard *> ordered;
+    ordered.reserve(cards.size());
+    for (const QString &id : m_defaultCardOrder) {
+        for (int i = 0; i < cards.size(); ++i) {
+            if (cards.at(i)->id() == id) {
+                ordered.append(cards.takeAt(i));
+                break;
+            }
+        }
+    }
+    ordered.append(cards);
+
+    if (m_profileSort != ProfileSort::Default) {
+        static const QString discord = QStringLiteral("discord.com");
+        static const QString youtube = QStringLiteral("youtube.com");
+        auto value = [this](ProfileCard *card) -> int {
+            const int d = card->latencyMsFor(discord);
+            const int y = card->latencyMsFor(youtube);
+            switch (m_profileSort) {
+            case ProfileSort::DiscordAsc:
+            case ProfileSort::DiscordDesc:
+                return d;
+            case ProfileSort::YouTubeAsc:
+            case ProfileSort::YouTubeDesc:
+                return y;
+            case ProfileSort::AverageAsc:
+            case ProfileSort::AverageDesc:
+                if (d < 0 && y < 0)
+                    return -1;
+                if (d < 0)
+                    return y;
+                if (y < 0)
+                    return d;
+                return (d + y) / 2;
+            case ProfileSort::Default:
+                break;
+            }
+            return -1;
+        };
+        const bool ascending = m_profileSort == ProfileSort::DiscordAsc
+                               || m_profileSort == ProfileSort::YouTubeAsc
+                               || m_profileSort == ProfileSort::AverageAsc;
+        std::stable_sort(ordered.begin(), ordered.end(),
+                         [&value, ascending](ProfileCard *a, ProfileCard *b) {
+                             const int va = value(a);
+                             const int vb = value(b);
+                             // A row with no measurement goes last in EITHER direction: "not measured"
+                             // is not a fast time or a slow one, and putting it first on a descending
+                             // sort would make every unmeasured profile look like the best one.
+                             if (va < 0 && vb < 0)
+                                 return false;
+                             if (va < 0)
+                                 return false;
+                             if (vb < 0)
+                                 return true;
+                             return ascending ? va < vb : vb < va;
+                         });
+    }
+
+    while (QLayoutItem *item = m_cardLayout->takeAt(0))
+        delete item;
+    for (ProfileCard *card : ordered)
+        m_cardLayout->addWidget(card);
+    m_cardLayout->addStretch(1);
 }
 
 void MainWindow::animateCardEntrance()
@@ -2523,6 +2636,25 @@ QStringList MainWindow::profilePingHosts()
     QStringList hosts = PingService::defaultHosts();
     hosts.removeAll(QStringLiteral("google.com"));
     return hosts;
+}
+
+QStringList MainWindow::profileSortKeys()
+{
+    return {QStringLiteral("profiles.sort.default"),
+            QStringLiteral("profiles.sort.discord_asc"),
+            QStringLiteral("profiles.sort.discord_desc"),
+            QStringLiteral("profiles.sort.youtube_asc"),
+            QStringLiteral("profiles.sort.youtube_desc"),
+            QStringLiteral("profiles.sort.average_asc"),
+            QStringLiteral("profiles.sort.average_desc")};
+}
+
+bool MainWindow::showsBlockcheck(Strategy::Platform platform)
+{
+    // A Windows install presents dozens of .bat profiles; "verify the real bypass" has no single path
+    // to describe at a press, and the modal verdict that used to follow it was measuring one arbitrary
+    // row. Linux (and a platform this file cannot name, where the old behaviour is harmless) keeps it.
+    return platform != Strategy::Platform::Windows;
 }
 
 bool MainWindow::rowFollowsCycle(bool manualRound, bool rowIsActive)
@@ -3778,6 +3910,8 @@ void MainWindow::endPingTest()
 // the gate, the meter and the sheet — the measurement itself is the engine's, start to verdict.
 void MainWindow::onBlockcheckRequested()
 {
+    if (!m_blockcheckButton)
+        return;   // Windows: the control is not built, and its verdict sheet is not either
     if (m_blockcheckActive)
         return;   // a cycle is in flight; the button says so and is not answering presses
 
@@ -3856,6 +3990,11 @@ void MainWindow::onBlockcheckFinished(const QJsonObject &results)
     }
 
     endBlockcheck();
+    // Windows has no Blockcheck button and no verdict sheet: the manual press cannot exist there. The
+    // watchdog's quiet cycle is handled above and still writes its own journal line; reaching here
+    // without a control means there is nobody to show a modal to.
+    if (!showsBlockcheck(ZapretSource::hostPlatform()))
+        return;
     if (results.isEmpty()) {
         const QString why = m_blockcheck ? m_blockcheck->lastError() : QString();
         QMessageBox::warning(this, LanguageManager::tr(QStringLiteral("blockcheck.title")),

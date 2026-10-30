@@ -17,6 +17,7 @@
 
 class QAction;
 class QCloseEvent;
+class QComboBox;
 class QEvent;
 class QFrame;
 class QHBoxLayout;
@@ -311,6 +312,25 @@ public:
     // Whether a verdict from the service may repaint this row.
     static bool rowFollowsCycle(bool manualRound, bool rowIsActive);
 
+    // How the profile list is ordered. Default is the manager's scan order; every other choice is a
+    // latency order over the numbers the rows themselves show, with an unmeasured row always last.
+    enum class ProfileSort
+    {
+        Default = 0,
+        DiscordAsc,
+        DiscordDesc,
+        YouTubeAsc,
+        YouTubeDesc,
+        AverageAsc,
+        AverageDesc
+    };
+    // The catalog keys of the seven choices, in combo order.
+    static QStringList profileSortKeys();
+    // Whether this platform gets the manual "verify real bypass" button. Windows has many .bat profiles
+    // and no single path to verify at a press, so the button (and its verdict sheet) is not built there;
+    // the watchdog's quiet cycle still uses the same engine internally.
+    static bool showsBlockcheck(Strategy::Platform platform);
+
     // The verdict sheet for one finished bypass check: a line per host in QJsonObject's own sorted
     // key order (so the sheet cannot reorder between two presses), "Discord: OK (45 ms)" or
     // "Youtube: FAIL", with the catalog's certificate warning appended to an OK whose TLS
@@ -431,6 +451,10 @@ public:
     // The entrance cascade needs that order — the third row has to rise third — and a test that wants to
     // prove a row finished where the layout put it needs the same list to walk.
     QList<ProfileCard *> cardRows() const;
+    // The sort picker above the list, and whether this build created the Blockcheck control. Both are
+    // exposed because their absence/presence is the promise: Windows has the picker and no Blockcheck.
+    QComboBox *profileSortBox() const { return m_profileSortBox; }
+    bool hasBlockcheckButton() const { return m_blockcheckButton != nullptr; }
 
     // ---- the rounded shell --------------------------------------------------------------
     //
@@ -858,6 +882,9 @@ private:
     void wire();
 
     void populateCards();
+    // Reorder the existing rows for m_profileSort. Reads the chips' own numbers, so no second copy of a
+    // latency exists and a row cannot be sorted by a figure it is not showing.
+    void applyProfileSort();
     // The entrance cascade for the profile rows: the first kCardRiseRows rows rise into their layout
     // slots one step behind the last, the rest simply appear. Called when the page is opened and when
     // the list is rebuilt while it is the page being looked at — the two moments a row arrives in front
@@ -1058,6 +1085,13 @@ private:
     int m_trayAttempts = 0;
 
     QHash<QString, ProfileCard *> m_cards;                 // strategy id -> row
+    // The manager's own order, captured when the rows were built: the picker's "Default" restores this
+    // rather than whatever order a previous sort left in the layout.
+    QStringList m_defaultCardOrder;
+    // The picker and its current choice. Sorting reorders the existing rows, so each row keeps the ping
+    // numbers it is showing and the order can never disagree with the chips.
+    QComboBox *m_profileSortBox = nullptr;
+    ProfileSort m_profileSort = ProfileSort::Default;
     QHash<QString, PingIndicator *> m_indicators;          // host -> the dashboard's ring
     // The last verdict per host, kept so a profile row built after the cycle started can show a real
     // number instead of grey. Doubles as the source for the dashboard rings on a re-theme.
