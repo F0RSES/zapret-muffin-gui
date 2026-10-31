@@ -1,95 +1,135 @@
-# 🧁 Muffin
+<div align="center">
+  <h1>🧁 Muffin</h1>
+  
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=20&pause=1000&color=C084FC&center=true&vCenter=true&width=600&lines=Cross-platform+GUI+for+bypassing+DPI+censorship;Windows+(winws)+%2B+Linux+(nfqws);Built+with+C%2B%2B+and+Qt6;Seamless+Cloudflare+WARP+Integration" alt="Muffin GUI" />
 
-**Muffin** — это кроссплатформенный графический интерфейс (GUI) для управления популярной утилитой обхода блокировок **zapret**. 
+  <br><br>
 
-Приложение создано для того, чтобы вам больше не приходилось вручную редактировать `.bat` файлы, запускать скрипты в терминале и вводить команды. Всё управление происходит в удобном, современном и красивом интерфейсе.
+  <a href="https://github.com/F0RSES/zapret-muffin-gui/actions/workflows/ci.yml">
+    <img src="https://github.com/F0RSES/zapret-muffin-gui/actions/workflows/ci.yml/badge.svg" alt="CI Status" />
+  </a>
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Arch-0078D4?logo=windows" alt="Platforms" />
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=c%2B%2B" alt="C++20" />
+  <img src="https://img.shields.io/badge/Qt-6.6+-41CD52?logo=qt" alt="Qt6" />
+</div>
 
-[![CI](https://github.com/F0RSES/zapret-muffin-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/F0RSES/zapret-muffin-gui/actions/workflows/ci.yml)
+<br>
 
----
-
-## ✨ Главные возможности
-
-* **Кроссплатформенность:** Поддержка Windows (через `winws.exe`) и Linux (через `nfqws` и `iptables`).
-* **Автоматическая установка:** Кнопка «Скачать zapret» сама загрузит актуальную версию с GitHub, проверит контрольную сумму и распакует её.
-* **Автообновление Muffin:** Через несколько секунд после запуска приложение проверяет релизы собственного репозитория на GitHub. Если вышла новая версия, в шапке окна появляется пульсирующая иконка; по нажатию она спрашивает и открывает страницу релизов в браузере. Сама замена приложения требует прав root и будет сделана позже.
-* **Умный запуск:** Большая кнопка в один клик запускает или останавливает обход. Больше не нужно вводить пароли каждый раз (используются правила Polkit).
-* **Watchdog:** Приложение само, раз в несколько минут (интервал настраивается), проверяет, что запущенный профиль всё ещё обходит блокировки. Если провайдер сменил правила, Muffin сообщит об этом и предложит переключиться на следующий профиль.
-* **Мультиязычность:** Поддержка 7 языков (Русский, Английский, Немецкий, Испанский, Китайский, Французский, Хинди).
-* **Современный дизайн:** Темная и светлая темы, кастомное окно, системный трей и живые индикаторы пинга.
-
----
-
-## 📸 Скриншоты
-
-| Главный экран | Профили |
-| :---: | :---: |
-| ![Dashboard](docs/screenshots/Dashboard.png) | ![Profiles](docs/screenshots/Profiles.png) |
-
-| Логи | Настройки |
-| :---: | :---: |
-| ![Logs](docs/screenshots/Logs.png) | ![Settings](docs/screenshots/Settings.png) |
+> **Muffin** — это современный, безопасный и полностью автоматизированный графический интерфейс (GUI) для управления утилитой обхода блокировок **zapret**. Забудьте о ручном редактировании `.bat` файлов, запуске скриптов в терминале и сложной настройке Cloudflare WARP.
 
 ---
 
-## 📥 Установка
-
-Скачать готовые установочные файлы можно на странице **[Releases](https://github.com/F0RSES/zapret-muffin-gui/releases)**.
-
-### Windows
-
-1. Скачайте `Muffin-Setup-x.x.x.exe`.
-2. Запустите установщик (потребуются права администратора, так как для работы драйвера WinDivert нужен доступ к сети).
-3. Запустите Muffin из меню «Пуск».
-
-### Debian / Ubuntu / Kali Linux
-
-1. Скачайте `muffin_x.x.x_amd64.deb`.
-2. Установите через терминал:
-
-   ```bash
-   sudo apt install ./muffin_x.x.x_amd64.deb
-   ```
-
-### Arch Linux
-
-В репозитории есть готовый `PKGBUILD` (в папке `packaging/arch`).
+## ⚡ Terminal Overview
 
 ```bash
-cd packaging/arch
+user@muffin:~$ ./muffin --info
+> Initializing Muffin Core...
+> OS detected: Linux (Kali) / Windows (x64)
+> Zapret engine: nfqws (Portable) / winws
+> WARP Integration: Standby
+> [OK] GUI initialized in 0.04s
+```
+
+<details>
+  <summary><b>🔥 Нажми, чтобы увидеть список фич (Features)</b></summary>
+  <br>
+
+  * 🚀 **Zero-Config Setup:** Muffin сам скачает `zapret` с GitHub, проверит SHA-256 и безопасно установит в систему.
+  * 🛡️ **Real Blockcheck:** Встроенный движок проверяет реальный TLS-handshake (а не просто пинг). Узнайте, какой из 22 профилей пробивает DPI вашего провайдера.
+  * 🌐 **WARP-as-a-Service:** Автоматическая установка, регистрация и настройка Cloudflare WARP (MASQUE). GUI Cloudflare скрывается, вы остаетесь в одном окне.
+  * 🐶 **Watchdog:** Фоновый мониторинг. Если DPI сломает обход, Muffin заметит это и предложит переключиться.
+  * 📊 **Statistics:** Локальная база данных с историей эффективности каждого профиля.
+  * 🎨 **Premium UI:** Кастомное окно без рамок, неоновые акценты, тёмная/светлая темы и плавные анимации.
+</details>
+
+---
+
+## 📸 Interface
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><b>Dashboard</b></td>
+      <td align="center"><b>Profiles & Blockcheck</b></td>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/dashboard.png" width="400" alt="Dashboard" /></td>
+      <td><img src="docs/screenshots/profiles.png" width="400" alt="Profiles" /></td>
+    </tr>
+    <tr>
+      <td align="center"><b>Statistics & History</b></td>
+      <td align="center"><b>Settings</b></td>
+    </tr>
+    <tr>
+      <td><img src="docs/screenshots/stats.png" width="400" alt="Stats" /></td>
+      <td><img src="docs/screenshots/settings.png" width="400" alt="Settings" /></td>
+    </tr>
+  </table>
+</div>
+
+---
+
+## 🚀 Quick Start
+
+<div align="center">
+  <a href="https://github.com/F0RSES/zapret-muffin-gui/releases/latest">
+    <img src="https://img.shields.io/badge/⬇_Download_Latest_Release-100000?style=for-the-badge&logo=github&logoColor=white" alt="Download" />
+  </a>
+</div>
+
+### 🪟 Windows
+```powershell
+# 1. Скачайте Muffin-Setup.exe из раздела Releases
+# 2. Запустите установщик (требуются права администратора)
+# 3. Muffin сам скачает winws и WinDivert при первом запуске
+```
+
+### 🐧 Linux (Debian / Ubuntu / Kali)
+```bash
+# 1. Скачайте .deb пакет из Releases
+# 2. Установите его:
+sudo apt install ./muffin_x.x.x_amd64.deb
+```
+
+### 🦊 Arch Linux
+```bash
+git clone https://github.com/F0RSES/zapret-muffin-gui.git
+cd zapret-muffin-gui/packaging/arch
 makepkg -si
 ```
 
 ---
 
-## 📚 Источники zapret
+## 📦 Powered by
 
-Приложение скачивает оригинальные бинарники из официальных репозиториев:
-
-* **Для Windows:** `Flowseal/zapret-discord-youtube`
-* **Для Linux:** `bol-van/zapret`
-
-**Примечание для Linux:** Muffin использует портативный режим `nfqws`. Он не требует установки в систему, а сам управляет правилами `iptables` через `pkexec`. Оригинальные исходники `nfqws` берутся из релизов `bol-van`.
+Muffin не изменяет оригинальные бинарники. Приложение загружает их из официальных источников:
+* **Windows:** [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube)
+* **Linux:** [bol-van/zapret](https://github.com/bol-van/zapret)
 
 ---
 
-## 🛠️ Сборка из исходников (для разработчиков)
-
-### Требования
-
-* Qt 6.6+
-* CMake 3.21+
-* Компилятор (GCC 11+ для Linux / MSVC 2022 для Windows)
-
-### Сборка
+## 🛠️ Build from Source
 
 ```bash
+git clone https://github.com/F0RSES/zapret-muffin-gui.git
+cd zapret-muffin-gui
 ./scripts/build.sh
 ctest --output-on-failure
 ```
+* **Requirements:** Qt 6.6+, CMake 3.21+, C++20 Compiler (GCC 11+ / MSVC 2022).
 
 ---
 
-## 📄 Лицензия
+<div align="center">
+  <h3>⭐ Star History</h3>
+  <a href="https://star-history.com/#F0RSES/zapret-muffin-gui&Date">
+    <img src="https://api.star-history.com/svg?repos=F0RSES/zapret-muffin-gui&type=Date" alt="Star History Chart" />
+  </a>
+</div>
 
-Этот проект распространяется под лицензией MIT. Подробности в файле `LICENSE`.
+<br>
+
+<div align="center">
+  <i>Distributed under the MIT License. See <code>LICENSE</code> for more information.</i>
+</div>
