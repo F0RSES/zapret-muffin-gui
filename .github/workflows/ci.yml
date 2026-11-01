@@ -480,6 +480,15 @@ jobs:
             Warn "could not place the OpenSSL DLLs beside coretest.exe: $($_.Exception.Message)"
           }
 
+          # Mandatory, not cosmetic. For `shell: pwsh` the runner wraps a step as
+          #   $ErrorActionPreference = 'stop'; <this script>; if ((Test-Path -LiteralPath
+          #   variable:\LASTEXITCODE)) { exit $LASTEXITCODE }
+          # (actions/runner, ScriptHandlerHelpers.FixUpScriptContents), so once `choco` — a native
+          # command — has set a non-zero $LASTEXITCODE, the step's status is decided by that value no
+          # matter what the branches above concluded. That is what failed runs 131 and 132 while every
+          # path here was already non-fatal. The step states its own outcome explicitly instead.
+          exit 0
+
       - name: Test (fixture mode)
         env:
           QT_QPA_PLATFORM: offscreen
