@@ -84,7 +84,7 @@ $ muffin --status
       <td align="center"><b>Profiles & Blockcheck</b></td>
     </tr>
     <tr>
-      <td><img src="/home/norman/Pictures//dashboard.png" width="400" style="border-radius: 12px; border: 1px solid #2C2E3E;" alt="Dashboard" /></td>
+      <td><img src="docs/screenshots/dashboard.png" width="400" style="border-radius: 12px; border: 1px solid #2C2E3E;" alt="Dashboard" /></td>
       <td><img src="docs/screenshots/profiles.png" width="400" style="border-radius: 12px; border: 1px solid #2C2E3E;" alt="Profiles" /></td>
     </tr>
     <tr>
@@ -92,7 +92,7 @@ $ muffin --status
       <td align="center"><b>Settings</b></td>
     </tr>
     <tr>
-      <td><img src="docs/screenshots/stats.png" width="400" style="border-radius: 12px; border: 1px solid #2C2E3E;" alt="Stats" /></td>
+      <td><img src="docs/screenshots/logs.png" width="400" style="border-radius: 12px; border: 1px solid #2C2E3E;" alt="Stats" /></td>
       <td><img src="docs/screenshots/settings.png" width="400" style="border-radius: 12px; border: 1px solid #2C2E3E;" alt="Settings" /></td>
     </tr>
   </table>
