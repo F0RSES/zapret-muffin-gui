@@ -39,6 +39,13 @@ on:
 #     CMake prefix is taken from $QT_ROOT_DIR/lib/cmake, as the action's README recommends.
 #   - `cache: true` keys the automatic cache on version/host/target/arch, so it stays correct
 #     when the pinned version is bumped.
+#   - There is NO `ssl` input. Checked against action.yml at v4.4.1, whose inputs are dir, version,
+#     host, target, arch, install-deps, modules, archives, cache, cache-key-prefix, setup-python,
+#     tools, add-tools-to-path, set-env, no-qt-binaries, tools-only, aqtsource, aqtversion,
+#     py7zrversion, extra, source, src-archives, documentation, doc-archives, doc-modules, examples,
+#     example-archives, example-modules, use-official, email, pw — and nothing else. An unknown input
+#     is accepted silently and does nothing, so a `ssl: true` here would look like a fix and change
+#     nothing; OpenSSL is installed explicitly in the windows job instead.
 #
 # Tests run in fixture mode: forcing ZAPRET_TEST_TREE to a non-existent path makes coretest
 # generate a minimal zapret distribution tree (see tests/coretest.cpp), so the parser/locator
@@ -130,6 +137,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           ZAPRET_TEST_TREE: /tmp/not-a-zapret-tree
+          # Same rule as the windows job: the TLS tier must actually run here (this Qt uses the system
+          # OpenSSL), so a platform that cannot host the mock server is a red build, not a skip.
+          ZAPRET_REQUIRE_TLS_SERVER: 1
         # ctest's raw stdout is what tells us WHICH check failed, but the Actions log
         # behind that output needs repo-admin to download, and this project's owner is
         # running the agent without a token. Route every FAIL/info line the test binary
@@ -413,10 +423,50 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
+      - name: Install OpenSSL 3 for the TLS fixture
+        shell: pwsh
+        run: |
+          # coretest's TLS tier stands up a throwaway *server* and asserts what BlockcheckEngine makes of
+          # the certificate it presents. Qt can only serve TLS through OpenSSL: the Schannel plugin is
+          # client-only (qtls_schannel.cpp's TlsCryptographSchannel::createContext() asserts
+          # SslClientMode and only ever calls InitializeSecurityContext), so with no OpenSSL DLLs the
+          # mock server never answers and the probe ends as "TLS handshake failed: Network operation
+          # timed out" with certValid=true. That is a property of the runner, not of the engine, and it
+          # is what turned this job red.
+          #
+          # Pinned to OpenSSL 3 deliberately: Qt 6.7.3's openssl backend loads libssl-3-x64.dll and
+          # libcrypto-3-x64.dll, while Chocolatey's plain `openssl` is 4.x now and ships
+          # libssl-4-x64.dll. Qt refuses those and falls straight back to Schannel, which would restore
+          # the exact failure while looking installed.
+          choco install openssl --version=3.5.1 --no-progress -y --allow-downgrade
+
+          $candidates = @("$env:ProgramFiles\OpenSSL-Win64\bin",
+                          "${env:ProgramFiles(x86)}\OpenSSL-Win64\bin",
+                          "$env:ProgramFiles\OpenSSL\bin")
+          $src = $null
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir 'libssl-3-x64.dll')) { $src = $dir; break }
+          }
+          if (-not $src) { throw "OpenSSL 3 (libssl-3-x64.dll) not found; looked in: $($candidates -join ', ')" }
+
+          # Copy the pair beside the test executable instead of onto PATH. The application directory is
+          # first in Windows' DLL search order, so coretest.exe resolves them and nothing else in the job
+          # is affected -- in particular `windeployqt` below still deploys no OpenSSL, leaving the
+          # shipped Muffin on Schannel and the Windows certificate store, exactly as it is today.
+          New-Item -ItemType Directory -Force -Path build\Release | Out-Null
+          foreach ($dll in 'libssl-3-x64.dll', 'libcrypto-3-x64.dll') {
+            Copy-Item (Join-Path $src $dll) build\Release -Force
+          }
+          Get-ChildItem build\Release\lib*-3-x64.dll | Select-Object Name, Length | Format-Table
+
       - name: Test (fixture mode)
         env:
           QT_QPA_PLATFORM: offscreen
           ZAPRET_TEST_TREE: /tmp/not-a-zapret-tree
+          # The TLS tier is the engine's core verdict and this is the one platform whose default backend
+          # cannot host it, so a tier that skips here is a red build rather than a quiet loss of
+          # coverage. coretest prints the backend it loaded, and the skip message names it too.
+          ZAPRET_REQUIRE_TLS_SERVER: 1
         shell: bash
         # See the Linux job's note above — same annotation trick so the failing check
         # shows up in the public check-run annotation list rather than only in the

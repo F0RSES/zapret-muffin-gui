@@ -460,6 +460,77 @@ static bool pumpUntil(const std::function<bool()> &pred, int timeoutMs)
     return true;
 }
 
+// ---- TLS fixture capability ----
+//
+// The mock server above completes a *server-side* handshake, and not every Qt TLS backend can be a
+// server. Qt's Schannel plugin — what a Windows machine falls back to when no OpenSSL DLLs are
+// installed — cannot: qtls_schannel.cpp's TlsCryptographSchannel::createContext() asserts
+// `d->tlsMode() == QSslSocket::SslClientMode` and only ever calls InitializeSecurityContext, the SSPI
+// *client* call. startServerEncryption() there leaves the peer waiting for a Certificate message that
+// is never sent, and the engine then reports "TLS handshake failed: Network operation timed out" with
+// certValid still true. That is a platform limitation wearing the costume of an engine regression,
+// which is exactly how the Windows CI job read it.
+//
+// So the fixture proves itself before anything is asserted about the engine. VerifyNone because
+// verifying is the engine's job, not the fixture's: only the transport is under test here, and a
+// certificate verdict must never be what makes this probe fail.
+constexpr int kTlsSliceMs = 100;
+// A budget, not a delay: both loops leave the instant encryption completes, so this only bounds the
+// failure path. Sized for a cold CI runner, where the first handshake pays for certificate-store and
+// CSP initialisation before a single byte moves — a cost a warm local run never shows.
+constexpr int kTlsProbeBudgetMs = 8000;
+// Set by CI. There the TLS tier must actually execute, so a backend that cannot serve is a failure
+// rather than a skip; on a developer machine without OpenSSL it stays a skip, because the app itself
+// only ever acts as a TLS client.
+constexpr char kRequireTlsServerEnv[] = "ZAPRET_REQUIRE_TLS_SERVER";
+
+static bool tlsFixtureHandshakes(quint16 port, int budgetMs, QString *why)
+{
+    QSslSocket probe;
+    probe.setPeerVerifyMode(QSslSocket::VerifyNone);
+    probe.connectToHostEncrypted(QStringLiteral("127.0.0.1"), port);
+    QElapsedTimer clock;
+    clock.start();
+    // Loop on the clock rather than on the socket error: an expiring slice is not a verdict, and the
+    // one thing this probe must not do is mistake "slow" for "incapable". A peer that hung up is the
+    // only outcome worth leaving early for.
+    while (!probe.isEncrypted() && clock.elapsed() < budgetMs) {
+        probe.waitForEncrypted(kTlsSliceMs);
+        if (probe.state() == QAbstractSocket::UnconnectedState)
+            break;
+    }
+    if (probe.isEncrypted()) {
+        probe.disconnectFromHost();
+        return true;
+    }
+    if (why) {
+        *why = QStringLiteral("%1 after %2 ms")
+                   .arg(probe.errorString())
+                   .arg(clock.elapsed());
+    }
+    return false;
+}
+
+// Runs the self-check and decides what its failure means. true only when the server really accepted a
+// TLS session, so every caller that asserts against it is asserting against a proven fixture.
+static bool tlsFixtureReady(quint16 port)
+{
+    QString why;
+    if (tlsFixtureHandshakes(port, kTlsProbeBudgetMs, &why))
+        return true;
+    const QString what = QStringLiteral(
+        "the mock TLS server cannot complete a server-side handshake on this platform "
+        "(backend: %1, %2): %3")
+        .arg(QSslSocket::activeBackend(), QSslSocket::sslLibraryVersionString(), why);
+    if (qEnvironmentVariableIsSet(kRequireTlsServerEnv))
+        check(false, what);
+    else
+        out << "  SKIP  TLS server cases: " << what
+            << "\n        (the app only acts as a TLS client, so this does not limit it; "
+               "install OpenSSL 3 to run these)\n";
+    return false;
+}
+
 // Write a POSIX shell script and make it executable. Returns the path, or "" on any failure.
 //
 // Like writeFile, the parent is created: several fixtures live in their own subdirectory of a
@@ -4071,6 +4142,14 @@ int main(int argc, char **argv)
     if (!QSslSocket::supportsSsl()) {
         out << "  SKIP  TLS cases: this Qt build has no SSL backend\n";
     } else {
+        // Which backend Qt loaded decides what the fixture below can do (see tlsFixtureReady), and on
+        // any failure it is the first fact worth having. Printed rather than asserted: the app itself
+        // only ever acts as a TLS client, so Schannel is a perfectly good backend for *it* — this line
+        // exists so a failing run names its own platform instead of leaving the reader to guess.
+        out << "  TLS backend: " << QSslSocket::activeBackend() << " / "
+            << QSslSocket::sslLibraryVersionString() << " (available: "
+            << QSslSocket::availableBackends().join(QStringLiteral(", ")) << ")\n";
+
         const QSslCertificate cert(zaprettest::blockcheckTestCert(), QSsl::Pem);
         const QSslKey key(zaprettest::blockcheckTestKey(), QSsl::Rsa, QSsl::Pem);
         check(!cert.isNull(), "test certificate parses and is valid");
@@ -4084,7 +4163,11 @@ int main(int argc, char **argv)
                 // A server that cannot present the pair is a broken fixture; saying so here keeps the
                 // two verdicts below from being read as results about the engine.
                 check(false, "TLS mock server presents the test certificate pair");
-            } else {
+            } else if (tlsFixtureReady(tls.port())) {
+                // tlsFixtureReady() has already proved this server answers a TLS handshake, so both
+                // verdicts below are about the engine and nothing else. When it returns false it has
+                // already said why: a SKIP naming the backend, or a FAIL under CI's
+                // ZAPRET_REQUIRE_TLS_SERVER.
                 const int tlsPort = int(tls.port());
 
                 // 1) Untrusted (the substitution shape): the default CA store knows nothing about
@@ -4094,7 +4177,12 @@ int main(int argc, char **argv)
                 {
                     BlockcheckEngine e;
                     e.setAttempts(1);
-                    e.setAttemptTimeoutMs(4000);
+                    // The engine's own loop is a slice loop bounded by this value, so it is a total
+                    // budget rather than a per-wait timeout; the probe returns the moment the handshake
+                    // completes. Enlarged for CI, not for correctness: a cold Windows runner pays for
+                    // certificate-store and CSP setup on the first handshake, and a budget sized on a
+                    // warm laptop turns that one-off cost into a fake "handshake timed out".
+                    e.setAttemptTimeoutMs(kTlsProbeBudgetMs);
                     const HostCheckResult r = e.checkHost(QStringLiteral("127.0.0.1"), tlsPort, true);
                     // When the verdict does NOT come through the certificate channel, the text that
                     // displaced it is platform-specific and is the whole story — so state it in the log
@@ -4129,7 +4217,7 @@ int main(int argc, char **argv)
 
                     BlockcheckEngine e;
                     e.setAttempts(1);
-                    e.setAttemptTimeoutMs(4000);
+                    e.setAttemptTimeoutMs(kTlsProbeBudgetMs);
                     const HostCheckResult r = e.checkHost(QStringLiteral("127.0.0.1"), tlsPort, true);
                     check(r.success, "TLS handshake to a trusted cert succeeds the check");
                     check(r.isCertificateValid, "a trusted cert is reported certificate-valid");
