@@ -127,6 +127,9 @@ $ muffin --status
   ```bash
   sudo apt install ./muffin_x.x.x_amd64.deb
   ```
+
+  > **Для Ubuntu 24.04 / Linux Mint 22.x:** скачайте пакет с суффиксом `-ubuntu24.04.deb` —
+  > стандартный пакет собран против более новой версии Qt и на этих системах не запустится.
 </details>
 
 <details>

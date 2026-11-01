@@ -17,7 +17,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Network Widgets Test)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Network Widgets Test)
 
 # ---- zapret core library (no GUI) ------------------------------------------
 # Parsing/locating is QtCore-only. The execution backends + manager are pure QtCore (QProcess), and
@@ -377,11 +377,11 @@ set(CPACK_DEBIAN_PACKAGE_MAINTAINER "F0RSES")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/F0RSES/muffin-gui")
 set(CPACK_DEBIAN_PACKAGE_SECTION "net")
 # Minimum versions, not exact ones, and deliberately pinned above the distro archive: this project's
-# real floor is Qt 6.6+ (QPalette::Accent, QStyleHints::colorScheme) and CI builds against 6.7.3. A
-# plain "libqt6widgets6" would let apt resolve to the Ubuntu 22.04/24.04 Qt (6.2 / 6.4) and the binary
-# would then die at startup with unresolved symbols — worse than an install-time dependency error.
-# (An alternative that avoids the question entirely: ship an AppImage bundling Qt; not done yet.)
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6widgets6 (>= 6.7), libqt6network6 (>= 6.7), libqt6svg6 (>= 6.7)")
+# The binary is built against the Qt it was configured with. Declaring that exact runtime as the
+# dependency is what makes one package installable on a modern distro and the ubuntu24.04 package
+# installable on 6.4.2; the project floor itself is Qt 6.4.
+set(CPACK_DEBIAN_PACKAGE_DEPENDS
+    "libqt6widgets6 (>= ${Qt6_VERSION}), libqt6network6 (>= ${Qt6_VERSION}), libqt6svg6 (>= ${Qt6_VERSION})")
 
 # Debian wants the machine-readable architecture, and CMake's CMAKE_SYSTEM_PROCESSOR gives the kernel
 # name. Mapped explicitly so the file name is deterministic (muffin_0.1.0_amd64.deb) instead of

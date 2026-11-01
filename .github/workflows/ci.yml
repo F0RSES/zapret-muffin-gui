@@ -13,14 +13,16 @@ on:
 #   - ubuntu-latest is migrating to a newer Ubuntu shortly and its apt Qt would float with it,
 #   - windows-latest tracks the newest VS/Windows image; windows-2022 pins VS 2022.
 #
-# Qt is installed by jurplel/install-qt-action@v4.4.1 on BOTH platforms, pinned to the same
-# concrete 6.7.3 (no wildcards). The distro Qt from apt can no longer be used: the project's
-# real floor is Qt 6.6, not 6.2 —
-#   - QPalette::Accent            -> Qt 6.6  (src/ui/Theme.cpp:80)
-#   - QStyleHints::colorScheme()  -> Qt 6.5  (src/ui/Theme.cpp:121)
-#   - Qt::ColorScheme             -> Qt 6.5
-# Ubuntu 22.04 ships Qt 6.2.4, which has none of these (that is what broke the Linux job).
-# Using one installer on both runners also removes OS version drift: Linux and Windows now
+# Qt is installed by jurplel/install-qt-action@v4.4.1 on the main Linux and Windows
+# platforms, pinned to the same concrete 6.7.3 (no wildcards). The project's source floor is
+# Qt 6.4: APIs introduced later are guarded —
+#   - QPalette::Accent            -> Qt 6.6  (src/ui/Theme.cpp, #if)
+#   - QStyleHints::colorScheme()  -> Qt 6.5  (src/ui/Theme.cpp, #if; falls back to light)
+#   - QStyleHints::colorSchemeChanged -> Qt 6.5 (src/ui/MainWindow.cpp, #if)
+# Ubuntu 22.04's apt Qt is 6.2.4, still below that floor, which is why the main Linux job uses
+# the aqt install. The dedicated `linux-ubuntu2404` job deliberately uses the distro Qt 6.4.2
+# and produces the compatibility .deb for Ubuntu 24.04 / Mint 22.x.
+# Using one installer on both main build platforms also removes OS drift: Linux and Windows
 # compile against byte-identical headers, so an API that exists on one exists on the other.
 #
 # install-qt-action facts verified against the code it ships at tag v4.4.1:
@@ -339,6 +341,53 @@ jobs:
             packaging/muffin.svg
             README.md
             LICENSE
+
+  linux-ubuntu2404:
+    name: Linux (ubuntu-24.04, distro Qt 6.4.2)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5.1.0
+
+      # Deliberately the distribution Qt, not aqt: this job exists to prove and package the build that
+      # Ubuntu 24.04 / Mint 22.x users can run without adding a third-party Qt repository. The source
+      # guards every API newer than 6.4 (QPalette::Accent, QStyleHints::colorScheme*).
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-base-dev-tools libqt6svg6-dev \
+            libgl1-mesa-dev ninja-build cmake g++
+
+      - name: Configure
+        run: |
+          ver_args=()
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            ver_args+=("-DMUFFIN_VERSION=${GITHUB_REF_NAME#v}")
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "${ver_args[@]}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Build the .deb for Ubuntu 24.04
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          cpack -G DEB
+          shopt -s nullglob
+          debs=(muffin_*_amd64.deb)
+          (( ${#debs[@]} == 1 )) || { echo "expected one .deb, found ${#debs[@]}"; ls -la; exit 1; }
+          # Keep the standard package name untouched in the linux job; this suffix identifies the
+          # build that declares Qt 6.4.2 as its runtime dependency.
+          mv "${debs[0]}" "${debs[0]%.deb}-ubuntu24.04.deb"
+        working-directory: build
+
+      - name: Upload the Ubuntu 24.04 .deb
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4.4.3
+        with:
+          name: Muffin-deb-ubuntu24.04
+          path: build/*-ubuntu24.04.deb
+          if-no-files-found: error
 
   windows:
     name: Windows (windows-2022, Qt 6.7.3 MSVC)
@@ -753,8 +802,9 @@ jobs:
   # The release is what turns a tag into an installable artifact feed. It is deliberately a
   # separate job rather than a step inside `installer`: (a) installer runs on windows-2022 where
   # `gh release` upload would be a Windows-gh build for no reason, (b) the release needs to
-  # consume both the .deb (from linux) and the .exe (from installer) — only an aggregator can see
-  # both, and pinning it to linux keeps the tooling identical between the .deb and the release.
+  # consume both the standard .deb (from linux), the Ubuntu 24.04 compatibility .deb (from
+  # linux-ubuntu2404) and the .exe (from installer) — only an aggregator can see all of them,
+  # and pinning it to linux keeps the tooling identical between the packages and the release.
   #
   # `needs` covers everything the release must have: linux -> the .deb is verified & produced;
   # installer -> transitively needs windows, which runs ctest. So a green tag-run implies a
@@ -764,7 +814,7 @@ jobs:
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
-    needs: [linux, installer, arch] 
+    needs: [linux, linux-ubuntu2404, installer, arch]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -775,6 +825,12 @@ jobs:
         uses: actions/download-artifact@v4.3.0
         with:
           name: Muffin-deb-x64
+          path: rel
+
+      - name: Fetch the Ubuntu 24.04 .deb
+        uses: actions/download-artifact@v4.3.0
+        with:
+          name: Muffin-deb-ubuntu24.04
           path: rel
 
       - name: Fetch the installer
@@ -800,12 +856,12 @@ jobs:
           echo "exes: ${exes[*]:-<none>}"
           echo "pkgs: ${pkgs[*]:-<none>}"
 
-          (( ${#debs[@]} == 1 )) || { echo "expected exactly one .deb"; exit 1; }
+          (( ${#debs[@]} == 2 )) || { echo "expected two .deb files (standard + ubuntu24.04)"; exit 1; }
           (( ${#exes[@]} == 1 )) || { echo "expected exactly one .exe"; exit 1; }
           (( ${#pkgs[@]} == 1 )) || { echo "expected exactly one .pkg.tar.zst"; exit 1; }
 
           mkdir -p out
-          mv "${debs[0]}" "${exes[0]}" "${pkgs[0]}" out/
+          mv "${debs[@]}" "${exes[0]}" "${pkgs[0]}" out/
           chmod +r out/*    # Даем права на чтение, чтобы gh точно смог их загрузить
           ls -la out
 
@@ -829,10 +885,11 @@ jobs:
   # is the only place that exercises the PKGBUILD a user would actually run -- a broken recipe fails
   # here instead of on someone's machine.
   #
-  # It deliberately does NOT feed the `release` job: that job asserts exactly one .deb and one .exe,
-  # so wiring arch into its `needs` would add a gate it was never designed to satisfy. The .pkg.tar.zst
-  # is published as a standalone artifact on every run (including PRs), which is what keeps the recipe
-  # honest against the tree under test rather than only at tag time.
+  # It deliberately does NOT feed the `release` job: that job asserts exactly two .deb files
+  # (standard + ubuntu24.04) and one .exe, so wiring arch into its `needs` would add a gate it was
+  # never designed to satisfy. The .pkg.tar.zst is published as a standalone artifact on every run
+  # (including PRs), which is what keeps the recipe honest against the tree under test rather than
+  # only at tag time.
   #
   # The official archlinux image runs every step as root, but makepkg refuses to run as root by design
   # (a rogue PKGBUILD could clobber the system). Hence the split: pacman installs dependencies as root,

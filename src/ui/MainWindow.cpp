@@ -2013,12 +2013,14 @@ void MainWindow::wire()
         });
     });
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     if (QStyleHints *hints = QGuiApplication::styleHints()) {
         connect(hints, &QStyleHints::colorSchemeChanged, this, [this] {
             if (Theme::currentMode() == Theme::Mode::System)
                 scheduleThemeApply();
         });
     }
+#endif
 }
 
 void MainWindow::populateCards()
