@@ -47,7 +47,8 @@ public:
 
     // What Mode::System would resolve to right now. Built against Qt < 6.5 there is no platform
     // colour-scheme query (QStyleHints::colorScheme/Qt::ColorScheme arrived in 6.5), so this reports
-    // false (light) instead of guessing — see the compatibility build for Ubuntu 24.04 (Qt 6.4.2).
+    // false (light) instead of guessing — see the `-ubuntu24.04` package, which is built against
+    // Qt 6.2.4 for hosts whose stock Qt is 6.4.2.
     static bool systemPrefersDark();
 
     static QString styleSheet(bool dark);

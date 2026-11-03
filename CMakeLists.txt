@@ -5,9 +5,12 @@ project(Muffin LANGUAGES CXX)
 # top, because two sections below need it: the executable target is built with it as a compile
 # definition, and CPack uses it for the package version. A CACHE variable so a tag can override it
 # without editing this file: the release job passes -DMUFFIN_VERSION="${tag without the leading v}",
-# which is what keeps muffin_<ver>_amd64.deb, Muffin-Setup-<ver>.exe and the tag themselves in
-# agreement. The default is the current release line, so local `cmake`/`cpack` runs still produce
-# sensibly named files and a helper that reports a real version.
+# which is what keeps the shipped file names — muffin_<ver>_amd64-generic.deb,
+# muffin_<ver>_amd64-ubuntu24.04.deb, Muffin-Setup-<ver>.exe, muffin-<ver>-<pkgrel>-x86_64.pkg.tar.zst
+# — and the tag itself in agreement. (CPack mints the first as muffin_<ver>_amd64.deb; the two Linux
+# jobs append their suffix afterwards, because the suffix is what tells a user which one to install.)
+# The default is the current release line, so local `cmake`/`cpack` runs still produce sensibly named
+# files and a helper that reports a real version.
 set(MUFFIN_VERSION "1.0.1" CACHE STRING "Version stamped into the generated packages")
 
 # ---- Qt6 -------------------------------------------------------------------
@@ -17,7 +20,22 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Network Widgets Test)
+# The floor is Qt 6.2, not "whatever the developer happens to have". Two of the four shipped packages
+# are built against a much older Qt than the main one: Ubuntu 24.04 and Linux Mint 22.x carry Qt 6.4.2
+# in their own archive and cannot be told to add a third-party repository, so the `-ubuntu24.04`
+# package is compiled against Qt 6.2.4 and declares only `libqt6*6 (>= 6.2.4)` — a bound 6.4.2
+# satisfies with room to spare (see CPACK_DEBIAN_PACKAGE_DEPENDS at the bottom of this file, which
+# takes the number from this exact find_package call).
+#
+# Every API newer than this floor therefore sits behind a QT_VERSION guard, and they are listed here so
+# that raising the floor is a one-line change with a complete inventory of what may be un-guarded:
+#   - QStyleHints::colorScheme()            -> Qt 6.5  (src/ui/Theme.cpp; falls back to light)
+#     QStyleHints::colorSchemeChanged, Qt::ColorScheme -> Qt 6.5 (src/ui/MainWindow.cpp)
+#   - QPalette::Accent                      -> Qt 6.6  (src/ui/Theme.cpp; the accent still arrives
+#                                                       through QPalette::Highlight without it)
+#   - QProcess::setCreateProcessArgumentsModifier -> Qt 5.7, guarded at 6.6 for the Windows-only
+#     console-hiding path (src/platform/WindowsBackend.cpp)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Network Widgets Test)
 
 # ---- zapret core library (no GUI) ------------------------------------------
 # Parsing/locating is QtCore-only. The execution backends + manager are pure QtCore (QProcess), and
@@ -363,9 +381,9 @@ endif()
 
 # ---- packaging (CPack) ------------------------------------------------------
 # MUFFIN_VERSION — the version stamped into the packages — is set once, at the top of this file, so the
-# root helper target and CPack can never be told two different things. The release job overrides it
-# with -DMUFFIN_VERSION="${tag without the leading v}", which is what keeps muffin_<ver>_amd64.deb,
-# Muffin-Setup-<ver>.exe and the tag themselves in agreement.
+# root helper target and CPack can never be told two different things. The release job overrides it with
+# -DMUFFIN_VERSION="${tag without the leading v}", and every shipped file name is derived from it, so
+# the four artifacts, the version each binary reports and the git tag cannot disagree.
 
 set(CPACK_PACKAGE_NAME "muffin")
 set(CPACK_PACKAGE_VENDOR "F0RSES")
@@ -376,10 +394,13 @@ set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "F0RSES")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/F0RSES/muffin-gui")
 set(CPACK_DEBIAN_PACKAGE_SECTION "net")
-# Minimum versions, not exact ones, and deliberately pinned above the distro archive: this project's
-# The binary is built against the Qt it was configured with. Declaring that exact runtime as the
-# dependency is what makes one package installable on a modern distro and the ubuntu24.04 package
-# installable on 6.4.2; the project floor itself is Qt 6.4.
+# Minimum versions, not exact ones, and taken from the Qt this tree was actually configured against —
+# which is what keeps each of the two Linux packages honest about itself instead of guessing:
+#   - the `generic` .deb is built against Qt 6.7.3 and declares >= 6.7.3, so it installs on a modern
+#     distro and refuses an old one loudly instead of dying on a missing symbol at run time;
+#   - the `-ubuntu24.04` .deb is built against Qt 6.2.4 and declares >= 6.2.4, which the stock 6.4.2
+#     of Ubuntu 24.04 / Mint 22.x satisfies.
+# The project's own source floor is Qt 6.2 — see find_package(Qt6 6.2 ...) near the top.
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
     "libqt6widgets6 (>= ${Qt6_VERSION}), libqt6network6 (>= ${Qt6_VERSION}), libqt6svg6 (>= ${Qt6_VERSION})")
 

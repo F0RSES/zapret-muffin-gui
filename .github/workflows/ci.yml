@@ -8,22 +8,41 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Two separate jobs (not a matrix) so a single OS can be re-run independently while the
-# Windows MSVC path is still being debugged. Runner images are pinned explicitly:
-#   - ubuntu-latest is migrating to a newer Ubuntu shortly and its apt Qt would float with it,
-#   - windows-latest tracks the newest VS/Windows image; windows-2022 pins VS 2022.
+# The artifact matrix is four packages, and the reason it is four rather than two is the Qt a host has:
 #
-# Qt is installed by jurplel/install-qt-action@v4.4.1 on the main Linux and Windows
-# platforms, pinned to the same concrete 6.7.3 (no wildcards). The project's source floor is
-# Qt 6.4: APIs introduced later are guarded —
-#   - QPalette::Accent            -> Qt 6.6  (src/ui/Theme.cpp, #if)
-#   - QStyleHints::colorScheme()  -> Qt 6.5  (src/ui/Theme.cpp, #if; falls back to light)
-#   - QStyleHints::colorSchemeChanged -> Qt 6.5 (src/ui/MainWindow.cpp, #if)
-# Ubuntu 22.04's apt Qt is 6.2.4, still below that floor, which is why the main Linux job uses
-# the aqt install. The dedicated `linux-ubuntu2404` job deliberately uses the distro Qt 6.4.2
-# and produces the compatibility .deb for Ubuntu 24.04 / Mint 22.x.
-# Using one installer on both main build platforms also removes OS drift: Linux and Windows
-# compile against byte-identical headers, so an API that exists on one exists on the other.
+#   job                 runner         Qt        artifact
+#   ------------------  -------------  --------  ---------------------------------------------
+#   windows + installer windows-2022   6.7.3     Muffin-Setup-<ver>.exe
+#   linux               ubuntu-22.04   6.7.3     muffin_<ver>_amd64-generic.deb
+#   linux-ubuntu2404    ubuntu-24.04   6.2.4     muffin_<ver>_amd64-ubuntu24.04.deb
+#   arch                archlinux      distro    muffin-<ver>-1-x86_64.pkg.tar.zst
+#   release             ubuntu-22.04   -         the GitHub Release carrying all four
+#
+# The two .deb files exist because one binary cannot serve both ends of the Ubuntu range. A package whose
+# CPack dependency says "libqt6widgets6 (>= 6.7.3)" is the right thing for Debian testing, Kali and
+# Ubuntu 22.04-class hosts, and is unusable on Ubuntu 24.04 or Mint 22.x, whose own archive stops at
+# Qt 6.4.2 and which cannot be asked to add a third-party Qt repository for one GUI. So the
+# `-ubuntu24.04` job compiles the same sources against Qt 6.2.4 and ships a package that declares
+# ">= 6.2.4" — a bound the stock 6.4.2 satisfies. The source floor in CMakeLists.txt is Qt 6.2 for
+# exactly this reason, and every later API is behind a QT_VERSION guard (the full inventory is in that
+# find_package comment, not here, so the two cannot drift). The two file names are what a user picks
+# between, so they are also what the `release` job asserts.
+#
+# Windows takes two runners on purpose, and that is the one place this file is not a flat matrix:
+# `windows` builds and tests with MSVC, `installer` packages that build with Inno Setup. ISCC is
+# Delphi and Windows-only, it is tag-gated (a PR has no business spending a Windows runner on it), and
+# the payload is deliberately validated *before* it is packaged — folding it into `windows` would move a
+# 300-line Windows-only step onto every PR run and lose that gate.
+#
+# Runner images are pinned explicitly: ubuntu-latest is migrating to a newer Ubuntu and its apt Qt would
+# float with it, and windows-latest tracks the newest VS/Windows image while windows-2022 pins VS 2022.
+#
+# Qt comes from jurplel/install-qt-action@v4.4.1 on the three jobs that need a specific version, pinned
+# to a concrete release (no wildcards): 6.7.3 on Linux and Windows for the main packages, 6.2.4 on
+# `linux-ubuntu2404` for the compatibility one. Pinning the same 6.7.3 on both main platforms removes
+# OS drift — Linux and Windows compile against byte-identical headers, so an API that exists on one
+# exists on the other. The `arch` job deliberately uses the distro's qt6-base instead: that is the
+# recipe a real Arch user runs, and a clean container is the only honest place to test it.
 #
 # install-qt-action facts verified against the code it ships at tag v4.4.1:
 #   - `modules` is deliberately ABSENT. It names aqtinstall add-on modules; an unknown name
@@ -54,18 +73,18 @@ on:
 # platform plugin, which CMakeLists.txt locates via ${Qt6_DIR}/../../../plugins/platforms —
 # for an aqt install that resolves to $QT_ROOT_DIR/plugins/platforms, where the plugin really is.
 #
-# Packaging lives partly inside the two build jobs and partly in a fifth one:
-#   - The .deb is produced at the tail of the `linux` job. CPack needs the same build tree that
-#     just ran ctest, and dpkg-deb is available everywhere Ubuntu is, so a dedicated job would
-#     only re-install Qt and re-run cmake for no benefit.
-#   - The .exe cannot live in the `windows` job because Inno Setup's compiler (ISCC) is
-#     Delphi/Windows-only and the payload has to be validated before it is packaged; a separate
-#     `installer` job makes that gate explicit.
-#   - `release` is tag-gated and needs both packaging jobs, so a release is never published from
-#     a commit whose tests did not pass. See the two jobs at the bottom of this file.
-# Every packaging step reads MUFFIN_VERSION / AppVersion from the tag itself (Configure here,
-# ISCC in the installer job), which is what keeps the .deb file name, the .exe file name and the
-# git tag in agreement.
+# Packaging lives inside the build jobs rather than in one aggregator, because every packager wants the
+# build tree that just passed ctest on the machine that produced it:
+#   - the two .debs are CPack's, at the tail of `linux` and `linux-ubuntu2404`, where dpkg-deb exists —
+#     a dedicated job would only re-install Qt and re-run cmake for no benefit;
+#   - the .exe is ISCC's, in the tag-gated `installer` job that packages the artifact `windows`
+#     uploaded, and only after checking that the artifact really contains a runnable payload;
+#   - the .pkg.tar.zst is makepkg's, inside `arch`, which runs on every push (including PRs) so the
+#     recipe cannot rot between releases.
+# `release` is tag-gated and needs all four, so a release is never published from a commit whose tests
+# did not pass. Every packaging step reads MUFFIN_VERSION / AppVersion from the tag itself (Configure
+# here, ISCC in `installer`), which is what keeps the file names, the binaries' self-reported version and
+# the git tag in agreement — and `release` re-asserts that agreement on the four names it receives.
 
 jobs:
   linux:
@@ -120,8 +139,10 @@ jobs:
       - name: Configure
         # MUFFIN_VERSION is only stamped when this is a release tag: on a PR/branch build the
         # default in CMakeLists.txt is fine (and cpack is skipped below anyway). Stripping the
-        # leading `v` is what makes muffin_<tag-without-v>_amd64.deb line up with the tag name,
-        # matching what `installer` does for the .exe.
+        # leading `v` is what makes CPack's muffin_<tag-without-v>_amd64.deb line up with the tag,
+        # and the `-generic` suffix the next step appends is what tells this package apart from the
+        # `-ubuntu24.04` one — `release` accepts exactly those two names and no others.
+        # `installer` derives AppVersion from the same tag for the .exe.
         run: |
           ver_args=()
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
@@ -258,9 +279,25 @@ jobs:
       # CPack runs against the tree that just passed ctest; the DEB generator is auto-selected in
       # CMakeLists.txt because dpkg-deb is present on ubuntu-22.04. Pinning -G DEB here anyway so a
       # future change to the auto-default cannot silently turn the release into a TGZ.
+      #
+      # The rename is not cosmetic. Two Linux packages ship and a user chooses between them by name: this
+      # one carries the Qt 6.7.3 build, so it is the `-generic` package, and `linux-ubuntu2404` produces
+      # `…-ubuntu24.04.deb` from the same CPack recipe. Leaving this as `muffin_<ver>_amd64.deb` would
+      # make the two artifacts differ only by the presence of a suffix — the exact ambiguity that makes a
+      # user on 24.04 install the wrong one.
       - name: Build the .deb
         if: startsWith(github.ref, 'refs/tags/v')
-        run: cpack -G DEB
+        run: |
+          set -euo pipefail
+          cpack -G DEB
+          shopt -s nullglob
+          debs=(muffin_*_amd64.deb)
+          (( ${#debs[@]} == 1 )) || { echo "expected one .deb, found ${#debs[@]}"; ls -la; exit 1; }
+          # Exact, so a version-threading slip in CPack fails here rather than at `release`.
+          want="muffin_${GITHUB_REF_NAME#v}_amd64.deb"
+          [ "${debs[0]}" = "$want" ] \
+            || { echo "CPack produced ${debs[0]}, expected $want"; exit 1; }
+          mv "${debs[0]}" "${debs[0]%.deb}-generic.deb"
         working-directory: build
 
       # Verify the .deb actually contains what we claim. CPack would happily produce an empty or
@@ -269,7 +306,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
-          expected="muffin_${GITHUB_REF_NAME#v}_amd64.deb"
+          expected="muffin_${GITHUB_REF_NAME#v}_amd64-generic.deb"
           if [[ ! -f "build/$expected" ]]; then
             echo "expected build/$expected, found:"; ls -la build/*.deb || true
             exit 1
@@ -280,6 +317,12 @@ jobs:
           grep -q "^Package: muffin$"                /tmp/deb-control
           grep -q "^Version: ${GITHUB_REF_NAME#v}$"  /tmp/deb-control
           grep -q "^Architecture: amd64$"            /tmp/deb-control
+          # The Qt this package was built against, and therefore the hosts it will install on. It is the
+          # entire difference between the two .deb files, so it is asserted rather than assumed: if the
+          # aqt install ever resolved a different version, the file name would still say "generic" while
+          # the dependency described a runtime only a modern host can offer.
+          grep -qF 'libqt6widgets6 (>= 6.7.3)' /tmp/deb-control \
+            || { echo "the generic .deb does not declare Qt >= 6.7.3"; cat /tmp/deb-control; exit 1; }
           # Payload: binary + desktop entry + themed icon (see install() rules in CMakeLists.txt).
           dpkg-deb -c "build/$expected" > /tmp/deb-list
           grep -q './usr/bin/Muffin$'                                   /tmp/deb-list
@@ -352,20 +395,43 @@ jobs:
             README.md
             LICENSE
 
+  # The compatibility half of the Linux matrix: the same sources compiled against Qt 6.2.4 so the
+  # package installs on hosts whose own Qt stops at 6.4.2 (Ubuntu 24.04, Linux Mint 22.x). It is also
+  # the only job that proves the source floor is real — a `#if QT_VERSION` guard that rotted would fail
+  # to compile here and nowhere else — which is why it runs ctest like `linux` does instead of merely
+  # building.
   linux-ubuntu2404:
-    name: Linux (ubuntu-24.04, distro Qt 6.4.2)
+    name: Linux (ubuntu-24.04, Qt 6.2.4)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5.1.0
 
-      # Deliberately the distribution Qt, not aqt: this job exists to prove and package the build that
-      # Ubuntu 24.04 / Mint 22.x users can run without adding a third-party Qt repository. The source
-      # guards every API newer than 6.4 (QPalette::Accent, QStyleHints::colorScheme*).
+      # aqt's 6.2.4 — deliberately not the distro's 6.4.2, and deliberately not the 6.7.3 `linux` uses.
+      # The version IS the deliverable: CPACK_DEBIAN_PACKAGE_DEPENDS is generated from whatever
+      # find_package(Qt6) resolved, so this pin is what turns into "libqt6widgets6 (>= 6.2.4)" inside the
+      # .deb — a bound the stock 6.4.2 satisfies, where the generic package's ">= 6.7.3" it cannot.
+      #
+      # Unlike the main jobs this one is validated on every push and PR, so a Qt change that breaks the
+      # 6.2 path surfaces on `main` long before a tag exists.
+      #
+      # If 6.2.4 ever stops being published for linux_gcc_64, the fallback is to move this job to
+      # runs-on: ubuntu-22.04 keeping the same pin: the .deb then requires glibc 2.35 instead of 2.39,
+      # which still installs on 24.04, and the declared runtime dependency is unchanged. Do NOT fall back
+      # to the distro Qt here — that would quietly raise the dependency to 6.4.2 and make the two Linux
+      # packages promise the same thing.
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: '6.2.4'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y qt6-base-dev qt6-base-dev-tools libqt6svg6-dev \
-            libgl1-mesa-dev ninja-build cmake g++
+          sudo apt-get install -y ninja-build cmake g++ libgl1-mesa-dev
 
       - name: Configure
         run: |
@@ -373,10 +439,46 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             ver_args+=("-DMUFFIN_VERSION=${GITHUB_REF_NAME#v}")
           fi
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "${ver_args[@]}"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR/lib/cmake" "${ver_args[@]}"
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Test (fixture mode)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          ZAPRET_TEST_TREE: /tmp/not-a-zapret-tree
+        # ZAPRET_REQUIRE_TLS_SERVER is deliberately absent here, unlike in `linux` and `windows`. That
+        # flag turns "this platform cannot host the mock TLS server" into a red build, which is right
+        # when the Qt is known to load OpenSSL — and wrong here, where it would gate the compatibility
+        # package on a Qt 6.2.4 QSslSocket that may legitimately report a SKIP naming its backend, since
+        # Ubuntu 24.04 ships only OpenSSL 3. The TLS coverage itself is still enforced, by the two jobs
+        # whose Qt is known good; what this job exists to prove is the 6.2 source floor, and it proves it
+        # by compiling and running the same suite.
+        #
+        # Same annotation trick as `linux`: the raw Actions log is admin-gated while a check-run
+        # annotation is not, so every FAIL/info line the binary printed is re-emitted as ::error:: and the
+        # step still exits with ctest's own code.
+        run: |
+          set +e
+          ctest --test-dir build --output-on-failure > ctest.log 2>&1
+          rc=$?
+          set -e
+          cat ctest.log
+          if [ "$rc" -ne 0 ]; then
+            awk '
+              /^  (FAIL|info )/ {
+                line = $0
+                gsub(/%/, "%25", line); gsub(/\r/, "%0D", line)
+                print "::error::" line
+              }
+            ' ctest.log
+            grep -E 'Test #|tests passed|tests failed|The following tests' ctest.log \
+              | sed 's/%/%25/g; s/\r/%0D/g' \
+              | awk '{ print "::error::" $0 }'
+            exit "$rc"
+          fi
 
       - name: Build the .deb for Ubuntu 24.04
         if: startsWith(github.ref, 'refs/tags/v')
@@ -386,8 +488,28 @@ jobs:
           shopt -s nullglob
           debs=(muffin_*_amd64.deb)
           (( ${#debs[@]} == 1 )) || { echo "expected one .deb, found ${#debs[@]}"; ls -la; exit 1; }
-          # Keep the standard package name untouched in the linux job; this suffix identifies the
-          # build that declares Qt 6.4.2 as its runtime dependency.
+          want="muffin_${GITHUB_REF_NAME#v}_amd64.deb"
+          [ "${debs[0]}" = "$want" ] || { echo "CPack produced ${debs[0]}, expected $want"; exit 1; }
+
+          # The dependency is the reason this job exists, so it is read back out of the built package
+          # instead of trusted. A 6.7.3 here means the aqt install did not take effect — a cached prefix,
+          # or a distro Qt winning the find_package race — and the package would then refuse to install
+          # on the very distro it is named after.
+          dpkg-deb -f "${debs[0]}" Depends | tee /tmp/deb-depends
+          grep -qF 'libqt6widgets6 (>= 6.2.4)' /tmp/deb-depends \
+            || { echo "${debs[0]} does not declare Qt >= 6.2.4 -- this build did not use Qt 6.2.4"; exit 1; }
+
+          # Payload parity with the generic package: the two binaries, the desktop entry, the hicolor
+          # icon. $NF is the path column of `dpkg-deb -c`, so this anchors on the last field rather than
+          # on a substring a longer file name could satisfy.
+          dpkg-deb -c "${debs[0]}" > /tmp/deb-list
+          for path in usr/bin/Muffin usr/lib/muffin/muffin-install-helper \
+                      usr/share/applications/muffin.desktop \
+                      usr/share/icons/hicolor/scalable/apps/muffin.svg; do
+            awk -v p="./$path" '$NF == p { found = 1 } END { exit !found }' /tmp/deb-list \
+              || { echo "the compatibility deb is missing ./$path"; exit 1; }
+          done
+
           mv "${debs[0]}" "${debs[0]%.deb}-ubuntu24.04.deb"
         working-directory: build
 
@@ -875,18 +997,17 @@ jobs:
           path: pkg/*.exe
           if-no-files-found: error
 
-  # The release is what turns a tag into an installable artifact feed. It is deliberately a
-  # separate job rather than a step inside `installer`: (a) installer runs on windows-2022 where
-  # `gh release` upload would be a Windows-gh build for no reason, (b) the release needs to
-  # consume both the standard .deb (from linux), the Ubuntu 24.04 compatibility .deb (from
-  # linux-ubuntu2404) and the .exe (from installer) — only an aggregator can see all of them,
-  # and pinning it to linux keeps the tooling identical between the packages and the release.
+  # The release is what turns a tag into an installable artifact feed. It is deliberately a separate
+  # job rather than a step inside one of the builders: (a) `installer` runs on windows-2022, where a
+  # `gh release` upload would be a Windows-gh build for no reason; (b) it has to consume all four
+  # packages — both .debs (from linux, linux-ubuntu2404), the .exe (from installer) and the
+  # .pkg.tar.zst (from arch) — and only an aggregator can see all of them, while pinning it to Linux
+  # keeps the tooling identical to the one that verified them.
   #
-  # `needs` covers everything the release must have: linux -> the .deb is verified & produced;
-  # installer -> transitively needs windows, which runs ctest. So a green tag-run implies a
-  # passing test suite for both platforms before the release exists. `gh release create` will
-  # fail cleanly if the tag already has a release, which is the desired behaviour — never
-  # overwrite a shipped artifact.
+  # `needs` covers everything the release must have, and each of the four ran ctest (installer
+  # transitively through windows), so a green tag run implies a passing suite on both platforms and at
+  # both ends of the Qt range before the release exists. `gh release create` fails cleanly if the tag
+  # already carries a release, which is the desired behaviour — never overwrite a shipped artifact.
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
@@ -924,21 +1045,48 @@ jobs:
       - name: Check the payload
         run: |
           set -euo pipefail
-          mapfile -t debs < <(find rel -maxdepth 2 -name '*.deb' -type f)
-          mapfile -t exes < <(find rel -maxdepth 2 -name '*.exe' -type f)
-          mapfile -t pkgs < <(find rel -maxdepth 2 -name '*.pkg.tar.zst' -type f)
+          ver="${GITHUB_REF_NAME#v}"
 
-          echo "debs: ${debs[*]:-<none>}"
-          echo "exes: ${exes[*]:-<none>}"
-          echo "pkgs: ${pkgs[*]:-<none>}"
+          # Exactly four artefacts, named exactly as the matrix at the top of this file promises. The
+          # count alone is not enough: two .deb files that were both built against the same Qt would
+          # still be two files, while claiming to be one release to a user who has to pick between them
+          # by name. The names are therefore what is asserted, and anything unexpected fails here — before
+          # a release exists — instead of being uploaded and explained afterwards.
+          mapfile -t present < <(find rel -maxdepth 2 -type f | sort)
+          (( ${#present[@]} == 4 )) || {
+            printf 'expected 4 files in the artifact set, found %d:\n%s\n' \
+              "${#present[@]}" "${present[*]:-<none>}"
+            exit 1
+          }
 
-          (( ${#debs[@]} == 2 )) || { echo "expected two .deb files (standard + ubuntu24.04)"; exit 1; }
-          (( ${#exes[@]} == 1 )) || { echo "expected exactly one .exe"; exit 1; }
-          (( ${#pkgs[@]} == 1 )) || { echo "expected exactly one .pkg.tar.zst"; exit 1; }
-
+          generic="muffin_${ver}_amd64-generic.deb"
+          compat="muffin_${ver}_amd64-ubuntu24.04.deb"
+          setup="Muffin-Setup-${ver}.exe"
           mkdir -p out
-          mv "${debs[@]}" "${exes[0]}" "${pkgs[0]}" out/
+          for want in "$generic" "$compat" "$setup"; do
+            f="$(find rel -maxdepth 2 -type f -name "$want" -print -quit)"
+            [ -n "$f" ] || { echo "missing $want -- present: ${present[*]}"; exit 1; }
+            mv "$f" out/
+          done
+
+          # The Arch package is the only name CPack does not mint: pacman derives it from pkgver in
+          # packaging/arch/PKGBUILD, a separate number from the tag. So the version part is held to the
+          # tag — a package labelled 1.0.1 under a v1.0.2 release is a lie every other check here would
+          # happily pass — while pkgrel is left free, because a rebuild legitimately bumps only that.
+          mapfile -t pkgs < <(find rel -maxdepth 2 -type f -name '*.pkg.tar.zst')
+          (( ${#pkgs[@]} == 1 )) || { echo "expected exactly one .pkg.tar.zst, found ${#pkgs[@]}"; exit 1; }
+          base="${pkgs[0]##*/}"
+          [[ "$base" =~ ^muffin-${ver//./\\.}-[0-9]+-x86_64\.pkg\.tar\.zst$ ]] || {
+            echo "unexpected Arch package name: $base"
+            echo "expected muffin-${ver}-<pkgrel>-x86_64.pkg.tar.zst;"
+            echo "bump pkgver in packaging/arch/PKGBUILD if the tag moved"
+            exit 1
+          }
+          mv "${pkgs[0]}" out/
+
           chmod +r out/*    # Даем права на чтение, чтобы gh точно смог их загрузить
+          (( $(find out -maxdepth 1 -type f | wc -l) == 4 )) \
+            || { echo "the release payload is not exactly four files"; ls -la out; exit 1; }
           ls -la out
 
       - name: Create the release
@@ -961,11 +1109,11 @@ jobs:
   # is the only place that exercises the PKGBUILD a user would actually run -- a broken recipe fails
   # here instead of on someone's machine.
   #
-  # It deliberately does NOT feed the `release` job: that job asserts exactly two .deb files
-  # (standard + ubuntu24.04) and one .exe, so wiring arch into its `needs` would add a gate it was
-  # never designed to satisfy. The .pkg.tar.zst is published as a standalone artifact on every run
-  # (including PRs), which is what keeps the recipe honest against the tree under test rather than
-  # only at tag time.
+  # It DOES feed `release`, as the fourth package, and the .pkg.tar.zst is uploaded as a standalone
+  # artifact on every run (PRs included) while `release` itself only exists on a tag — so the recipe is
+  # exercised against every commit, and a tag run reuses what a green PR run already validated. The
+  # gate that keeps the two honest lives in `release`: it holds the package's version to the tag (see
+  # Check the payload), because pkgver here is a separate number from the tag.
   #
   # The official archlinux image runs every step as root, but makepkg refuses to run as root by design
   # (a rogue PKGBUILD could clobber the system). Hence the split: pacman installs dependencies as root,

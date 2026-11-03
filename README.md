@@ -18,7 +18,7 @@
   <br>
   <img src="https://img.shields.io/badge/Platform-Windows_%7C_Linux_%7C_Arch-15161C?style=flat-square" alt="Platforms" />
   <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=c%2B%2B" alt="C++20" />
-  <img src="https://img.shields.io/badge/Qt-6.6+-41CD52?style=flat-square&logo=qt" alt="Qt6" />
+  <img src="https://img.shields.io/badge/Qt-6.2+-41CD52?style=flat-square&logo=qt" alt="Qt6" />
   <br><br>
 </div>
 
@@ -122,14 +122,41 @@ $ muffin --status
 <details>
   <summary><b>🐧 Linux Installation (Debian / Ubuntu / Kali)</b></summary>
   <br>
-  
-  Download the `.deb` package from Releases and install it via terminal:
+
+  Two `.deb` packages are published and they are **not** interchangeable — they differ in the Qt version
+  they were compiled against, and that decides which systems they install on:
+
+  <table>
+    <tr>
+      <th align="left">Your system</th>
+      <th align="left">Package</th>
+      <th align="left">Built with</th>
+    </tr>
+    <tr>
+      <td><b>Kali / Debian / Ubuntu 22.04</b></td>
+      <td><code>muffin_x.x.x_amd64-generic.deb</code></td>
+      <td>Qt 6.7.3 — needs <code>libqt6*6 &gt;= 6.7.3</code></td>
+    </tr>
+    <tr>
+      <td><b>Ubuntu 24.04 / Linux Mint 22.x</b></td>
+      <td><code>muffin_x.x.x_amd64-ubuntu24.04.deb</code></td>
+      <td>Qt 6.2.4 — accepts the stock Qt 6.4.2</td>
+    </tr>
+  </table>
+
   ```bash
-  sudo apt install ./muffin_x.x.x_amd64.deb
+  # Kali / Debian / Ubuntu 22.04 and anything with a recent Qt:
+  sudo apt install ./muffin_x.x.x_amd64-generic.deb
+
+  # Ubuntu 24.04 / Linux Mint 22.x (their archive stops at Qt 6.4.2):
+  sudo apt install ./muffin_x.x.x_amd64-ubuntu24.04.deb
   ```
 
-  > **Для Ubuntu 24.04 / Linux Mint 22.x:** скачайте пакет с суффиксом `-ubuntu24.04.deb` —
-  > стандартный пакет собран против более новой версии Qt и на этих системах не запустится.
+  > **Почему два пакета.** Обновляться до Qt 6.7 ради одного приложения — не то, чего стоит требовать
+  > от системы. Поэтому `generic` собран против Qt 6.7.3 и честно объявляет зависимость
+  > `libqt6*6 (>= 6.7.3)`, а `-ubuntu24.04` собран против Qt 6.2.4 и объявляет `>= 6.2.4` — этому
+  > требованию стоковый Qt 6.4.2 в Ubuntu 24.04 и Mint 22.x удовлетворяет. Поставив не тот пакет, вы
+  > получите отказ от `apt` с внятным сообщением о зависимости, а не падение при запуске.
 </details>
 
 <details>
@@ -149,7 +176,7 @@ $ muffin --status
 ## 🛠️ Build from Source
 
 ```bash
-# Requirements: Qt 6.6+, CMake 3.21+, GCC 11+ / MSVC 2022
+# Requirements: Qt 6.2+, CMake 3.21+, GCC 11+ / MSVC 2022
 git clone https://github.com/F0RSES/zapret-muffin-gui.git
 cd zapret-muffin-gui
 ./scripts/build.sh

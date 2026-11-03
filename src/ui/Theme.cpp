@@ -106,7 +106,8 @@ void Theme::apply(QApplication &app, Theme::Mode mode)
 
     QPalette pal = paletteFor(dark);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
-    // QPalette::Accent arrived in Qt 6.6. Qt 6.4 (Ubuntu 24.04) already gets the accent through
+    // QPalette::Accent arrived in Qt 6.6. Everything below that — the stock Qt 6.4.2 of Ubuntu 24.04 and
+    // the Qt 6.2.4 the `-ubuntu24.04` package is built against — already gets the accent through
     // QPalette::Highlight in paletteFor(), so the native accent is an enhancement on newer Qt only.
     pal.setColor(QPalette::Accent, accent());
 #endif
@@ -153,9 +154,11 @@ bool Theme::systemPrefersDark()
     if (const QStyleHints *hints = QGuiApplication::styleHints())
         return hints->colorScheme() == Qt::ColorScheme::Dark;
 #endif
-    // Qt 6.4 has no platform colour-scheme query (QStyleHints::colorScheme and Qt::ColorScheme arrived
-    // in 6.5). The documented fallback for the compatibility build is light: Mode::System resolves to
-    // the light sheet on Ubuntu 24.04 rather than inventing a dark preference the host never stated.
+    // Anything below Qt 6.5 has no platform colour-scheme query (QStyleHints::colorScheme and
+    // Qt::ColorScheme arrived in 6.5), which is the whole source floor's problem: the `-ubuntu24.04`
+    // package is built against Qt 6.2.4 so that it installs on hosts whose own Qt is 6.4.2. The
+    // documented fallback there is light: Mode::System resolves to the light sheet rather than
+    // inventing a dark preference the host never stated.
     return false;
 }
 
