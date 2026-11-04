@@ -99,22 +99,28 @@ void Theme::apply(QApplication &app, bool dark)
     apply(app, dark ? Mode::Dark : Mode::Light);
 }
 
-void Theme::apply(QApplication &app, Theme::Mode mode)
+QPalette Theme::palette()
 {
-    g_mode = mode;
-    const bool dark = resolvingDark(mode);
-
-    QPalette pal = paletteFor(dark);
+    QPalette pal = paletteFor(isDark());
 #if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
     // QPalette::Accent arrived in Qt 6.6. Everything below that — the stock Qt 6.4.2 of Ubuntu 24.04 and
     // the Qt 6.2.4 the `-ubuntu24.04` package is built against — already gets the accent through
     // QPalette::Highlight in paletteFor(), so the native accent is an enhancement on newer Qt only.
     pal.setColor(QPalette::Accent, accent());
 #endif
+    return pal;
+}
 
+void Theme::apply(QApplication &app, Theme::Mode mode)
+{
+    g_mode = mode;
+
+    // One construction of the palette, shared with palette(). A second copy built here is how the object
+    // the application is handed and the object a caller can inspect would drift apart — and the test that
+    // compares them would then be checking the copy, not what the app received.
     app.setFont(uiFont());
-    app.setPalette(pal);
-    app.setStyleSheet(styleSheet(dark));
+    app.setPalette(palette());
+    app.setStyleSheet(styleSheet(isDark()));
 }
 
 Theme::Mode Theme::modeFromName(const QString &name)

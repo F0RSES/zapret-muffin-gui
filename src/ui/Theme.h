@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFont>
 #include <QIcon>
+#include <QPalette>
 #include <QString>
 
 class QApplication;
@@ -36,6 +37,15 @@ public:
     // overload resolves Mode::System against the platform's reported colour scheme.
     static void apply(QApplication &app, bool dark);
     static void apply(QApplication &app, Mode mode);
+
+    // The palette apply() installs, built from the same tokens as everything else here.
+    //
+    // Exposed because "the tokens and the QPalette agree" and "QGuiApplication kept the palette we gave
+    // it" are two different claims, and only the first one is this class's contract. The widgets style
+    // is free to re-derive the application palette once a stylesheet is installed — Qt 6.2 does, Qt 6.7
+    // does not — so a test (or any other caller) that wants to check the token -> role mapping should
+    // ask for this, not for app.palette(). Returns the palette for the mode currently installed.
+    static QPalette palette();
 
     // "dark" | "light" | "system" <-> Mode. Unknown names fall back to Dark (the shipped default).
     static Mode modeFromName(const QString &name);

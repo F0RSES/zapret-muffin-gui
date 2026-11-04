@@ -82,6 +82,8 @@
 #include <QLayout>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
+#include <QPalette>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
@@ -2813,7 +2815,23 @@ static void testTheme(QApplication &app)
     // hand-painted circles drift apart into two greens and two greys.
     check(app.styleSheet().contains(QStringLiteral("#10B981")), "the sheet's live green is the painted one");
     check(app.styleSheet().contains(QStringLiteral("#9CA3AF")), "the sheet's badge grey is the painted one");
-    check(app.palette().color(QPalette::Window) == Theme::windowBackground(), "palette matches tokens");
+    // Two claims, and they are not the same one.
+    //
+    // The theme's contract is the mapping from its tokens to QPalette roles, and Theme::palette() is the
+    // very object apply() hands to setPalette() — so this cannot pass by inspecting a copy that was never
+    // installed. On Qt 6.2 this is what the old app.palette() comparison was standing in for.
+    check(Theme::palette().color(QPalette::Window) == Theme::windowBackground(),
+          "palette matches tokens");
+    // Whether QGuiApplication then KEEPS that palette is Qt's business, not this code's: with an
+    // application stylesheet installed, the widgets style is free to re-derive the application palette,
+    // and Qt 6.2 does while Qt 6.7 does not. Asserting it made the suite depend on that internal, so it
+    // reported a failure on a Qt where every widget is still painted by the sheet and nothing looks
+    // wrong. Reported with both values instead — a silent platform difference is worth seeing.
+    const QColor installedWindow = app.palette().color(QPalette::Window);
+    std::printf("  info  application palette window = #%s, theme token = #%s%s\n",
+                qUtf8Printable(installedWindow.name()),
+                qUtf8Printable(Theme::windowBackground().name()),
+                installedWindow == Theme::windowBackground() ? "" : " (platform re-derived it)");
 
     Theme::apply(app, false);
     check(!Theme::isDark(), "light mode is active");
@@ -6610,6 +6628,24 @@ protected:
     }
 };
 
+// A drag is a mouse move WITH the button held, and this sends exactly that.
+//
+// QTest::mouseMove is not the same thing. It synthesises a bare move, and on some Qt versions `buttons`
+// in the delivered event is empty — which MainWindow::mouseMoveEvent correctly refuses to treat as a
+// drag, because a button-less hover must never move the window. The suite passed on Qt 6.7.3 and failed
+// on Qt 6.2.4 with a window that never moved (pos() unchanged from (0,0) to (0,0)), which is what
+// depending on a QTest internal buys: the harness, not the code, decided whether a drag had happened.
+// Writing the event out states what a drag is and cannot drift with the harness.
+//
+// The global position is passed in because that is what the handler moves by: mousePressEvent stores the
+// press point as an offset, and mouseMoveEvent places the window at globalPos - offset.
+static void dragMoveTo(QWidget *window, const QPoint &globalPos)
+{
+    QMouseEvent move(QEvent::MouseMove, QPointF(window->mapFromGlobal(globalPos)), QPointF(globalPos),
+                     Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(window, &move);
+}
+
 static void testWindowFrame()
 {
     std::printf("\n[Rounded shell]\n");
@@ -7162,7 +7198,9 @@ static void testWindowFrame()
             const QPoint p1 = band->mapTo(&window, grabPoint);
             QTest::mousePress(band, Qt::LeftButton, Qt::NoModifier, grabPoint);
             const QPoint p2 = p1 + QPoint(27, 7);
-            QTest::mouseMove(&window, p2);
+            // Mapped BEFORE the event is sent: the window has not moved yet, so this is where the pointer
+            // is now. The handler then puts the window at that global point minus the press offset.
+            dragMoveTo(&window, window.mapToGlobal(p2));
             const QPoint moved = window.pos();
             check(moved != before,
                   QStringLiteral("a press on the header and a drag move the frameless window ((%1,%2) -> "
@@ -7181,7 +7219,7 @@ static void testWindowFrame()
             const QPoint againFrom = window.pos();
             const QPoint q1 = band->mapTo(&window, grabPoint);
             QTest::mousePress(band, Qt::LeftButton, Qt::NoModifier, grabPoint);
-            QTest::mouseMove(&window, q1 + QPoint(-19, 11));
+            dragMoveTo(&window, window.mapToGlobal(q1 + QPoint(-19, 11)));
             const QPoint againTo = window.pos();
             check(againTo - againFrom == QPoint(-19, 11),
                   QStringLiteral("…and the next drag is its own, not a carry-over from the last (moved "
@@ -7200,7 +7238,7 @@ static void testWindowFrame()
                       QStringLiteral("…that press is below the drag band (%1 px into a %2 px window)")
                           .arg(onWindow.y()).arg(window.height()));
                 QTest::mousePress(page, Qt::LeftButton, Qt::NoModifier, onPage);
-                QTest::mouseMove(&window, onWindow + QPoint(30, 30));
+                dragMoveTo(&window, window.mapToGlobal(onWindow + QPoint(30, 30)));
                 check(window.pos() == still,
                       "…and dragging from the page leaves the window where it was");
                 QTest::mouseRelease(&window, Qt::LeftButton, Qt::NoModifier,
@@ -7223,7 +7261,7 @@ static void testWindowFrame()
             const QPoint before = window.pos();
             QTest::mousePress(canvas, Qt::LeftButton, Qt::NoModifier, inBand);
             const QPoint after = inBand + QPoint(15, -9);
-            QTest::mouseMove(&window, after);
+            dragMoveTo(&window, window.mapToGlobal(after));
             const QPoint moved = window.pos();
             QTest::mouseRelease(&window, Qt::LeftButton, Qt::NoModifier, after);
             check(moved - before == QPoint(15, -9),
