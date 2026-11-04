@@ -12,7 +12,7 @@
 # and Arch's current qt6-base sits far above it, so the system package satisfies
 # find_package(Qt6 6.2 ... Test). Qt6Test ships inside qt6-base.
 pkgname=muffin
-pkgver=1.0.2
+pkgver=1.0.5
 pkgrel=1
 pkgdesc="Graphical front end for launching and managing zapret strategies"
 arch=('x86_64')

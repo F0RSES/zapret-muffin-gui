@@ -11,7 +11,7 @@ project(Muffin LANGUAGES CXX)
 # jobs append their suffix afterwards, because the suffix is what tells a user which one to install.)
 # The default is the current release line, so local `cmake`/`cpack` runs still produce sensibly named
 # files and a helper that reports a real version.
-set(MUFFIN_VERSION "1.0.2" CACHE STRING "Version stamped into the generated packages")
+set(MUFFIN_VERSION "1.0.5" CACHE STRING "Version stamped into the generated packages")
 
 # ---- Qt6 -------------------------------------------------------------------
 # Core logic depends on QtCore (QString/QDir/QProcess); the reachability prober adds QtNetwork, and
