@@ -2,10 +2,10 @@
 
 #include <QColor>
 #include <QFont>
+#include <QIcon>
 #include <QString>
 
 class QApplication;
-class QIcon;
 class QWidget;
 
 namespace zapret {
@@ -107,6 +107,15 @@ public:
 
     // Load :/icons/<name>.svg tinted with `color`. `size` is the primary pixel size; the icon also
     // carries 16/24/32 rasterisations so toolbars, menus and HiDPI all get a crisp glyph.
+    //
+    // <QIcon> is included above rather than forward-declared, and it has to stay that way. These two
+    // return QIcon BY VALUE, so a caller does not merely pass a reference around: it owns a temporary
+    // and immediately calls into it (`.pixmap(...)`, `setIcon(...)`, `setPixmap(...)`), which needs the
+    // complete type. A forward declaration here would put the burden on every caller to include <QIcon>
+    // itself, and on Qt 6.7+ that burden is invisible because some other Qt header in the chain pulls
+    // QIcon in — PingIndicator.cpp compiled for months that way and then failed on Qt 6.2.4 with
+    // "invalid use of incomplete type 'class QIcon'". Keeping the include here means a new caller
+    // cannot reintroduce that, on any Qt version.
     static QIcon icon(const QString &name, const QColor &color, int size = 16);
     // icon(name, Theme::iconColor(), size).
     static QIcon themedIcon(const QString &name, int size = 16);

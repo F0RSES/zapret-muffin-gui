@@ -4,6 +4,7 @@
 #include "Theme.h"
 
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QPaintEvent>
 #include <QPainter>

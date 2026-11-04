@@ -1,11 +1,11 @@
 #pragma once
 
 #include <QHash>
+#include <QIcon>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 
-class QIcon;
 class QAbstractButton;
 class QLabel;
 class QAction;
