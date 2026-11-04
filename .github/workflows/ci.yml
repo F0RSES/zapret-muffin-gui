@@ -14,7 +14,7 @@ on:
 #   ------------------  -------------  --------  ---------------------------------------------
 #   windows + installer windows-2022   6.7.3     Muffin-Setup-<ver>.exe
 #   linux               ubuntu-22.04   6.7.3     muffin_<ver>_amd64-generic.deb
-#   linux-ubuntu2404    ubuntu-24.04   6.2.4     muffin_<ver>_amd64-ubuntu24.04.deb
+#   linux-ubuntu2404    ubuntu-22.04   6.2.4     muffin_<ver>_amd64-ubuntu24.04.deb
 #   arch                archlinux      distro    muffin-<ver>-1-x86_64.pkg.tar.zst
 #   release             ubuntu-22.04   -         the GitHub Release carrying all four
 #
@@ -399,10 +399,19 @@ jobs:
   # package installs on hosts whose own Qt stops at 6.4.2 (Ubuntu 24.04, Linux Mint 22.x). It is also
   # the only job that proves the source floor is real — a `#if QT_VERSION` guard that rotted would fail
   # to compile here and nowhere else — which is why it runs ctest like `linux` does instead of merely
-  # building.
+  # building. It is validated on every push and PR, so a Qt change that breaks the 6.2 path surfaces on
+  # `main` long before a tag exists.
+  #
+  # Runner 22.04, target 24.04, and those are not the same thing: the package is named after the distro
+  # that can INSTALL it (its Depends says >= 6.2.4, which 24.04's own 6.4.2 satisfies), while the runner
+  # is whichever host can still BUILD it. 24.04 was the first choice and does not work — the Qt 6.2-era
+  # online repository is laid out for the older host, and aqtinstall answers
+  #   The packages ['qt_base'] were not found while parsing XML of package information!
+  # Building on 22.04 costs nothing that matters here: the resulting .deb needs glibc 2.35, which 24.04
+  # (2.39) has, and the declared Qt dependency is identical.
   linux-ubuntu2404:
-    name: Linux (ubuntu-24.04, Qt 6.2.4)
-    runs-on: ubuntu-24.04
+    name: Linux (ubuntu-22.04 runner, Qt 6.2.4, for 24.04/Mint 22)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5.1.0
 
@@ -411,15 +420,30 @@ jobs:
       # find_package(Qt6) resolved, so this pin is what turns into "libqt6widgets6 (>= 6.2.4)" inside the
       # .deb — a bound the stock 6.4.2 satisfies, where the generic package's ">= 6.7.3" it cannot.
       #
-      # Unlike the main jobs this one is validated on every push and PR, so a Qt change that breaks the
-      # 6.2 path surfaces on `main` long before a tag exists.
-      #
-      # If 6.2.4 ever stops being published for linux_gcc_64, the fallback is to move this job to
-      # runs-on: ubuntu-22.04 keeping the same pin: the .deb then requires glibc 2.35 instead of 2.39,
-      # which still installs on 24.04, and the declared runtime dependency is unchanged. Do NOT fall back
-      # to the distro Qt here — that would quietly raise the dependency to 6.4.2 and make the two Linux
-      # packages promise the same thing.
-      - name: Install Qt6
+      # Two attempts, because the arch token is not stable across the Qt major line and the wrong one
+      # produces exactly the error that sent this job here. Qt 6.2-era desktop builds are published
+      # under `gcc_64`; the `linux_gcc_64` spelling appears from 6.5 on (this repository's own
+      # aqtinstall.log records `qt.qt6.673.linux_gcc_64` for 6.7.3). Rather than bet the job on one
+      # spelling, the 6.2 naming is tried first and the newer one is the fallback — both pinned to the
+      # same 6.2.4. Whichever installs defines $QT_ROOT_DIR for the steps below, which never name an
+      # arch themselves: Configure takes $QT_ROOT_DIR/lib/cmake and CMakeLists finds the offscreen
+      # plugin relative to Qt6_DIR, so the install directory's name is irrelevant downstream.
+      - name: Install Qt6 (gcc_64 — the Qt 6.2 spelling)
+        id: qt-gcc
+        continue-on-error: true
+        uses: jurplel/install-qt-action@v4.4.1
+        with:
+          version: '6.2.4'
+          host: linux
+          target: desktop
+          arch: gcc_64
+          cache: true
+
+      - name: Install Qt6 (linux_gcc_64 — the Qt 6.5+ spelling)
+        # Reached only when the spelling above is not in the repository for this version. A real failure
+        # of the second one still fails the job, which is the point: this is a name fallback, not a way
+        # to paper over an install that did not happen.
+        if: steps.qt-gcc.outcome == 'failure'
         uses: jurplel/install-qt-action@v4.4.1
         with:
           version: '6.2.4'
@@ -453,7 +477,8 @@ jobs:
         # flag turns "this platform cannot host the mock TLS server" into a red build, which is right
         # when the Qt is known to load OpenSSL — and wrong here, where it would gate the compatibility
         # package on a Qt 6.2.4 QSslSocket that may legitimately report a SKIP naming its backend, since
-        # Ubuntu 24.04 ships only OpenSSL 3. The TLS coverage itself is still enforced, by the two jobs
+        # both plausible runners ship only OpenSSL 3 (3.0 on 22.04). The TLS coverage itself is still
+        # enforced, by the two jobs
         # whose Qt is known good; what this job exists to prove is the 6.2 source floor, and it proves it
         # by compiling and running the same suite.
         #
